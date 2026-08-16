@@ -574,6 +574,8 @@ function renderNetworks() {
     return;
   }
   const hasOwner = nets.some((n) => n.owner);
+  // 每客户端仅能创建一个网络：已有 owner 网络时直接隐藏创建入口。
+  $("#btn-create").hidden = hasOwner;
   $("#create-limit").hidden = !hasOwner;
   if (!nets.length && !pending.length) {
     list.innerHTML = `<div class="empty">
@@ -1051,20 +1053,25 @@ function openCreateModal() {
             "create_network",
             { server, port, ca, name, subnet, approvalRequired: false },
           );
-          result.className = "msg ok";
-          result.innerHTML = `<p>网络创建成功，邀请其他设备加入：</p>
-            <div class="qr" id="qr"></div>
-            <div class="kv"><span>网络ID</span><code>${esc(r.networkId)}</code></div>
-            <div class="kv"><span>配对码</span><code>${esc(r.pairingCode)}</code></div>
-            <div class="kv"><span>邀请链接</span><code>${esc(r.link)}</code></div>
-            <button id="m-copy" class="btn ghost sm">复制邀请链接</button>`;
-          renderQR(body.querySelector<HTMLElement>("#qr")!, r.link);
-          body.querySelector("#m-copy")?.addEventListener("click", async (e) => {
-            const b = e.currentTarget as HTMLButtonElement;
-            await copyText(r.link, b);
+          // 创建成功后整个弹窗替换为邀请信息：隐藏创建表单与创建/取消按钮，
+          // 只保留二维码与邀请信息，避免挤在底部被忽略。
+          const modalEl = body;
+          const mBody = modalEl.querySelector<HTMLElement>(".modal-body")!;
+          const mFoot = modalEl.querySelector<HTMLElement>(".modal-foot")!;
+          mBody.innerHTML = `
+            <div class="create-ok">
+              <p class="msg ok">网络创建成功，邀请其他设备加入：</p>
+              <div class="qr" id="qr"></div>
+              <div class="kv"><span>网络ID</span><code>${esc(r.networkId)}</code></div>
+              <div class="kv"><span>配对码</span><code>${esc(r.pairingCode)}</code></div>
+              <div class="kv"><span>邀请链接</span><code>${esc(r.link)}</code></div>
+            </div>`;
+          renderQR(mBody.querySelector<HTMLElement>("#qr")!, r.link);
+          mFoot.innerHTML = `<button id="m-copy" class="btn">复制邀请链接</button><button id="m-close" class="btn ghost">关闭</button>`;
+          mFoot.querySelector<HTMLButtonElement>("#m-copy")!.addEventListener("click", async (e) => {
+            await copyText(r.link, e.currentTarget as HTMLButtonElement);
           });
-          submit.disabled = false;
-          submit.innerHTML = "创建";
+          mFoot.querySelector<HTMLButtonElement>("#m-close")!.addEventListener("click", closeModal);
           await refresh();
         } catch (e) {
           result.className = "msg";
