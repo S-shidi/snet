@@ -1,0 +1,19 @@
+[Unit]
+Description=vnet coordination server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/vnet/bin/server -addr 0.0.0.0:8090 -probe-addr 0.0.0.0:8091 -db /var/lib/vnet/vnet.db -tls-cert /usr/local/vnet/certs/server.pem -tls-key /usr/local/vnet/certs/server-key.pem -relay-host vnet.uizhi.eu.org -relay-base 51820 -relay-count 64 -zombie-ttl 72h
+EnvironmentFile=/etc/vnet-server.env
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/vnet
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

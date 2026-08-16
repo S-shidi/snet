@@ -1,0 +1,13 @@
+# Phone WireGuard configs embed real private keys — never commit
+deploy/phone-android.conf
+deploy/phone-android.png
+
+# Build artifacts (JS/Rust) — not source
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/dist/
+
+# Stray local binaries / junk
+server
+.DS_Store

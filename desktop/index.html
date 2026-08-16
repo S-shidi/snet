@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SNET</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <div class="header-inner">
+          <div class="brand">
+            <span class="logo">
+              <svg viewBox="0 0 32 32" fill="none"><circle cx="9" cy="16" r="4" fill="#fff"/><circle cx="23" cy="16" r="4" fill="#fff"/><path d="M13 16h6" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+            </span>
+            <span>
+              <h1>SNET</h1>
+              <span class="sub">虚拟组网 · 桌面客户端</span>
+            </span>
+          </div>
+          <div class="header-right">
+            <span id="daemon-state" class="live-dot" title="系统后台守护进程 vnetd：维持所有网络的 WireGuard 隧道">后台服务: 未知</span>
+            <button id="header-svc-btn" class="btn ghost sm" hidden>启动后台服务</button>
+            <button id="btn-refresh" class="btn ghost sm" title="刷新">刷新</button>
+            <button id="btn-settings" class="btn ghost sm" title="设置">设置</button>
+          </div>
+        </div>
+      </header>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="networks">我的网络<span class="cnt" id="cnt-net"></span></button>
+        <button class="tab" data-tab="status">状态</button>
+      </nav>
+
+      <main id="app-main">
+        <section id="tab-networks" class="tab-panel active">
+          <div class="toolbar">
+            <button id="btn-create" class="btn">+ 创建网络</button>
+            <button id="btn-join" class="btn ghost">加入网络</button>
+            <span class="spacer"></span>
+            <span id="create-limit" class="hint" hidden>本设备已创建网络（每客户端仅能创建一个）</span>
+          </div>
+          <div id="net-list" class="net-list">
+            <div class="loading"><span class="spinner"></span>加载中…</div>
+          </div>
+        </section>
+
+        <section id="tab-status" class="tab-panel">
+          <div class="stats">
+            <div class="stat"><div class="label">设备ID</div><div class="value accent" id="device-id">-</div></div>
+            <div class="stat"><div class="label">协调服务器</div><div class="value" id="svc-server">-</div></div>
+            <div class="stat"><div class="label">WireGuard 端口</div><div class="value warn" id="svc-wgport">-</div></div>
+          </div>
+
+          <div class="card">
+            <h3>隧道明细</h3>
+            <div id="tunnel-detail"></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h3>原始数据</h3>
+              <button id="btn-leave-all" class="btn danger ghost sm">全部停止</button>
+            </div>
+            <pre id="status-json">(未连接后台服务)</pre>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="onboarding" hidden>
+      <div class="onboarding-card">
+        <div class="onboarding-logo">
+          <span class="l-logo">
+            <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><circle cx="9" cy="16" r="4" fill="#fff"/><circle cx="23" cy="16" r="4" fill="#fff"/><path d="M13 16h6" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+          </span>
+          <div class="l-title">欢迎使用 SNET 虚拟组网</div>
+          <div class="l-sub">选择协调服务器：其他设备通过它互相发现并建立加密隧道</div>
+        </div>
+        <div class="onboarding-daemon" id="onb-daemon">
+          <button id="onb-start-daemon" class="btn ghost">启动后台服务</button>
+          <p class="msg ok" id="onb-daemon-result"></p>
+        </div>
+        <div class="onboarding-block">
+          <h3>链接自定义服务器</h3>
+          <div class="row"><label>服务器地址</label><input id="onb-server" placeholder="https://vnet.example.com:8090" /></div>
+          <div class="row"><label>设备授权码</label><input id="onb-code" placeholder="管理端生成的设备授权码（仅用于链接，不保存）" autocomplete="off" /></div>
+          <div class="row"><label>CA 证书路径</label><input id="onb-ca" placeholder="公共证书(如 Let's Encrypt)留空；自签名填证书路径" /></div>
+          <div class="settings-actions">
+            <button id="onb-bind" class="btn">绑定并进入</button>
+          </div>
+          <p class="msg" id="onb-bind-result"></p>
+        </div>
+        <p class="onboarding-skip">
+          <a id="onb-skip" href="#">暂不绑定，进入界面</a>
+          <span>未绑定设备无法创建网络；加入时若被拒，可回到此处或设置中完成绑定。</span>
+        </p>
+      </div>
+    </div>
+
+    <div id="modal-root" hidden></div>
+    <div id="toast-wrap"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,950 @@
+package client
+
+import (
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"virtualnet/internal/protocol"
+	"virtualnet/internal/server"
+)
+
+func newTestDaemon(t *testing.T) (*Daemon, string) {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	cfg, err := LoadConfigAt(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDaemonAt(cfg, cfgPath)
+	d.SetDeviceIDFile("")
+	return d, cfgPath
+}
+
+func TestConfigMigrationFromV1(t *testing.T) {
+	v1 := `{
+  "serverAddr": "https://vnet.test",
+  "wireguardPort": 51820,
+  "privateKey": "aa",
+  "networkId": "net123",
+  "nodeId": "node1",
+  "ip": "10.88.0.5",
+  "token": "tok",
+  "pairingCode": "pair"
+}`
+	cfg, err := parseConfig([]byte(v1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc := cfg.Networks["net123"]
+	if nc == nil {
+		t.Fatal("legacy network not migrated")
+	}
+	if nc.NodeID != "node1" || nc.IP != "10.88.0.5" || nc.Token != "tok" || nc.PairingCode != "pair" {
+		t.Fatalf("migrated cfg wrong: %+v", nc)
+	}
+	if nc.Subnet != defaultSubnet || !nc.Active || nc.Port != 51820 {
+		t.Fatalf("migrated defaults wrong: %+v", nc)
+	}
+	if cfg.PrivateKey != "aa" || cfg.ServerAddr != "https://vnet.test" {
+		t.Fatalf("top-level fields lost: %+v", cfg)
+	}
+}
+
+func TestConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	c := &Config{
+		ServerAddr: "https://vnet.test",
+		Networks: map[string]*NetworkCfg{
+			"a": {NodeID: "n1", IP: "10.0.0.2", Token: "t", Subnet: "10.0.0.0/24", Active: true},
+		},
+	}
+	if err := c.SaveAt(path); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := LoadConfigAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.Networks["a"].Token != "t" || c2.Networks["a"].Subnet != "10.0.0.0/24" {
+		t.Fatalf("round trip wrong: %+v", c2.Networks["a"])
+	}
+}
+
+// TestConfigStaleServerCleared verifies the load-time cleanup: a legacy device
+// with no binding, no networks and no pending joins has no meaningful server
+// address and gets it dropped.
+func TestConfigStaleServerCleared(t *testing.T) {
+	// legacy unbound config with no networks: stale address dropped
+	legacy := []byte(`{"serverAddr":"https://stale.example","privateKey":"aa"}`)
+	cfg, err := parseConfig(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServerAddr != "" {
+		t.Fatalf("stale server not cleared: %q", cfg.ServerAddr)
+	}
+	// with networks the address is meaningful and must be kept
+	withNet := []byte(`{"serverAddr":"https://vnet.example","privateKey":"aa","networks":{"n1":{"nodeId":"x","ip":"1.1.1.1","token":"t","active":true}}}`)
+	cfg2, err := parseConfig(withNet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.ServerAddr != "https://vnet.example" {
+		t.Fatalf("server dropped despite networks: %q", cfg2.ServerAddr)
+	}
+}
+
+// TestNormalizeServer covers trailing-slash normalization and scheme-less
+// server addresses used for switch/rollback comparisons.
+func TestNormalizeServer(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"https://vnet.example", "https://vnet.example"},
+		{"https://vnet.example/", "https://vnet.example"},
+		{"http://127.0.0.1:8090", "http://127.0.0.1:8090"},
+		{"http://127.0.0.1:8090//", "http://127.0.0.1:8090"},
+		{"vnet.example", "https://vnet.example"},
+	}
+	for _, c := range cases {
+		if got := normalizeServer(c.in); got != c.want {
+			t.Fatalf("normalizeServer(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestBindRoundTrip verifies the daemon bind flow against a server with the
+// enrollment gate on: binding with an admin code unlocks create/join, and
+// unbound devices are refused with the enrollment hint.
+func TestBindRoundTrip(t *testing.T) {
+	s := server.NewStore()
+	ts := httptest.NewServer(server.NewHandler(s, server.Options{RequireDeviceAuth: true}))
+	defer ts.Close()
+	codes, _, err := s.AdminGenerateAuthCodes(2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := newTestDaemon(t)
+	if err := d.Bind(ts.URL, "", codes[0]); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if !d.cfg.Bound() {
+		t.Fatalf("Bound() false after bind: %+v", d.cfg)
+	}
+	st, err := d.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st["bound"] != true {
+		t.Fatalf("status after bind = %v", st)
+	}
+
+	// enrollment gate now satisfied: creating a network works
+	created, err := d.Create(ts.URL, 0, "home", "", false)
+	if err != nil {
+		t.Fatalf("create after bind: %v", err)
+	}
+	if created.NetworkID == "" {
+		t.Fatal("empty network id")
+	}
+
+	// an unbound device is refused by the gate with the hint text
+	d2, _ := newTestDaemon(t)
+	if _, err := d2.Create(ts.URL, 0, "x", "", false); err == nil || !strings.Contains(err.Error(), "设备未授权") {
+		t.Fatalf("unbound create err = %v, want 设备未授权 hint", err)
+	}
+	// after binding its own code, the same device joins the owner's network
+	if err := d2.Bind(ts.URL, "", codes[1]); err != nil {
+		t.Fatalf("bind d2: %v", err)
+	}
+	join, err := d2.Join(ts.URL, 0, created.NetworkID, created.PairingCode)
+	if err != nil {
+		t.Fatalf("join after bind: %v", err)
+	}
+	if join.IP != "10.88.0.2" {
+		t.Fatalf("joiner ip = %q, want 10.88.0.2", join.IP)
+	}
+
+	// switching servers is always allowed; the device belongs to exactly one
+	// server at a time, so binding a new server clears the old one's networks
+	sB := server.NewStore()
+	tsB := httptest.NewServer(server.NewHandler(sB, server.Options{RequireDeviceAuth: true}))
+	defer tsB.Close()
+	codesB, _, err := sB.AdminGenerateAuthCodes(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d2.Bind(tsB.URL, "", codesB[0]); err != nil {
+		t.Fatalf("switch server bind: %v", err)
+	}
+	if len(d2.cfg.Networks) != 0 {
+		t.Fatalf("networks not cleared after server switch: %+v", d2.cfg.Networks)
+	}
+	if !d2.cfg.Bound() || d2.cfg.ServerAddr != normalizeServer(tsB.URL) {
+		t.Fatalf("not bound to the new server: %+v", d2.cfg)
+	}
+}
+
+// TestJoinViaLinkServer verifies that an invite link carrying its own server
+// address targets that server on join: a device already bound to that server
+// joins directly, an unbound device on a non-enforcement server joins (server
+// switched), and an unbound device against an enforcement server is refused
+// with the enrollment hint (the frontend gates this with a bind step).
+func TestJoinViaLinkServer(t *testing.T) {
+	s := server.NewStore()
+	ts := httptest.NewServer(server.NewHandler(s, server.Options{}))
+	defer ts.Close()
+	d, _ := newTestDaemon(t)
+
+	created, err := d.Create(ts.URL, 0, "home", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := protocol.BuildLink(created.NetworkID, created.PairingCode, ts.URL)
+
+	// an unbound device joins the network named by the link, and ends up
+	// pointed at the link's server (non-enforcement server: no bind needed)
+	d2, _ := newTestDaemon(t)
+	nid, code, linkServer, err := protocol.ParseLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	join, err := d2.Join(linkServer, 0, nid, code)
+	if err != nil {
+		t.Fatalf("join via link server: %v", err)
+	}
+	if join.IP != "10.88.0.2" {
+		t.Fatalf("joiner ip = %q, want 10.88.0.2", join.IP)
+	}
+	if join.Name != "home" {
+		t.Fatalf("joiner name = %q, want home", join.Name)
+	}
+	if got := d2.cfg.Networks[join.NetworkID]; got == nil || got.Name != "home" {
+		t.Fatalf("joiner stored name = %+v, want home", got)
+	}
+	if d2.cfg.ServerAddr != normalizeServer(ts.URL) {
+		t.Fatalf("device not pointed at link server: %+v", d2.cfg)
+	}
+	if d2.cfg.Bound() {
+		t.Fatalf("bound() should be false on a non-enforcement join: %+v", d2.cfg)
+	}
+
+	// against an enforcement server an unbound device is refused; binding with
+	// an auth code first unlocks the same join (the frontend bind-then-join path)
+	se := server.NewStore()
+	te := httptest.NewServer(server.NewHandler(se, server.Options{RequireDeviceAuth: true}))
+	defer te.Close()
+	codes, _, err := se.AdminGenerateAuthCodes(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d3, _ := newTestDaemon(t)
+	if err := d3.Bind(te.URL, "", codes[0]); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	createdE, err := d3.Create(te.URL, 0, "secure", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkE := protocol.BuildLink(createdE.NetworkID, createdE.PairingCode, te.URL)
+
+	d4, _ := newTestDaemon(t)
+	nid, code, linkServer, err = protocol.ParseLink(linkE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d4.Join(linkServer, 0, nid, code); err == nil || !strings.Contains(err.Error(), "设备未授权") {
+		t.Fatalf("unbound join against enforcement server err = %v, want 设备未授权", err)
+	}
+}
+
+func TestSubnetsOverlap(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"10.88.0.0/24", "10.88.0.0/24", true},
+		{"10.88.0.0/24", "10.88.0.0/23", true},
+		{"10.88.0.0/24", "10.88.1.0/24", false},
+		{"10.88.0.0/24", "192.168.1.0/24", false},
+	}
+	for _, c := range cases {
+		if got := subnetsOverlap(c.a, c.b); got != c.want {
+			t.Errorf("subnetsOverlap(%s, %s) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestCreateJoinRoundTrip(t *testing.T) {
+	ts := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer ts.Close()
+	d, _ := newTestDaemon(t)
+
+	// owner create
+	resp, err := d.Create(ts.URL, 51820, "home", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.NetworkID == "" || resp.Token == "" || resp.Subnet == "" {
+		t.Fatalf("create resp incomplete: %+v", resp)
+	}
+	if d.cfg.DeviceID == "" {
+		t.Fatal("device id not assigned")
+	}
+	if !d.cfg.Networks[resp.NetworkID].Owner {
+		t.Fatal("owner network not marked owner")
+	}
+
+	// second network join on the same server
+	join, err := d.Join(ts.URL, 0, resp.NetworkID, resp.PairingCode)
+	if err == nil {
+		t.Fatalf("join own network should fail, got %+v", join)
+	}
+	// owner cannot create a second network (one network per device)
+	if _, err := d.Create(ts.URL, 0, "office", "192.168.9.0/24", false); err == nil {
+		t.Fatal("owner daemon should not be able to create a second network")
+	}
+	// a fresh daemon (different device) creates a second network, daemon d2 joins it
+	d3, d3path := newTestDaemon(t)
+	ownerResp, err := d3.Create(ts.URL, 0, "office", "192.168.9.0/24", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerResp.Subnet != "192.168.9.0/24" {
+		t.Fatalf("explicit subnet ignored: %s", ownerResp.Subnet)
+	}
+
+	d2, _ := newTestDaemon(t)
+	join, err = d2.Join(ts.URL, 0, ownerResp.NetworkID, ownerResp.PairingCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if join.IP == "" {
+		t.Fatal("no ip assigned on join")
+	}
+	if d2.cfg.Networks[join.NetworkID].Owner {
+		t.Fatal("non-owner marked owner")
+	}
+
+	// leave keeps the node; rejoin brings it back
+	if err := d2.Leave(join.NetworkID); err != nil {
+		t.Fatal(err)
+	}
+	if d2.cfg.Networks[join.NetworkID].Active {
+		t.Fatal("leave did not deactivate")
+	}
+	if err := d2.Rejoin(join.NetworkID); err != nil {
+		t.Fatal(err)
+	}
+	if !d2.cfg.Networks[join.NetworkID].Active {
+		t.Fatal("rejoin did not reactivate")
+	}
+
+	// netinfo + rename + reset code via owner daemon
+	info, err := d3.Info(ownerResp.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Nodes) < 1 {
+		t.Fatalf("netinfo nodes: %+v", info)
+	}
+	if err := d3.UpdateSettings(ownerResp.NetworkID, "office-renamed", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	code, err := d3.ResetCode(ownerResp.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code == "" {
+		t.Fatal("empty reset code")
+	}
+
+	// kick the second daemon's node
+	if err := d3.Kick(ownerResp.NetworkID, join.NodeID); err != nil {
+		t.Fatal(err)
+	}
+
+	// remove from second daemon
+	if err := d2.Remove(join.NetworkID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d2.cfg.Networks[join.NetworkID]; ok {
+		t.Fatal("remove left network in config")
+	}
+
+	// owner deletes its first network
+	if err := d.DeleteNetwork(resp.NetworkID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.cfg.Networks[resp.NetworkID]; ok {
+		t.Fatal("delete left network in config")
+	}
+
+	// status snapshot shape
+	st, err := d.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st["deviceId"] != d.cfg.DeviceID {
+		t.Fatalf("status deviceId wrong: %v", st["deviceId"])
+	}
+	if _, ok := st["networks"].([]map[string]any); !ok {
+		t.Fatalf("status networks type wrong: %T", st["networks"])
+	}
+
+	// persisted config reflects state
+	data, err := os.ReadFile(d3path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "office-renamed") {
+		t.Fatalf("config not persisted with rename: %s", data)
+	}
+}
+
+// TestEmptyServerDefaultsToBound verifies create/join with an empty server
+// address use the currently bound server instead of switching or failing.
+func TestEmptyServerDefaultsToBound(t *testing.T) {
+	tsA := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer tsA.Close()
+	tsB := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer tsB.Close()
+	d, _ := newTestDaemon(t)
+
+	// not bound to anything yet → empty server is refused with a clear message
+	if _, err := d.Create("", 0, "n", "", false); err == nil || !strings.Contains(err.Error(), "未连接服务器") {
+		t.Fatalf("unbound create err = %v, want 未连接服务器", err)
+	}
+	if _, err := d.Join("", 0, "nid", "code"); err == nil || !strings.Contains(err.Error(), "未连接服务器") {
+		t.Fatalf("unbound join err = %v, want 未连接服务器", err)
+	}
+
+	created, err := d.Create(tsA.URL, 0, "net-a", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.cfg.ServerAddr != normalizeServer(tsA.URL) {
+		t.Fatalf("bound server = %q", d.cfg.ServerAddr)
+	}
+	// creating again with an empty server must target A (owner limit fires),
+	// never attempt to "switch" away
+	if _, err := d.Create("", 0, "net-a2", "", false); err == nil || !strings.Contains(err.Error(), "已创建网络") {
+		t.Fatalf("empty-server create err = %v, want owner limit on A", err)
+	}
+	// joining with an empty server must also resolve to A
+	if _, err := d.Join("", 0, "missing-nid", "badcode"); err == nil {
+		t.Fatal("join with empty server should hit A and fail there")
+	}
+	if d.cfg.ServerAddr != normalizeServer(tsA.URL) {
+		t.Fatalf("server drifted off A: %q", d.cfg.ServerAddr)
+	}
+	// tsB was never targeted by an empty-server call
+	if _, ok := d.cfg.Networks[created.NetworkID]; !ok {
+		t.Fatalf("A's network lost: %+v", d.cfg.Networks)
+	}
+}
+
+func TestSwitchServerClearsNetworks(t *testing.T) {
+	tsA := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer tsA.Close()
+	tsB := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer tsB.Close()
+	d, _ := newTestDaemon(t)
+	createdA, err := d.Create(tsA.URL, 51820, "net-a", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.cfg.Networks) != 1 {
+		t.Fatalf("expected one network on A: %+v", d.cfg.Networks)
+	}
+	// switching to B is allowed and clears A's networks
+	resp, err := d.Create(tsB.URL, 0, "net-b", "", false)
+	if err != nil {
+		t.Fatalf("create on B: %v", err)
+	}
+	if len(d.cfg.Networks) != 1 || d.cfg.Networks[resp.NetworkID] == nil {
+		t.Fatalf("expected only B's network after switch: %+v", d.cfg.Networks)
+	}
+	if _, ok := d.cfg.Networks[createdA.NetworkID]; ok {
+		t.Fatalf("A's network still present after switch: %+v", d.cfg.Networks)
+	}
+	if d.cfg.ServerAddr != normalizeServer(tsB.URL) {
+		t.Fatalf("server not switched: %+v", d.cfg)
+	}
+	// the owner limit applies per server: after switching, A's owned network
+	// is gone, so creating again on B is rejected for a different reason
+	if _, err := d.Create(tsB.URL, 0, "net-b2", "", false); err == nil || !strings.Contains(err.Error(), "已创建网络") {
+		t.Fatalf("second create on B err = %v, want owner limit", err)
+	}
+}
+
+// TestFailedSwitchRollsBack verifies a failed switch to a new server (e.g. the
+// enrollment gate refusing an unbound device) leaves the current server's
+// address and networks fully intact.
+func TestFailedSwitchRollsBack(t *testing.T) {
+	tsA := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer tsA.Close()
+	tsB := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{RequireDeviceAuth: true}))
+	defer tsB.Close()
+	d, _ := newTestDaemon(t)
+	created, err := d.Create(tsA.URL, 0, "net-a", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// unbound create on the enforcement server B is refused; A must survive
+	if _, err := d.Create(tsB.URL, 0, "x", "", false); err == nil || !strings.Contains(err.Error(), "设备未授权") {
+		t.Fatalf("unbound create on B err = %v, want 设备未授权", err)
+	}
+	if d.cfg.ServerAddr != normalizeServer(tsA.URL) {
+		t.Fatalf("server address not rolled back: %+v", d.cfg)
+	}
+	if len(d.cfg.Networks) != 1 || d.cfg.Networks[created.NetworkID] == nil {
+		t.Fatalf("A's networks lost after failed switch: %+v", d.cfg.Networks)
+	}
+}
+
+// TestBindFailureRollsBackServer verifies a failed bind to a new server rolls
+// back the server address and keeps the previous server's networks.
+func TestBindFailureRollsBackServer(t *testing.T) {
+	tsA := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer tsA.Close()
+	sB := server.NewStore()
+	tsB := httptest.NewServer(server.NewHandler(sB, server.Options{RequireDeviceAuth: true}))
+	defer tsB.Close()
+	d, _ := newTestDaemon(t)
+	created, err := d.Create(tsA.URL, 0, "net-a", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Bind(tsB.URL, "", "WRONG-CODE"); err == nil {
+		t.Fatal("bind with wrong code should fail")
+	}
+	if d.cfg.ServerAddr != normalizeServer(tsA.URL) {
+		t.Fatalf("server address not rolled back: %+v", d.cfg)
+	}
+	if len(d.cfg.Networks) != 1 || d.cfg.Networks[created.NetworkID] == nil {
+		t.Fatalf("A's networks lost after failed bind: %+v", d.cfg.Networks)
+	}
+	if d.cfg.Bound() {
+		t.Fatalf("must not be bound after failed bind: %+v", d.cfg)
+	}
+}
+
+// TestVerifyBindingDetectsRevocation verifies the periodic check clears the
+// local bound state once the server (enrollment gate) no longer considers the
+// device bound.
+func TestVerifyBindingDetectsRevocation(t *testing.T) {
+	s := server.NewStore()
+	ts := httptest.NewServer(server.NewHandler(s, server.Options{RequireDeviceAuth: true}))
+	defer ts.Close()
+	codes, _, err := s.AdminGenerateAuthCodes(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := newTestDaemon(t)
+	d.SetDeviceID("revoke-dev-1")
+	if err := d.Bind(ts.URL, "", codes[0]); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if !d.cfg.Bound() {
+		t.Fatalf("not bound after bind: %+v", d.cfg)
+	}
+	if !d.verifyBinding() {
+		t.Fatalf("verifyBinding false while still bound")
+	}
+	// admin revokes the binding → next check clears the local bound state
+	if err := s.AdminUnbindDevice("revoke-dev-1"); err != nil {
+		t.Fatal(err)
+	}
+	if d.verifyBinding() {
+		t.Fatalf("verifyBinding should report the revocation")
+	}
+	if d.cfg.Bound() {
+		t.Fatalf("Bound() still true after revocation: %+v", d.cfg)
+	}
+}
+
+// TestVerifyBindingNonEnforcementExplicitFalse verifies revocation detection
+// works on a server without the enrollment gate (via the explicit bound
+// field in the register response).
+func TestVerifyBindingNonEnforcementExplicitFalse(t *testing.T) {
+	s := server.NewStore()
+	ts := httptest.NewServer(server.NewHandler(s, server.Options{}))
+	defer ts.Close()
+	codes, _, err := s.AdminGenerateAuthCodes(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := newTestDaemon(t)
+	d.SetDeviceID("revoke-dev-2")
+	if err := d.Bind(ts.URL, "", codes[0]); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if !d.cfg.Bound() {
+		t.Fatalf("not bound after bind: %+v", d.cfg)
+	}
+	if err := s.AdminUnbindDevice("revoke-dev-2"); err != nil {
+		t.Fatal(err)
+	}
+	if d.verifyBinding() {
+		t.Fatalf("verifyBinding should detect the non-enforcement revocation")
+	}
+	if d.cfg.Bound() {
+		t.Fatalf("Bound() still true after revocation: %+v", d.cfg)
+	}
+}
+
+// TestVerifyBindingKeepsOnTransientError verifies a temporary network failure
+// does not clear a valid binding.
+func TestVerifyBindingKeepsOnTransientError(t *testing.T) {
+	s := server.NewStore()
+	ts := httptest.NewServer(server.NewHandler(s, server.Options{RequireDeviceAuth: true}))
+	codes, _, err := s.AdminGenerateAuthCodes(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := newTestDaemon(t)
+	d.SetDeviceID("revoke-dev-3")
+	if err := d.Bind(ts.URL, "", codes[0]); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	ts.Close() // server goes away
+	if !d.verifyBinding() {
+		t.Fatalf("transient error must keep the binding: %+v", d.cfg)
+	}
+	if !d.cfg.Bound() {
+		t.Fatalf("binding cleared on transient error: %+v", d.cfg)
+	}
+}
+
+// TestCreateAfterRevocationClearsBinding verifies an immediate gated operation
+// against the device's own bound server reports the revocation and clears the
+// local bound state.
+func TestCreateAfterRevocationClearsBinding(t *testing.T) {
+	s := server.NewStore()
+	ts := httptest.NewServer(server.NewHandler(s, server.Options{RequireDeviceAuth: true}))
+	defer ts.Close()
+	codes, _, err := s.AdminGenerateAuthCodes(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := newTestDaemon(t)
+	d.SetDeviceID("revoke-dev-4")
+	if err := d.Bind(ts.URL, "", codes[0]); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if err := s.AdminUnbindDevice("revoke-dev-4"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Create(ts.URL, 0, "x", "", false); err == nil || !strings.Contains(err.Error(), "设备未授权") {
+		t.Fatalf("create after revocation err = %v, want 设备未授权", err)
+	}
+	if d.cfg.Bound() {
+		t.Fatalf("Bound() still true after gated create: %+v", d.cfg)
+	}
+	if d.cfg.ServerAddr != normalizeServer(ts.URL) {
+		t.Fatalf("server address changed: %+v", d.cfg)
+	}
+}
+
+// TestForeignServerRevokeDoesNotClearBinding verifies a 403 from a server the
+// device is NOT bound to does not erase the binding on the current server.
+func TestForeignServerRevokeDoesNotClearBinding(t *testing.T) {
+	sA := server.NewStore()
+	tsA := httptest.NewServer(server.NewHandler(sA, server.Options{RequireDeviceAuth: true}))
+	defer tsA.Close()
+	codesA, _, err := sA.AdminGenerateAuthCodes(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsB := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{RequireDeviceAuth: true}))
+	defer tsB.Close()
+	d, _ := newTestDaemon(t)
+	d.SetDeviceID("revoke-dev-5")
+	if err := d.Bind(tsA.URL, "", codesA[0]); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, err := d.Create(tsB.URL, 0, "x", "", false); err == nil || !strings.Contains(err.Error(), "设备未授权") {
+		t.Fatalf("create on B err = %v, want 设备未授权", err)
+	}
+	if !d.cfg.Bound() {
+		t.Fatalf("binding to A must survive a 403 on B: %+v", d.cfg)
+	}
+	if d.cfg.ServerAddr != normalizeServer(tsA.URL) {
+		t.Fatalf("server address not rolled back: %+v", d.cfg)
+	}
+}
+
+func TestCreateOneNetworkPerDevice(t *testing.T) {
+	ts := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer ts.Close()
+	d, _ := newTestDaemon(t)
+	if _, err := d.Create(ts.URL, 51820, "home", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Create(ts.URL, 0, "second", "", false); err == nil {
+		t.Fatal("daemon guard: second create should be rejected")
+	}
+}
+
+func TestPendingJoinFlow(t *testing.T) {
+	old := pendingPollInterval
+	pendingPollInterval = 50 * time.Millisecond
+	defer func() { pendingPollInterval = old }()
+
+	ts := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer ts.Close()
+
+	owner, _ := newTestDaemon(t)
+	created, err := owner.Create(ts.URL, 0, "office", "10.99.0.0/24", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	joiner, _ := newTestDaemon(t)
+	joined, err := joiner.Join(ts.URL, 0, created.NetworkID, created.PairingCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.Status != "pending" || joined.PendingID == "" {
+		t.Fatalf("join = %+v, want pending", joined)
+	}
+	// not attached to any network yet
+	if len(joiner.cfg.Networks) != 0 {
+		t.Fatalf("pending join must not attach a network: %+v", joiner.cfg.Networks)
+	}
+	if len(joiner.cfg.PendingJoins) != 1 {
+		t.Fatalf("pending join not persisted: %+v", joiner.cfg.PendingJoins)
+	}
+
+	// owner sees the pending request
+	info, err := owner.Info(created.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Pending) != 1 {
+		t.Fatalf("owner pending count = %d", len(info.Pending))
+	}
+	pendingID := info.Pending[0].ID
+
+	// owner approves; the joiner's poll loop attaches the network
+	if err := owner.ApprovePending(created.NetworkID, pendingID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		joiner.mu.Lock()
+		nc := joiner.cfg.Networks[created.NetworkID]
+		joiner.mu.Unlock()
+		if nc != nil && nc.Active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("joiner never attached after approval: %+v", joiner.cfg.Networks)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	joiner.mu.Lock()
+	nc := joiner.cfg.Networks[created.NetworkID]
+	joiner.mu.Unlock()
+	if !strings.HasPrefix(nc.IP, "10.99.0.") {
+		t.Fatalf("approved IP out of range: %s", nc.IP)
+	}
+	if len(joiner.cfg.PendingJoins) != 0 {
+		t.Fatalf("pending join not cleaned up: %+v", joiner.cfg.PendingJoins)
+	}
+
+	// owner can now see two members
+	info, err = owner.Info(created.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Nodes) != 2 {
+		t.Fatalf("member count after approval = %d", len(info.Nodes))
+	}
+}
+
+func TestPendingJoinDenied(t *testing.T) {
+	old := pendingPollInterval
+	pendingPollInterval = 50 * time.Millisecond
+	defer func() { pendingPollInterval = old }()
+
+	ts := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer ts.Close()
+
+	owner, _ := newTestDaemon(t)
+	created, err := owner.Create(ts.URL, 0, "office", "10.99.1.0/24", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joiner, _ := newTestDaemon(t)
+	if _, err := joiner.Join(ts.URL, 0, created.NetworkID, created.PairingCode); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := owner.Info(created.NetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Pending) != 1 {
+		t.Fatalf("owner pending count = %d", len(info.Pending))
+	}
+	if err := owner.DenyPending(created.NetworkID, info.Pending[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		joiner.mu.Lock()
+		pj := joiner.cfg.PendingJoins[info.Pending[0].ID]
+		status := ""
+		if pj != nil {
+			status = pj.Status
+		}
+		joiner.mu.Unlock()
+		if status == "denied" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("joiner never saw denial: %+v", joiner.cfg.PendingJoins)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(joiner.cfg.Networks) != 0 {
+		t.Fatalf("denied join must not attach a network: %+v", joiner.cfg.Networks)
+	}
+}
+
+func TestCancelPending(t *testing.T) {
+	ts := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer ts.Close()
+	owner, _ := newTestDaemon(t)
+	created, err := owner.Create(ts.URL, 0, "office", "10.99.2.0/24", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joiner, _ := newTestDaemon(t)
+	joined, err := joiner.Join(ts.URL, 0, created.NetworkID, created.PairingCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := joiner.CancelPending(joined.PendingID); err != nil {
+		t.Fatal(err)
+	}
+	if len(joiner.cfg.PendingJoins) != 0 {
+		t.Fatalf("cancel did not clear pending: %+v", joiner.cfg.PendingJoins)
+	}
+	if err := joiner.CancelPending(joined.PendingID); err == nil {
+		t.Fatal("cancel of missing pending should fail")
+	}
+}
+
+// TestSubnetChangeDetected verifies the poll loop rebuilds the tunnel when
+// the owner re-allocates the network subnet (self IP change).
+func TestSubnetChangeDetected(t *testing.T) {
+	ts := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer ts.Close()
+	owner, _ := newTestDaemon(t)
+	created, err := owner.Create(ts.URL, 0, "home", "10.88.0.0/24", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joiner, _ := newTestDaemon(t)
+	joined, err := joiner.Join(ts.URL, 0, created.NetworkID, created.PairingCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.IP != "10.88.0.2" {
+		t.Fatalf("joiner IP = %s", joined.IP)
+	}
+	// The poll loop only runs when the tunnel could be created; without a TUN
+	// device there is nothing to rebuild, so skip.
+	joiner.mu.Lock()
+	probe, tErr := NewTunnel(joiner.cfg.PrivateKey, "10.0.0.2", 51830, 1420)
+	joiner.mu.Unlock()
+	if tErr == nil && probe != nil {
+		probe.Close()
+	} else {
+		t.Skip("no TUN device available in this environment")
+	}
+
+	// owner changes subnet; the joiner's poll loop should detect the new self
+	// IP and re-attach (bringUp). We verify the stored IP + subnet converge.
+	if err := owner.UpdateSettings(created.NetworkID, "", "192.168.60.0/24", nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		joiner.mu.Lock()
+		nc := joiner.cfg.Networks[created.NetworkID]
+		joiner.mu.Unlock()
+		if nc != nil && strings.HasPrefix(nc.IP, "192.168.60.") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("joiner never picked up new subnet: ip=%s subnet=%s", nc.IP, nc.Subnet)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	joiner.mu.Lock()
+	nc := joiner.cfg.Networks[created.NetworkID]
+	joiner.mu.Unlock()
+	if nc.Subnet != "192.168.60.0/24" {
+		t.Fatalf("subnet not updated: %s", nc.Subnet)
+	}
+}
+
+// TestNetworkNameSyncedFromServer verifies the poll loop picks up a name set
+// on the server (e.g. renamed by the owner) even when the joiner joined with
+// an empty name, so client and server display stay consistent.
+func TestNetworkNameSyncedFromServer(t *testing.T) {
+	ts := httptest.NewServer(server.NewHandler(server.NewStore(), server.Options{}))
+	defer ts.Close()
+	owner, _ := newTestDaemon(t)
+	created, err := owner.Create(ts.URL, 0, "", "10.88.0.0/24", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joiner, _ := newTestDaemon(t)
+	joined, err := joiner.Join(ts.URL, 0, created.NetworkID, created.PairingCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.IP == "" {
+		t.Fatalf("joiner joined without IP")
+	}
+	if got := joiner.cfg.Networks[created.NetworkID].Name; got != "" {
+		t.Fatalf("joiner initial name = %q, want empty", got)
+	}
+	// The poll loop only runs when the tunnel could be created.
+	joiner.mu.Lock()
+	probe, tErr := NewTunnel(joiner.cfg.PrivateKey, "10.0.0.2", 51830, 1420)
+	joiner.mu.Unlock()
+	if tErr == nil && probe != nil {
+		probe.Close()
+	} else {
+		t.Skip("no TUN device available in this environment")
+	}
+
+	// owner renames the network on the server; the joiner's poll loop should
+	// adopt the new name.
+	if err := owner.UpdateSettings(created.NetworkID, "office-renamed", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		joiner.mu.Lock()
+		nc := joiner.cfg.Networks[created.NetworkID]
+		joiner.mu.Unlock()
+		if nc != nil && nc.Name == "office-renamed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("joiner never picked up renamed network: name=%q", nc.Name)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+}

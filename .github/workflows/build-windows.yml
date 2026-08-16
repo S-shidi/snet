@@ -1,0 +1,57 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build daemon (windows/amd64)
+        shell: bash
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o build/windows-amd64/vnetd.exe ./cmd/client/vnetd
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o build/windows-amd64/vnetctl.exe ./cmd/client/vnetctl
+          ls -la build/windows-amd64
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install frontend deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build installer (NSIS)
+        working-directory: desktop
+        shell: bash
+        run: npm run tauri build -- --bundles nsis
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: snet-windows-nsis
+          path: desktop/src-tauri/target/release/bundle/nsis/*
+          if-no-files-found: error
