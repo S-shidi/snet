@@ -7,16 +7,25 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/windows/svc"
 
 	"virtualnet/internal/client"
 )
 
+// serviceLogPath is where the service-mode daemon writes its log. The SCM
+// discards a service's stderr, so without this the reason a service failed to
+// start would be completely invisible.
+const serviceLogPath = `C:\ProgramData\SNET\daemon.log`
+
 // daemonService implements svc.Handler so vnetd.exe runs as a native Windows
 // service under LocalSystem. The /ctl/shutdown endpoint stops the HTTP server,
 // which makes Execute return and reports SERVICE_STOPPED to the SCM — so the
 // crash-recovery actions (sc failure ... restart) do not fire on a clean stop.
+// A control-API bind failure instead terminates the service with a non-zero
+// exit code, so the SCM's restart policy and the event log record the fault
+// instead of leaving a phantom "running but not listening" service.
 type daemonService struct {
 	cfg          *client.Config
 	configPath   string
@@ -28,6 +37,7 @@ func (s *daemonService) Execute(args []string, req <-chan svc.ChangeRequest, sta
 	status <- svc.Status{State: svc.StartPending}
 
 	stop := make(chan struct{})
+	failed := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -46,6 +56,11 @@ func (s *daemonService) Execute(args []string, req <-chan svc.ChangeRequest, sta
 			}
 		}); err != nil && err != http.ErrServerClosed {
 			log.Printf("serve ctl: %v", err)
+			select {
+			case <-failed:
+			default:
+				close(failed)
+			}
 		}
 	}()
 
@@ -61,6 +76,9 @@ func (s *daemonService) Execute(args []string, req <-chan svc.ChangeRequest, sta
 				<-done
 				return false, 0
 			}
+		case <-failed:
+			<-done
+			return false, 1
 		case <-stop:
 			<-done
 			return false, 0
@@ -73,6 +91,9 @@ func (s *daemonService) Execute(args []string, req <-chan svc.ChangeRequest, sta
 // for debugging under an elevated console).
 func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
 	if isService, err := svc.IsWindowsService(); err == nil && isService {
+		if err := setupServiceLog(); err != nil {
+			log.Printf("service log: %v", err)
+		}
 		if err := svc.Run("vnetd", &daemonService{cfg: cfg, configPath: configPath, ctlAddr: ctlAddr, deviceIDFile: deviceIDFile}); err != nil {
 			log.Fatalf("service run: %v", err)
 		}
@@ -88,4 +109,20 @@ func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
 	if err := client.ServeCtl(d, ctlAddr, func(_ *http.Server) { os.Exit(0) }); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// setupServiceLog redirects the daemon log to a file under the shared program
+// data dir so service-mode failures (which would otherwise go to a discarded
+// stderr) are captured for diagnosis.
+func setupServiceLog() error {
+	dir := filepath.Dir(serviceLogPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(serviceLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	log.SetOutput(f)
+	return nil
 }

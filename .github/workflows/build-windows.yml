@@ -10,10 +10,10 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -26,7 +26,7 @@ jobs:
           ls -la build/windows-amd64
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -50,7 +50,7 @@ jobs:
         run: npm run tauri build -- --bundles nsis
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: snet-windows-nsis
           path: desktop/src-tauri/target/release/bundle/nsis/*
