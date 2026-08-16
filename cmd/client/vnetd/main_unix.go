@@ -14,6 +14,9 @@ import (
 // macOS) keeps it alive; /ctl/shutdown exits with code 0 so the supervisor
 // does not restart the job.
 func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
+	if os.Geteuid() != 0 {
+		log.Printf("warning: not running as root, TUN device creation will fail (tunnel networks stay in retry)")
+	}
 	d := client.NewDaemonAt(cfg, configPath)
 	d.SetDeviceIDFile(deviceIDFile)
 	if err := d.Start(); err != nil {

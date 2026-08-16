@@ -24,6 +24,28 @@ fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// A daemon is healthy only when its control API responds AND every joined
+/// network has no bring-up error. A daemon that answers ctl but reports an
+/// active-looking network without a tunnel (e.g. started without root so the
+/// utun device could not be created) is broken and must be reinstalled.
+fn daemon_healthy() -> bool {
+    match super::super::ctl("GET", "/ctl/status", None) {
+        Ok(st) => st
+            .get("networks")
+            .and_then(|n| n.as_array())
+            .map(|nets| {
+                nets.iter().all(|n| {
+                    n.get("error")
+                        .and_then(|e| e.as_str())
+                        .map(|s| s.is_empty())
+                        .unwrap_or(true)
+                })
+            })
+            .unwrap_or(true),
+        Err(_) => false,
+    }
+}
+
 fn plist(label: &str, prog: &[&str], log: &str) -> String {
     let mut args = String::new();
     for a in prog {
@@ -88,6 +110,6 @@ pub fn ensure_daemon() -> Result<(), String> {
             &[DAEMON_PATH, "-config", DAEMON_CONFIG],
             "/var/log/vnetd.log",
         ),
-        &super::super::daemon_reachable,
+        &daemon_healthy,
     )
 }

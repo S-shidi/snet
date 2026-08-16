@@ -54,6 +54,81 @@ func TestConfigMigrationFromV1(t *testing.T) {
 	}
 }
 
+// TestNetworkErrorSurfacedInStatus verifies a tunnel bring-up failure is
+// recorded and surfaced by the status API, and cleared when the network is
+// left, so the UI never shows a network as healthy-but-dead.
+func TestNetworkErrorSurfacedInStatus(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	d.mu.Lock()
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"n1": {NodeID: "n1", IP: "10.0.0.1", Token: "t", Subnet: "10.0.0.0/24", Active: true},
+	}
+	d.netErrs["n1"] = "create tun: operation not permitted"
+	d.mu.Unlock()
+
+	st, err := d.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nets, _ := st["networks"].([]map[string]any)
+	if len(nets) != 1 {
+		t.Fatalf("networks = %v", nets)
+	}
+	if nets[0]["active"] != true {
+		t.Fatalf("active should stay true (intent kept): %v", nets[0])
+	}
+	if nets[0]["interface"] != "" {
+		t.Fatalf("interface should be empty: %v", nets[0])
+	}
+	if !strings.Contains(nets[0]["error"].(string), "operation not permitted") {
+		t.Fatalf("error not surfaced: %v", nets[0])
+	}
+
+	// leaving the network clears the recorded error
+	d.mu.Lock()
+	d.leaveLocked("n1")
+	d.mu.Unlock()
+	if _, ok := d.netErrs["n1"]; ok {
+		t.Fatal("netErrs not cleared on leave")
+	}
+	st, _ = d.Status()
+	nets, _ = st["networks"].([]map[string]any)
+	if nets[0]["error"] != "" {
+		t.Fatalf("error should be cleared after leave: %v", nets[0])
+	}
+}
+
+// TestRetryScheduling verifies a failed bring-up schedules a background retry
+// that is cancelled when the daemon closes.
+func TestRetryScheduling(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	d.mu.Lock()
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"n1": {NodeID: "n1", IP: "10.0.0.1", Token: "t", Subnet: "10.0.0.0/24", Active: true},
+	}
+	d.scheduleRetryLocked("n1")
+	d.mu.Unlock()
+
+	d.mu.Lock()
+	if _, ok := d.retryPending["n1"]; !ok {
+		t.Fatal("n1 not scheduled")
+	}
+	if d.retryStop == nil {
+		t.Fatal("retry loop not started")
+	}
+	d.mu.Unlock()
+
+	d.Close()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.retryPending) != 0 {
+		t.Fatalf("retry pending not cleared on close: %v", d.retryPending)
+	}
+	if d.retryStop != nil {
+		t.Fatal("retry loop not stopped on close")
+	}
+}
+
 func TestConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	c := &Config{

@@ -14,6 +14,11 @@ import (
 	"virtualnet/internal/protocol"
 )
 
+// retryInterval is how often the daemon re-attempts tunnel creation for a
+// network whose initial bring-up failed (e.g. insufficient privileges to
+// create a TUN device) until it comes up or is left/removed.
+const retryInterval = 30 * time.Second
+
 // netRuntime holds the live tunnel + control loops for one joined network.
 type netRuntime struct {
 	tun  *Tunnel
@@ -45,6 +50,15 @@ type Daemon struct {
 	// bindCheckStop stops the periodic binding-verification goroutine that
 	// detects an admin revocation of this device on its bound server.
 	bindCheckStop chan struct{}
+	// netErrs records the last tunnel bring-up failure per network so the
+	// status API can explain why an active-looking network has no tunnel.
+	netErrs map[string]string
+	// retryPending tracks networks whose tunnel creation failed; a background
+	// loop retries them so transient failures (or a late privilege fix, e.g.
+	// installing the root LaunchDaemon) self-heal without a daemon restart.
+	retryPending map[string]struct{}
+	// retryStop signals the background retry loop to exit.
+	retryStop chan struct{}
 }
 
 func NewDaemon(cfg *Config) *Daemon {
@@ -57,6 +71,8 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		configPath:   configPath,
 		nets:         make(map[string]*netRuntime),
 		pendingRuns:  make(map[string]chan struct{}),
+		netErrs:      make(map[string]string),
+		retryPending: make(map[string]struct{}),
 		deviceIDFile: DefaultDeviceIDFile,
 	}
 }
@@ -165,6 +181,12 @@ func (d *Daemon) commitSwitchLocked(sw serverSwitch) {
 	for pid, stop := range d.pendingRuns {
 		close(stop)
 		delete(d.pendingRuns, pid)
+	}
+	d.netErrs = make(map[string]string)
+	d.retryPending = make(map[string]struct{})
+	if d.retryStop != nil {
+		close(d.retryStop)
+		d.retryStop = nil
 	}
 	d.cfg.Networks = nil
 	d.cfg.PendingJoins = nil
@@ -619,8 +641,11 @@ func (d *Daemon) bringUp(nid string) error {
 	}
 	t, err := NewTunnel(d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU)
 	if err != nil {
+		d.netErrs[nid] = err.Error()
+		d.scheduleRetryLocked(nid)
 		return fmt.Errorf("tunnel: %w", err)
 	}
+	delete(d.netErrs, nid)
 	rt := &netRuntime{tun: t, stop: make(chan struct{})}
 	d.nets[nid] = rt
 
@@ -635,6 +660,54 @@ func (d *Daemon) bringUp(nid string) error {
 	go d.pollLoop(nid)
 	go d.probeLoop(nid)
 	return nil
+}
+
+// scheduleRetryLocked marks a network for background re-bring-up after its
+// tunnel failed to come up, starting the retry loop if it is not running.
+func (d *Daemon) scheduleRetryLocked(nid string) {
+	if d.retryPending == nil {
+		d.retryPending = make(map[string]struct{})
+	}
+	d.retryPending[nid] = struct{}{}
+	if d.retryStop == nil {
+		stop := make(chan struct{})
+		d.retryStop = stop
+		go d.retryLoop(stop)
+	}
+}
+
+// retryLoop re-attempts tunnel creation for failed networks until they come up
+// or are left/removed; it stops itself once nothing remains to retry.
+func (d *Daemon) retryLoop(stop chan struct{}) {
+	ticker := time.NewTicker(retryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+		case <-stop:
+			return
+		}
+		d.mu.Lock()
+		for nid := range d.retryPending {
+			nc := d.cfg.Networks[nid]
+			if nc == nil || !nc.Active || d.nets[nid] != nil {
+				delete(d.retryPending, nid)
+				continue
+			}
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("retry bring up %s: %v", nid, err)
+			} else {
+				delete(d.retryPending, nid)
+			}
+		}
+		if len(d.retryPending) == 0 {
+			close(d.retryStop)
+			d.retryStop = nil
+			d.mu.Unlock()
+			return
+		}
+		d.mu.Unlock()
+	}
 }
 
 // pickPortLocked finds a free UDP port, preferring the configured base.
@@ -876,6 +949,8 @@ func (d *Daemon) leaveLocked(nid string) {
 	if nc := d.cfg.Networks[nid]; nc != nil {
 		nc.Active = false
 	}
+	delete(d.netErrs, nid)
+	delete(d.retryPending, nid)
 }
 
 // Rejoin brings a left network's tunnel back up.
@@ -1072,6 +1147,12 @@ func (d *Daemon) Close() {
 		close(d.bindCheckStop)
 		d.bindCheckStop = nil
 	}
+	if d.retryStop != nil {
+		close(d.retryStop)
+		d.retryStop = nil
+	}
+	d.netErrs = make(map[string]string)
+	d.retryPending = make(map[string]struct{})
 	for nid := range d.nets {
 		d.leaveLocked(nid)
 	}
@@ -1103,6 +1184,11 @@ func (d *Daemon) Status() (map[string]any, error) {
 				if stats, err := rt.tun.Stats(); err == nil {
 					entry["peerStats"] = stats
 				}
+			}
+		}
+		if entry["error"] == "" {
+			if e, ok := d.netErrs[nid]; ok {
+				entry["error"] = e
 			}
 		}
 		nets = append(nets, entry)

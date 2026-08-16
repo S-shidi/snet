@@ -45,6 +45,9 @@ pub(crate) fn ctl(method: &str, path: &str, body: Option<Value>) -> Result<Value
     }
 }
 
+// Used by the Linux and Windows service backends; the macOS backend uses the
+// stricter daemon_healthy (which also rejects active-but-broken networks).
+#[allow(dead_code)]
 pub(crate) fn daemon_reachable() -> bool {
     ctl("GET", "/ctl/status", None).is_ok()
 }
