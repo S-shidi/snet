@@ -9,5 +9,5 @@ desktop/src-tauri/gen/
 desktop/dist/
 
 # Stray local binaries / junk
-server
+/server
 .DS_Store

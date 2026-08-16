@@ -146,13 +146,15 @@ type authCodeBinding struct {
 }
 
 // authCodeRecord is a device authorization code. The database key is the
-// non-secret public ID (used for admin revocation); the plaintext code is
-// never stored, only its hash and a masked tail for display. A single code
-// may bind up to MaxBindings devices; MaxBindings is fixed at generation
-// time. The legacy flat DeviceID/PublicKey/BoundAt fields exist only to
-// migrate records persisted before multi-device codes were introduced.
+// non-secret public ID (used for admin revocation); CodePlain holds the
+// plaintext so the admin console can always display it, and CodeHash is kept
+// for bind verification. A single code may bind up to MaxBindings devices;
+// MaxBindings is fixed at generation time. The legacy flat
+// DeviceID/PublicKey/BoundAt fields exist only to migrate records persisted
+// before multi-device codes were introduced.
 type authCodeRecord struct {
 	ID          string    `json:"id"`
+	CodePlain   string    `json:"codePlain,omitempty"`
 	CodeHash    string    `json:"codeHash"`
 	Hint        string    `json:"hint"`
 	CreatedAt   time.Time `json:"createdAt"`
@@ -2174,8 +2176,9 @@ func maskCode(code string) string {
 }
 
 // AdminGenerateAuthCodes creates count fresh authorization codes, each able to
-// bind up to maxBindings devices, and returns their plaintext (shown exactly
-// once to the operator) plus the public IDs used for later revocation.
+// bind up to maxBindings devices, and returns their plaintext plus the public
+// IDs used for later revocation. Plaintext is also persisted so the admin
+// console can display codes at any time.
 func (s *Store) AdminGenerateAuthCodes(count, maxBindings int) ([]string, []string, error) {
 	if count < 1 {
 		count = 1
@@ -2207,6 +2210,7 @@ func (s *Store) AdminGenerateAuthCodes(count, maxBindings int) ([]string, []stri
 		}
 		ac := &authCodeRecord{
 			ID:          id,
+			CodePlain:   protocol.NormalizeCode(code),
 			CodeHash:    hashCode(code),
 			Hint:        maskCode(code),
 			CreatedAt:   time.Now().UTC(),
@@ -2222,16 +2226,21 @@ func (s *Store) AdminGenerateAuthCodes(count, maxBindings int) ([]string, []stri
 	return codes, ids, nil
 }
 
-// AdminAuthCodes lists all authorization codes with their masked tail, binding
+// AdminAuthCodes lists all authorization codes with their plaintext (masked
+// hint only for legacy records whose plaintext was never stored), binding
 // capacity and bound devices, newest first.
 func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]protocol.AuthCodeInfo, 0, len(s.authCodes))
 	for _, ac := range s.authCodes {
+		code := ac.CodePlain
+		if code == "" {
+			code = ac.Hint // legacy record: plaintext was never stored
+		}
 		info := protocol.AuthCodeInfo{
 			ID:          ac.ID,
-			Code:        ac.Hint,
+			Code:        code,
 			CreatedAt:   ac.CreatedAt.UTC().Format(time.RFC3339),
 			MaxBindings: ac.MaxBindings,
 			BoundCount:  len(ac.Bindings),

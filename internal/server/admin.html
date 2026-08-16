@@ -413,7 +413,7 @@
   <section id="view-code" class="view" role="tabpanel" hidden>
     <div class="card">
       <div class="card-head"><h3>设备授权码</h3></div>
-      <p class="hint mt0">用于客户端「自定义服务器」模式的设备绑定。服务端开启强制校验（-require-device-auth）后，只有绑定过授权码的设备才能创建或加入网络。一个授权码可绑定多台设备（数量在生成时设定）。明文仅在生成时显示一次，系统只保存哈希。</p>
+      <p class="hint mt0">用于客户端「自定义服务器」模式的设备绑定。服务端开启强制校验（-require-device-auth）后，只有绑定过授权码的设备才能创建或加入网络。一个授权码可绑定多台设备（数量在生成时设定）。授权码明文可在控制台随时查看。</p>
       <div class="flex wrap">
         <div class="row mb0 flex" style="align-items:center;gap:8px">
           <label for="auth-count" style="margin:0">生成数量</label>
@@ -3728,7 +3728,7 @@ async function genCodes() {
         <span class="hint code" style="font-size:11px">${esc(ids[i] || '')}</span>
       </div>`).join('');
     setModal('新生成的设备授权码', `
-      <p class="hint mt0">明文仅显示一次，系统只保存哈希，之后无法再查看。每个授权码可绑定 <b>${maxBindings}</b> 台设备。请复制并分发给各设备；无需时可按 ID 吊销。</p>
+      <p class="hint mt0">每个授权码可绑定 <b>${maxBindings}</b> 台设备。明文会保存在列表中，随时可查看复制。无需时可按 ID 吊销。</p>
       <div class="fresh-codes">${items}</div>
       <div class="modal-foot">
         <button type="button" class="btn" data-act="close-modal">完成</button>

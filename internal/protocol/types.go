@@ -237,13 +237,14 @@ type BindDeviceResp struct {
 	DeviceID string `json:"deviceId"`
 }
 
-// AuthCodeInfo is the admin-facing view of an authorization code. The full
-// plaintext code is only shown at generation time; this record carries a
-// non-secret public ID (used for revocation) and a masked tail. A single code
-// may bind up to MaxBindings devices; BoundCount reports how many are bound.
+// AuthCodeInfo is the admin-facing view of an authorization code. Code holds
+// the plaintext (a masked hint only for legacy records generated before
+// plaintext persistence); the non-secret public ID is used for revocation. A
+// single code may bind up to MaxBindings devices; BoundCount reports how many
+// are bound.
 type AuthCodeInfo struct {
 	ID            string `json:"id"`
-	Code          string `json:"code"` // masked, e.g. "****3H7K"
+	Code          string `json:"code"` // plaintext code, e.g. "7K3H2M9Q"
 	MaxBindings   int    `json:"maxBindings"`
 	BoundCount    int    `json:"boundCount"`
 	BoundToDevice string `json:"boundToDevice,omitempty"` // first bound device (backward compatible)

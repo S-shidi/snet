@@ -87,7 +87,7 @@ VNET_REQUIRE_DEVICE_AUTH=1
 
 - 开启后先在管理页「设备」页生成若干授权码，再让各客户端在桌面端「设置」里
   用授权码「链接服务器」（或 `vnetctl bind --server ... --code ...`）。
-- 授权码仅存哈希 + 末尾 4 位掩码，明文只在生成时显示一次；一码一设备；
+- 授权码明文存于服务端（bbolt），管理页列表可随时查看复制；一码可绑定多设备（生成时设定）；
   换码自动释放旧码；吊销/解绑只影响后续准入，已加入节点由管理员踢出。
 - 绑定接口 `/api/v1/devices/bind` 不套强制门槛，但按 IP 限频（20 次/分钟）。
 
@@ -129,7 +129,7 @@ iptables -A INPUT -p udp --dport 51820:51883 -j ACCEPT  # UDP 中继池
   - 列网络（含在线/僵尸状态）/ 列设备 / 查看网络成员 / 踢节点 /
     重置配对码 / 编辑网络设置（名称、网段、待批准开关）/ 审批或拒绝待加入请求 /
     删除网络
-  - 设备授权码：「设备」页批量生成（1..100）/ 查看掩码与绑定状态 / 吊销 / 解绑设备
+  - 设备授权码：「设备」页批量生成（1..100）/ 查看明文与绑定状态 / 吊销 / 解绑设备
 - 数据 API 兼容 `Authorization: Bearer <VNET_ADMIN_TOKEN>`（静态 token 双通道，不支持改密）
 
 ### 设备授权码（开启强制授权后的准入流程）
@@ -138,14 +138,14 @@ iptables -A INPUT -p udp --dport 51820:51883 -j ACCEPT  # UDP 中继池
 # 1) 管理员生成授权码（管理页「设备」页，或数据 API）
 curl -sk -X POST https://vnet.uizhi.eu.org:8090/admin/devices/authcodes/generate \
   -H "Authorization: Bearer $VNET_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"count":5}'          # 返回 codes（明文，仅此一次）与 ids（吊销用）
+  -d '{"count":5}'          # 返回 codes（明文）与 ids（吊销用）
 
 # 2) 客户端绑定（桌面端「设置」→「链接服务器」，或命令行）
 vnetctl bind --server https://vnet.uizhi.eu.org:8090 --code XXXX...   # 需 -ca-path（如适用）
 
 # 3) 运维
 curl -sk https://vnet.uizhi.eu.org:8090/admin/devices/authcodes \
-  -H "Authorization: Bearer $VNET_ADMIN_TOKEN"                        # 列表（掩码+绑定状态）
+  -H "Authorization: Bearer $VNET_ADMIN_TOKEN"                        # 列表（明文+绑定状态）
 curl -sk -X POST .../admin/devices/authcodes/revoke  -d '{"id":"..."}'     # 吊销某码（204）
 curl -sk -X POST .../admin/devices/authcodes/unbind -d '{"deviceId":"..."}' # 解绑设备（204）
 ```
