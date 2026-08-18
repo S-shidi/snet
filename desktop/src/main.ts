@@ -197,14 +197,16 @@ function subnetWidgetInit(wrap: HTMLElement): SubnetWidget {
     const s = input.value.trim();
     const slash = s.indexOf("/");
     const base = slash >= 0 ? s.slice(0, slash) : s;
-    if (base) input.value = `${base}/${sel.value}`;
+    if (base) input.value = base;
     render();
   });
 
   wrap.querySelectorAll<HTMLButtonElement>(".subnet-chips .chip").forEach((c) => {
     c.addEventListener("click", () => {
       const v = c.dataset.subnet || "";
-      input.value = v;
+      const slash = v.indexOf("/");
+      const base = slash >= 0 ? v.slice(0, slash) : v;
+      input.value = base;
       const m = v.match(/\/(\d+)$/);
       if (m && Array.from(sel.options).some((o) => Number(o.value) === Number(m[1]))) sel.value = m[1];
       render();
@@ -217,15 +219,20 @@ function subnetWidgetInit(wrap: HTMLElement): SubnetWidget {
     // 补全不完整的 IPv4（如 10.88 → 10.88.0.0），再套用下拉前缀。
     const slashIdx = s.indexOf("/");
     const hostPart = (slashIdx >= 0 ? s.slice(0, slashIdx) : s).trim();
-    const prefixPart = slashIdx >= 0 ? s.slice(slashIdx) : "";
     if (/^\d{1,3}(\.\d{1,3}){0,2}$/.test(hostPart)) {
       const parts = hostPart.split(".");
       while (parts.length < 4) parts.push("0");
-      s = parts.join(".") + prefixPart;
+      s = parts.join(".");
+    } else {
+      s = hostPart;
     }
     input.value = s;
     const chk = subnetCheck(s, Number(sel.value));
-    if (chk.ok && chk.value) input.value = chk.value;
+    if (chk.ok) {
+      const v = chk.value;
+      const normalizedBase = v.indexOf("/") >= 0 ? v.slice(0, v.indexOf("/")) : v;
+      if (normalizedBase) input.value = normalizedBase;
+    }
     render();
   });
 
@@ -1023,11 +1030,11 @@ function openCreateModal() {
   openModal({
     title: "创建网络",
     body: `${hint}
-      <div class="row"><label>网络名称</label><input id="m-name" placeholder="例如：家庭网络" /></div>
+      <div class="row"><label>网络名称</label><input id="m-name" type="text" placeholder="例如：家庭网络" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "m-subnet", placeholder: "留空自动分配（如 10.88.0.0/24）", emptyHint: "留空自动分配，通常为 10.88.N.0/24" })}</div>
       ${serverHint}
       <div class="row"><label>WireGuard 端口</label><input id="m-port" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
-      <div class="row"><label>CA 证书路径</label><input id="m-ca" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
+      <div class="row"><label>CA 证书路径</label><input id="m-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
       <p class="msg" id="m-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn" ${hasOwner || !srv ? "disabled" : ""}>创建</button>`,
     onBody: (body) => {
@@ -1113,11 +1120,11 @@ function openJoinModal() {
     title: "加入网络",
     body: `<div class="row"><label>邀请链接</label><input id="m-link" placeholder="snet://join?nid=...&code=..." /></div>
       <p class="hint" style="text-align:center">或手动输入</p>
-      <div class="row"><label>网络ID</label><input id="m-nid" placeholder="6 位网络ID" /></div>
-      <div class="row"><label>配对码</label><input id="m-code" placeholder="12 位配对码" /></div>
+      <div class="row"><label>网络ID</label><input id="m-nid" type="text" placeholder="6 位网络ID" /></div>
+      <div class="row"><label>配对码</label><input id="m-code" type="text" placeholder="12 位配对码" /></div>
       ${serverHint}
       <div class="row"><label>WireGuard 端口</label><input id="m-port" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
-      <div class="row"><label>CA 证书路径</label><input id="m-ca" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
+      <div class="row"><label>CA 证书路径</label><input id="m-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
       <div id="m-bind-auth" hidden></div>
       <p class="msg" id="m-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">加入</button>`,

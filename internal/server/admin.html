@@ -2942,13 +2942,15 @@ function subnetWidgetInit(wrap) {
     const s = input.value.trim();
     const slash = s.indexOf('/');
     const base = slash >= 0 ? s.slice(0, slash) : s;
-    if (base) input.value = base + '/' + sel.value;
+    if (base) input.value = base;
     render();
   });
   wrap.querySelectorAll('.subnet-chips .chip').forEach(c => {
     c.addEventListener('click', () => {
       const v = c.dataset.subnet || '';
-      input.value = v;
+      const slash = v.indexOf('/');
+      const base = slash >= 0 ? v.slice(0, slash) : v;
+      input.value = base;
       const m = v.match(/\/(\d+)$/);
       if (m && [...sel.options].some(o => Number(o.value) === Number(m[1]))) sel.value = m[1];
       render();
@@ -2960,15 +2962,20 @@ function subnetWidgetInit(wrap) {
     // 补全不完整的 IPv4（如 10.88 → 10.88.0.0），再套用下拉前缀。
     const slashIdx = s.indexOf('/');
     const hostPart = (slashIdx >= 0 ? s.slice(0, slashIdx) : s).trim();
-    const prefixPart = slashIdx >= 0 ? s.slice(slashIdx) : '';
     if (/^\d{1,3}(\.\d{1,3}){0,2}$/.test(hostPart)) {
       const parts = hostPart.split('.');
       while (parts.length < 4) parts.push('0');
-      s = parts.join('.') + prefixPart;
+      s = parts.join('.');
+    } else {
+      s = hostPart;
     }
     input.value = s;
     const chk = subnetCheck(s, Number(sel.value));
-    if (chk.ok && chk.value) input.value = chk.value;
+    if (chk.ok) {
+      const v = chk.value;
+      const normalizedBase = v.indexOf('/') >= 0 ? v.slice(0, v.indexOf('/')) : v;
+      if (normalizedBase) input.value = normalizedBase;
+    }
     render();
   });
   render();
