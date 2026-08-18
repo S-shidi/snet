@@ -4,7 +4,7 @@ import (
 	"flag"
 	"log"
 
-	"virtualnet/internal/client"
+	"snet/internal/client"
 )
 
 func main() {

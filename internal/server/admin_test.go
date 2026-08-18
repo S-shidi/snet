@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 func TestHealthz(t *testing.T) {
@@ -443,7 +443,7 @@ func TestAdminPasswordChange(t *testing.T) {
 
 func TestAdminPasswordPersist(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "vnet.db")
+	dbPath := filepath.Join(dir, "snet.db")
 
 	s, err := NewStoreAt(dbPath)
 	if err != nil {

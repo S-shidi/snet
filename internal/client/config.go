@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 // defaultSubnet is assumed when a legacy coordination server does not report

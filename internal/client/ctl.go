@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 // CtlReq is the request body for create/join control endpoints.
@@ -25,7 +25,7 @@ type CtlReq struct {
 	PendingID        string `json:"pendingId"`
 }
 
-// ServeCtl exposes the local control API for vnetctl and the Tauri UI.
+// ServeCtl exposes the local control API for snetctl and the Tauri UI.
 // onShutdown is invoked (with the running server) shortly after the
 // /ctl/shutdown handler has flushed its response; the caller decides how to
 // terminate: a foreground daemon exits the process, while a Windows service

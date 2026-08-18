@@ -3,11 +3,11 @@
 # Requires root (creates utun interfaces). Run: sudo scripts/e2e.sh
 # Note: ctl ports are 29432+ and server/probe ports 8099+ to avoid colliding
 # with a local production deployment (server :8090/:8091 probe, daemon ctl
-# 19432, shared /usr/local/vnet/device.id) that may run on the same machine.
+# 19432, shared /usr/local/snet/device.id) that may run on the same machine.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD=/tmp/vnet-build
-TEST=/tmp/vnet-e2e
+BUILD=/tmp/snet-build
+TEST=/tmp/snet-e2e
 CTLA=29432
 CTLB=29433
 CTLC=29434
@@ -15,15 +15,15 @@ SRV_PORT=8099
 mkdir -p "$BUILD" "$TEST"
 
 echo "== verifying prebuilt binaries =="
-for bin in server vnetd vnetctl; do
+for bin in server snetd snetctl; do
     if [ ! -x "$BUILD/$bin" ]; then
         echo "missing $BUILD/$bin — run 'go build -o $BUILD/... ' first (as normal user)"
         exit 2
     fi
 done
 
-pkill -f "vnet-build/vnetd" 2>/dev/null || true
-pkill -f "vnet-build/server" 2>/dev/null || true
+pkill -f "snet-build/snetd" 2>/dev/null || true
+pkill -f "snet-build/server" 2>/dev/null || true
 sleep 0.5
 # Clear stale daemon state from any previous run so enrollment/gate
 # assertions start from a clean, unbound device.
@@ -32,15 +32,15 @@ rm -f "$TEST/a.json" "$TEST/b.json" "$TEST/c.json" "$TEST/c-gate.err" \
 
 "$BUILD/server" -addr "127.0.0.1:$SRV_PORT" -probe-addr "127.0.0.1:8101" >"$TEST/server.log" 2>&1 &
 SRV=$!
-"$BUILD/vnetd" -ctl "127.0.0.1:$CTLA" -config "$TEST/a.json" -device-id-file "$TEST/device-a.id" >"$TEST/a.log" 2>&1 &
+"$BUILD/snetd" -ctl "127.0.0.1:$CTLA" -config "$TEST/a.json" -device-id-file "$TEST/device-a.id" >"$TEST/a.log" 2>&1 &
 DA=$!
-"$BUILD/vnetd" -ctl "127.0.0.1:$CTLB" -config "$TEST/b.json" -device-id-file "$TEST/device-b.id" >"$TEST/b.log" 2>&1 &
+"$BUILD/snetd" -ctl "127.0.0.1:$CTLB" -config "$TEST/b.json" -device-id-file "$TEST/device-b.id" >"$TEST/b.log" 2>&1 &
 DB=$!
 
 wait_ready() {
     local addr="$1" name="$2"
     for i in $(seq 1 30); do
-        if "$BUILD/vnetctl" --ctl "$addr" status >/dev/null 2>&1; then
+        if "$BUILD/snetctl" --ctl "$addr" status >/dev/null 2>&1; then
             echo "$name ready"
             return 0
         fi
@@ -54,24 +54,24 @@ wait_ready "http://127.0.0.1:$CTLA" "daemon-A"
 wait_ready "http://127.0.0.1:$CTLB" "daemon-B"
 
 echo "== create (daemon A) =="
-CREATE="$("$BUILD/vnetctl" --ctl "http://127.0.0.1:$CTLA" create --server "http://127.0.0.1:$SRV_PORT" --port 51820)"
+CREATE="$("$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLA" create --server "http://127.0.0.1:$SRV_PORT" --port 51820)"
 echo "$CREATE"
 NID="$(echo "$CREATE" | "$ROOT/scripts/jsonfield.py" networkId)"
 CODE="$(echo "$CREATE" | "$ROOT/scripts/jsonfield.py" pairingCode)"
-LINK="vnet://join?nid=$NID&code=$CODE"
+LINK="snet://join?nid=$NID&code=$CODE"
 echo "link: $LINK"
 
 echo "== join (daemon B) =="
-"$BUILD/vnetctl" --ctl "http://127.0.0.1:$CTLB" join --server "http://127.0.0.1:$SRV_PORT" --port 51821 --link "$LINK"
+"$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLB" join --server "http://127.0.0.1:$SRV_PORT" --port 51821 --link "$LINK"
 
 echo "== waiting for handshake (12s) =="
 sleep 12
 
 echo "== status A =="
-STAT_A="$("$BUILD/vnetctl" --ctl "http://127.0.0.1:$CTLA" status)"
+STAT_A="$("$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLA" status)"
 echo "$STAT_A"
 echo "== status B =="
-STAT_B="$("$BUILD/vnetctl" --ctl "http://127.0.0.1:$CTLB" status)"
+STAT_B="$("$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLB" status)"
 echo "$STAT_B"
 
 STAT_A="$(echo "$STAT_A" | "$ROOT/scripts/peerstats.py")"
@@ -99,12 +99,12 @@ SRV2_PORT=8102
 "$BUILD/server" -addr "127.0.0.1:$SRV2_PORT" -probe-addr "127.0.0.1:8103" \
     -admin-token e2e-token -require-device-auth >"$TEST/server2.log" 2>&1 &
 SRV2=$!
-"$BUILD/vnetd" -ctl "127.0.0.1:$CTLC" -config "$TEST/c.json" -device-id-file "$TEST/device-c.id" >"$TEST/c.log" 2>&1 &
+"$BUILD/snetd" -ctl "127.0.0.1:$CTLC" -config "$TEST/c.json" -device-id-file "$TEST/device-c.id" >"$TEST/c.log" 2>&1 &
 DC=$!
 wait_ready "http://127.0.0.1:$CTLC" "daemon-C"
 
 # unbound create must be refused with the enrollment hint
-if "$BUILD/vnetctl" --ctl "http://127.0.0.1:$CTLC" create --server "http://127.0.0.1:$SRV2_PORT" --port 51822 \
+if "$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLC" create --server "http://127.0.0.1:$SRV2_PORT" --port 51822 \
     >/dev/null 2>"$TEST/c-gate.err"; then
     echo "FAIL: unbound create should be refused"
     exit 1
@@ -119,11 +119,11 @@ AUTHCODE="$(echo "$AUTH" | python3 -c 'import json,sys;print(json.load(sys.stdin
 [ -n "$AUTHCODE" ] || { echo "FAIL: no auth code generated"; exit 1; }
 
 # bind daemon C, then create must succeed; status reports bound
-"$BUILD/vnetctl" --ctl "http://127.0.0.1:$CTLC" bind --server "http://127.0.0.1:$SRV2_PORT" --code "$AUTHCODE"
-CREATEC="$("$BUILD/vnetctl" --ctl "http://127.0.0.1:$CTLC" create --server "http://127.0.0.1:$SRV2_PORT" --port 51822)"
+"$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLC" bind --server "http://127.0.0.1:$SRV2_PORT" --code "$AUTHCODE"
+CREATEC="$("$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLC" create --server "http://127.0.0.1:$SRV2_PORT" --port 51822)"
 NIDC="$(echo "$CREATEC" | "$ROOT/scripts/jsonfield.py" networkId)"
 [ -n "$NIDC" ] || { echo "FAIL: create after bind"; exit 1; }
-"$BUILD/vnetctl" --ctl "http://127.0.0.1:$CTLC" status | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d.get("bound") is True, d' \
+"$BUILD/snetctl" --ctl "http://127.0.0.1:$CTLC" status | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d.get("bound") is True, d' \
     || { echo "FAIL: status does not report bound"; exit 1; }
 echo "auth: bind + create OK (network $NIDC)"
 

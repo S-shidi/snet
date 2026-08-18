@@ -1,4 +1,4 @@
-//! Windows: vnetd runs as a native service under LocalSystem via sc.exe.
+//! Windows: snetd runs as a native service under LocalSystem via sc.exe.
 //!
 //! The daemon is a real SCM service (svc.Run): a clean /ctl/shutdown reports
 //! SERVICE_STOPPED so the crash-recovery actions below do not restart it,
@@ -6,8 +6,8 @@
 
 use std::process::Command;
 
-const DAEMON_PATH: &str = r"C:\Program Files\SNET\vnetd.exe";
-const DAEMON_SERVICE: &str = "vnetd";
+const DAEMON_PATH: &str = r"C:\Program Files\SNET\snetd.exe";
+const DAEMON_SERVICE: &str = "snetd";
 const DAEMON_CONFIG: &str = r"C:\ProgramData\SNET\daemon.json";
 const DEVICE_ID_FILE: &str = r"C:\ProgramData\SNET\device.id";
 const FIREWALL_RULE: &str = "SNET WireGuard";
@@ -34,7 +34,7 @@ fn run_admin(ps_script: &str) -> Result<(), String> {
     }
 }
 
-/// Ensure the vnetd service is installed and running. When unhealthy, the
+/// Ensure the snetd service is installed and running. When unhealthy, the
 /// service is recreated (stop/delete/create), the crash-recovery policy and
 /// the inbound UDP firewall rule are (re)applied, then the service is started.
 pub fn ensure_daemon() -> Result<(), String> {
@@ -50,7 +50,7 @@ New-Item -ItemType Directory -Force -Path 'C:\ProgramData\SNET' | Out-Null
 Stop-Service -Name {svc} -ErrorAction SilentlyContinue
 & sc.exe delete {svc} 2>$null | Out-Null
 $binPath = '"' + $daemon + '" -config "' + $config + '" -device-id-file "' + $deviceId + '"'
-New-Service -Name {svc} -BinaryPathName $binPath -StartupType Automatic -DisplayName 'SNET vnetd' | Out-Null
+New-Service -Name {svc} -BinaryPathName $binPath -StartupType Automatic -DisplayName 'SNET snetd' | Out-Null
 & sc.exe failure {svc} reset= 0 actions= restart/5000/restart/10000/restart/30000 | Out-Null
 Remove-NetFirewallRule -Name '{rule}' -ErrorAction SilentlyContinue
 New-NetFirewallRule -Name '{rule}' -DisplayName '{rule}' -Direction Inbound -Action Allow -Program $daemon | Out-Null
@@ -66,5 +66,5 @@ Start-Service -Name {svc}
     if super::super::wait_healthy(&super::super::daemon_reachable, 30) {
         return Ok(());
     }
-    Err("vnetd 服务安装后启动超时，请在事件查看器中查看服务日志".to_string())
+    Err("snetd 服务安装后启动超时，请在事件查看器中查看服务日志".to_string())
 }

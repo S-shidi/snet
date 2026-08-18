@@ -1,4 +1,4 @@
-mod vnet;
+mod snet;
 
 use std::thread;
 use std::time::Duration;
@@ -8,7 +8,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WindowEvent,
 };
-use vnet::*;
+use snet::*;
 
 const TRAY_OPEN: &str = "open";
 const TRAY_DAEMON: &str = "daemon_state";
@@ -92,13 +92,13 @@ fn tray_status() -> (String, String, String) {
             (
                 "后台服务: 运行中".into(),
                 format!("网络在线: {count} 个"),
-                format!("vnet · 后台服务运行中 · {count} 个网络在线"),
+                format!("Snet · 后台服务运行中 · {count} 个网络在线"),
             )
         }
         Err(_) => (
             "后台服务: 未运行".into(),
             "网络在线: -".into(),
-            "vnet · 后台服务未运行".into(),
+            "Snet · 后台服务未运行".into(),
         ),
     }
 }
@@ -184,12 +184,12 @@ pub fn run() {
             // 菜单栏：隐藏/退出/关闭窗口/最小化，附带编辑菜单保证剪贴板快捷键可用
             let app_menu = Submenu::with_items(
                 app,
-                "vnet",
+                "Snet",
                 true,
                 &[
-                    &MenuItem::with_id(app, MENU_HIDE, "隐藏 vnet", true, Some(accel("Cmd+H", "Ctrl+H")))?,
+                    &MenuItem::with_id(app, MENU_HIDE, "隐藏 Snet", true, Some(accel("Cmd+H", "Ctrl+H")))?,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, MENU_QUIT, "退出 vnet", true, Some(accel("Cmd+Q", "Ctrl+Q")))?,
+                    &MenuItem::with_id(app, MENU_QUIT, "退出 Snet", true, Some(accel("Cmd+Q", "Ctrl+Q")))?,
                 ],
             )?;
             let edit_menu = Submenu::with_items(

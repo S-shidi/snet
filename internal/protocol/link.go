@@ -11,18 +11,18 @@ func NormalizeCode(code string) string {
 	return strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(code), "-", ""), " ", ""))
 }
 
-// BuildLink returns a vnet:// link carrying the network id, pairing code and,
+// BuildLink returns a snet:// link carrying the network id, pairing code and,
 // when server is non-empty, the coordination server address the invite belongs
 // to. A server-less link is still valid: the joiner targets its bound server.
 func BuildLink(nid, code, server string) string {
-	link := "vnet://join?nid=" + url.QueryEscape(nid) + "&code=" + url.QueryEscape(NormalizeCode(code))
+	link := "snet://join?nid=" + url.QueryEscape(nid) + "&code=" + url.QueryEscape(NormalizeCode(code))
 	if server != "" {
 		link += "&server=" + url.QueryEscape(server)
 	}
 	return link
 }
 
-// ParseLink extracts nid, code and an optional server from a vnet:// link, an
+// ParseLink extracts nid, code and an optional server from a snet:// link, an
 // http(s) join URL, or a bare "nid:code" string. server is empty for links
 // that predate the server parameter or that omit it.
 func ParseLink(s string) (nid, code, server string, err error) {
@@ -30,7 +30,7 @@ func ParseLink(s string) (nid, code, server string, err error) {
 	if s == "" {
 		return "", "", "", fmt.Errorf("empty input")
 	}
-	if u, e := url.Parse(s); e == nil && (u.Scheme == "vnet" || u.Scheme == "http" || u.Scheme == "https") {
+	if u, e := url.Parse(s); e == nil && (u.Scheme == "snet" || u.Scheme == "http" || u.Scheme == "https") {
 		q := u.Query()
 		nid = q.Get("nid")
 		code = NormalizeCode(q.Get("code"))

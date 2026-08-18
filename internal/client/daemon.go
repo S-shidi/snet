@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 // retryInterval is how often the daemon re-attempts tunnel creation for a
@@ -1105,7 +1105,7 @@ func (d *Daemon) Peers(nid string) (protocol.PeersResp, error) {
 }
 
 // SetDeviceID replaces this machine's device identity (advanced; normally
-// auto-generated and persisted at /usr/local/vnet/device.id).
+// auto-generated and persisted at /usr/local/snet/device.id).
 func (d *Daemon) SetDeviceID(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

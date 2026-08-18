@@ -1,5 +1,5 @@
 {
-  "name": "vnet-desktop",
+  "name": "snet-desktop",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -14,6 +14,8 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "png2icons": "^2.0.1",
+    "sharp": "^0.35.3",
     "typescript": "^5",
     "vite": "^6"
   }

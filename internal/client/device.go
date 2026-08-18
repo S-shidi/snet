@@ -12,7 +12,7 @@ import (
 // DefaultDeviceIDFile is where the daemon keeps the machine's stable device
 // identity, outside the app config dir so it survives an app reinstall. The
 // path is OS-dependent; platform files may override it (see device_windows.go).
-var DefaultDeviceIDFile = "/usr/local/vnet/device.id"
+var DefaultDeviceIDFile = "/usr/local/snet/device.id"
 
 // newDeviceID returns a deterministic 16-hex device identity derived from the
 // machine's hardware identifier when available, so it survives both an app

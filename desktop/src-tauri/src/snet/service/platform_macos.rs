@@ -1,11 +1,11 @@
-//! macOS: vnetd runs as a root LaunchDaemon (com.vnet.daemon).
+//! macOS: snetd runs as a root LaunchDaemon (com.snet.daemon).
 
 use std::process::Command;
 
-const DAEMON_PATH: &str = "/usr/local/vnet/bin/vnetd";
-const DAEMON_LABEL: &str = "com.vnet.daemon";
-const DAEMON_PLIST: &str = "/Library/LaunchDaemons/com.vnet.daemon.plist";
-const DAEMON_CONFIG: &str = "/usr/local/vnet/daemon.json";
+const DAEMON_PATH: &str = "/usr/local/snet/bin/snetd";
+const DAEMON_LABEL: &str = "com.snet.daemon";
+const DAEMON_PLIST: &str = "/Library/LaunchDaemons/com.snet.daemon.plist";
+const DAEMON_CONFIG: &str = "/usr/local/snet/daemon.json";
 
 /// Run a root command via the macOS authorization prompt (osascript).
 fn run_admin(shell_script: &str) -> Result<(), String> {
@@ -108,7 +108,7 @@ pub fn ensure_daemon() -> Result<(), String> {
         &plist(
             DAEMON_LABEL,
             &[DAEMON_PATH, "-config", DAEMON_CONFIG],
-            "/var/log/vnetd.log",
+            "/var/log/snetd.log",
         ),
         &daemon_healthy,
     )

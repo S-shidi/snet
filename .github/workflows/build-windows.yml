@@ -21,8 +21,8 @@ jobs:
       - name: Build daemon (windows/amd64)
         shell: bash
         run: |
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o build/windows-amd64/vnetd.exe ./cmd/client/vnetd
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o build/windows-amd64/vnetctl.exe ./cmd/client/vnetctl
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o build/windows-amd64/snetd.exe ./cmd/client/snetd
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o build/windows-amd64/snetctl.exe ./cmd/client/snetctl
           ls -la build/windows-amd64
 
       - name: Set up Node

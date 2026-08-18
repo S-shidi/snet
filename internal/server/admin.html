@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SNET控制台</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f8cff'/%3E%3Ccircle cx='9' cy='16' r='4' fill='%23fff'/%3E%3Ccircle cx='23' cy='16' r='4' fill='%23fff'/%3E%3Cpath d='M13 16h6' stroke='%23fff' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' fill='none'%3E%3Crect width='32' height='32' rx='7' fill='%234f8cff'/%3E%3Cpath d='M10 11 C16 11, 16 21, 22 21' stroke='%23fff' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='11' r='3.5' fill='%23fff'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%23fff'/%3E%3Ccircle cx='22' cy='21' r='3.5' fill='%23fff'/%3E%3C/svg%3E" />
 <script>
-  const __snetPw = sessionStorage.getItem('vnet_admin_pw') === '1';
-  if (sessionStorage.getItem('vnet_admin_tok')) document.documentElement.setAttribute('data-authed', '1');
+  const __snetPw = sessionStorage.getItem('snet_admin_pw') === '1';
+  if (sessionStorage.getItem('snet_admin_tok')) document.documentElement.setAttribute('data-authed', '1');
   if (__snetPw) document.documentElement.setAttribute('data-pw', '1');
 </script>
 <style>
@@ -304,7 +304,7 @@
   <div class="header-inner">
     <div class="brand">
       <span class="logo">
-        <svg viewBox="0 0 32 32" fill="none"><circle cx="9" cy="16" r="4" fill="#fff"/><circle cx="23" cy="16" r="4" fill="#fff"/><path d="M13 16h6" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+        <svg viewBox="0 0 32 32" fill="none"><path d="M10 11 C16 11, 16 21, 22 21" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="10" cy="11" r="3.5" fill="#fff"/><circle cx="16" cy="16" r="2.5" fill="#fff"/><circle cx="22" cy="21" r="3.5" fill="#fff"/></svg>
       </span>
       <span>
         <h1>SNET控制台</h1>
@@ -323,7 +323,7 @@
 <section id="login-card" class="login-card">
   <div class="l-brand">
     <span class="l-logo">
-      <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><circle cx="9" cy="16" r="4" fill="#fff"/><circle cx="23" cy="16" r="4" fill="#fff"/><path d="M13 16h6" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>
+      <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><path d="M10 11 C16 11, 16 21, 22 21" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="10" cy="11" r="3.5" fill="#fff"/><circle cx="16" cy="16" r="2.5" fill="#fff"/><circle cx="22" cy="21" r="3.5" fill="#fff"/></svg>
     </span>
     <div class="l-title">SNET 控制台</div>
     <div class="l-sub">请登录以管理网络、设备与授权码</div>
@@ -2754,8 +2754,8 @@ var qrcode = function() {
 'use strict';
 
 const $ = id => document.getElementById(id);
-let tok = sessionStorage.getItem('vnet_admin_tok') || '';
-let pwAuth = sessionStorage.getItem('vnet_admin_pw') === '1';
+let tok = sessionStorage.getItem('snet_admin_tok') || '';
+let pwAuth = sessionStorage.getItem('snet_admin_pw') === '1';
 let tab = 'overview';
 let netData = [];      // network summaries cache
 let deviceData = [];   // devices cache
@@ -3038,8 +3038,8 @@ async function login() {
     const r = await api('POST', '/admin/login', { username: user, password: pass });
     tok = r.token;
     pwAuth = true;
-    sessionStorage.setItem('vnet_admin_tok', tok);
-    sessionStorage.setItem('vnet_admin_pw', '1');
+    sessionStorage.setItem('snet_admin_tok', tok);
+    sessionStorage.setItem('snet_admin_pw', '1');
     document.documentElement.setAttribute('data-authed', '1');
     document.documentElement.setAttribute('data-pw', '1');
     startApp();
@@ -3052,8 +3052,8 @@ async function login() {
 
 function logout() {
   tok = '';
-  sessionStorage.removeItem('vnet_admin_tok');
-  sessionStorage.removeItem('vnet_admin_pw');
+  sessionStorage.removeItem('snet_admin_tok');
+  sessionStorage.removeItem('snet_admin_pw');
   location.reload();
 }
 
@@ -3345,7 +3345,7 @@ async function inviteNet(nid) {
     } catch (e) { handleErr(e, '生成配对码失败'); return; }
   }
   code = normalizeCode(code);
-  const link = 'vnet://join?nid=' + encodeURIComponent(nid) + '&code=' + encodeURIComponent(code) + '&server=' + encodeURIComponent(location.origin);
+  const link = 'snet://join?nid=' + encodeURIComponent(nid) + '&code=' + encodeURIComponent(code) + '&server=' + encodeURIComponent(location.origin);
   const name = (netData.find(n => n.network && n.network.id === nid) || {}).network?.name || nid;
   setModal('邀请加入 · ' + name, `
     <p class="hint mt0">被邀请设备扫描下方二维码，或在客户端选择「加入网络」粘贴邀请链接即可加入。</p>

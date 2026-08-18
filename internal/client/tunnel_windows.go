@@ -8,7 +8,7 @@ import "fmt"
 // tun.CreateTUN reuses an adapter with the same name instead of allocating a
 // fresh one, so a fixed name keeps daemon restarts on the same interface
 // (avoiding a pile-up of orphaned adapters).
-func tunDeviceName() string { return "vnet" }
+func tunDeviceName() string { return "snet" }
 
 // configureInterface assigns the private /32 address and brings the adapter up.
 // MTU is not configured here: wireguard-go forces 1420 on wintun adapters, so

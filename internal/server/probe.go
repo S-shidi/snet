@@ -26,7 +26,7 @@ func StartProbeServer(addr string) (*ProbeServer, error) {
 	ps := &ProbeServer{conn: pc.(*net.UDPConn), done: make(chan struct{})}
 	ps.wg.Add(1)
 	go ps.loop()
-	log.Printf("vnet probe server on %s (udp)", addr)
+	log.Printf("Snet probe server on %s (udp)", addr)
 	return ps, nil
 }
 

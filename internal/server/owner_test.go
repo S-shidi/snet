@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 // ---- store-level tests ----
@@ -288,7 +288,7 @@ func TestRelayActivityKeepsNetworkAlive(t *testing.T) {
 
 func TestLegacyDefaultsOnLoad(t *testing.T) {
 	dir := t.TempDir()
-	s, err := NewStoreAt(dir + "/vnet.db")
+	s, err := NewStoreAt(dir + "/snet.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestLegacyDefaultsOnLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s2, err := NewStoreAt(dir + "/vnet.db")
+	s2, err := NewStoreAt(dir + "/snet.db")
 	if err != nil {
 		t.Fatal(err)
 	}

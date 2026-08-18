@@ -1,4 +1,4 @@
-module virtualnet
+module snet
 
 go 1.26.4
 

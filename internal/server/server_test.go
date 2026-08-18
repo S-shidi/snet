@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *Store) {
@@ -203,12 +203,12 @@ func TestLinkFormat(t *testing.T) {
 		t.Fatalf("parse = %s %s %q", gotN, gotC, gotS)
 	}
 	// a link carrying its server address round-trips the server
-	withSrv := protocol.BuildLink(nid, code, "https://vnet.example:8090")
+	withSrv := protocol.BuildLink(nid, code, "https://snet.example:8090")
 	gotN, gotC, gotS, err = protocol.ParseLink(withSrv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotN != nid || gotC != "K7X92MQZ4RTF" || gotS != "https://vnet.example:8090" {
+	if gotN != nid || gotC != "K7X92MQZ4RTF" || gotS != "https://snet.example:8090" {
 		t.Fatalf("parse server link = %s %s %q", gotN, gotC, gotS)
 	}
 	if _, _, _, err := protocol.ParseLink("garbage"); err == nil {

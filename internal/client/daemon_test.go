@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"virtualnet/internal/protocol"
-	"virtualnet/internal/server"
+	"snet/internal/protocol"
+	"snet/internal/server"
 )
 
 func newTestDaemon(t *testing.T) (*Daemon, string) {
@@ -26,7 +26,7 @@ func newTestDaemon(t *testing.T) (*Daemon, string) {
 
 func TestConfigMigrationFromV1(t *testing.T) {
 	v1 := `{
-  "serverAddr": "https://vnet.test",
+  "serverAddr": "https://snet.test",
   "wireguardPort": 51820,
   "privateKey": "aa",
   "networkId": "net123",
@@ -49,7 +49,7 @@ func TestConfigMigrationFromV1(t *testing.T) {
 	if nc.Subnet != defaultSubnet || !nc.Active || nc.Port != 51820 {
 		t.Fatalf("migrated defaults wrong: %+v", nc)
 	}
-	if cfg.PrivateKey != "aa" || cfg.ServerAddr != "https://vnet.test" {
+	if cfg.PrivateKey != "aa" || cfg.ServerAddr != "https://snet.test" {
 		t.Fatalf("top-level fields lost: %+v", cfg)
 	}
 }
@@ -132,7 +132,7 @@ func TestRetryScheduling(t *testing.T) {
 func TestConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	c := &Config{
-		ServerAddr: "https://vnet.test",
+		ServerAddr: "https://snet.test",
 		Networks: map[string]*NetworkCfg{
 			"a": {NodeID: "n1", IP: "10.0.0.2", Token: "t", Subnet: "10.0.0.0/24", Active: true},
 		},
@@ -163,12 +163,12 @@ func TestConfigStaleServerCleared(t *testing.T) {
 		t.Fatalf("stale server not cleared: %q", cfg.ServerAddr)
 	}
 	// with networks the address is meaningful and must be kept
-	withNet := []byte(`{"serverAddr":"https://vnet.example","privateKey":"aa","networks":{"n1":{"nodeId":"x","ip":"1.1.1.1","token":"t","active":true}}}`)
+	withNet := []byte(`{"serverAddr":"https://snet.example","privateKey":"aa","networks":{"n1":{"nodeId":"x","ip":"1.1.1.1","token":"t","active":true}}}`)
 	cfg2, err := parseConfig(withNet)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg2.ServerAddr != "https://vnet.example" {
+	if cfg2.ServerAddr != "https://snet.example" {
 		t.Fatalf("server dropped despite networks: %q", cfg2.ServerAddr)
 	}
 }
@@ -178,11 +178,11 @@ func TestConfigStaleServerCleared(t *testing.T) {
 func TestNormalizeServer(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"", ""},
-		{"https://vnet.example", "https://vnet.example"},
-		{"https://vnet.example/", "https://vnet.example"},
+		{"https://snet.example", "https://snet.example"},
+		{"https://snet.example/", "https://snet.example"},
 		{"http://127.0.0.1:8090", "http://127.0.0.1:8090"},
 		{"http://127.0.0.1:8090//", "http://127.0.0.1:8090"},
-		{"vnet.example", "https://vnet.example"},
+		{"snet.example", "https://snet.example"},
 	}
 	for _, c := range cases {
 		if got := normalizeServer(c.in); got != c.want {

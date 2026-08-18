@@ -1,0 +1,19 @@
+[Unit]
+Description=Snet coordination server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/snet/bin/server -addr 0.0.0.0:8090 -probe-addr 0.0.0.0:8091 -db /var/lib/snet/snet.db -tls-cert /usr/local/snet/certs/server.pem -tls-key /usr/local/snet/certs/server-key.pem -relay-host snet.uizhi.eu.org -relay-base 51820 -relay-count 64 -zombie-ttl 72h
+EnvironmentFile=/etc/snet-server.env
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/snet
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

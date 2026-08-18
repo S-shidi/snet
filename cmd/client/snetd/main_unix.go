@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"os"
 
-	"virtualnet/internal/client"
+	"snet/internal/client"
 )
 
 // runDaemon starts the daemon in the foreground. A supervisor (launchd on
@@ -23,7 +23,7 @@ func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
 		log.Printf("start: %v", err)
 	}
 
-	log.Printf("vnetd daemon control API on %s", ctlAddr)
+	log.Printf("snetd daemon control API on %s", ctlAddr)
 	if err := client.ServeCtl(d, ctlAddr, func(_ *http.Server) { os.Exit(0) }); err != nil {
 		log.Fatal(err)
 	}

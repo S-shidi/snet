@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 type apiClient struct {
@@ -25,7 +25,7 @@ type apiClient struct {
 // servers, caPath pins the server's TLS certificate (PEM) as the only trust
 // root. Without a pinned CA the client verifies against the system trust store
 // (so public certificates such as Let's Encrypt work out of the box); set
-// VNET_INSECURE_SKIP_VERIFY=1 to explicitly skip verification for self-signed
+// SNET_INSECURE_SKIP_VERIFY=1 to explicitly skip verification for self-signed
 // deployments that have not pinned their CA.
 func newAPIClient(server, caPath string) *apiClient {
 	if !strings.HasPrefix(server, "http") {
@@ -52,8 +52,8 @@ func newAPIClient(server, caPath string) *apiClient {
 			}
 		}
 		if transport.TLSClientConfig == nil {
-			if os.Getenv("VNET_INSECURE_SKIP_VERIFY") == "1" {
-				log.Printf("warn: VNET_INSECURE_SKIP_VERIFY=1 set, skipping TLS verification for %s", server)
+			if os.Getenv("SNET_INSECURE_SKIP_VERIFY") == "1" {
+				log.Printf("warn: SNET_INSECURE_SKIP_VERIFY=1 set, skipping TLS verification for %s", server)
 				transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 			} else {
 				transport.TLSClientConfig = &tls.Config{} // system trust store

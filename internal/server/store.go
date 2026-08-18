@@ -16,7 +16,7 @@ import (
 
 	"go.etcd.io/bbolt"
 	"golang.org/x/crypto/bcrypt"
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 var (

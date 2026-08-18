@@ -74,7 +74,7 @@ func main() {
 		fs := flag.NewFlagSet("join", flag.ExitOnError)
 		server := fs.String("server", "http://127.0.0.1:8080", "coordination server")
 		port := fs.Int("port", 51820, "wireguard listen port")
-		link := fs.String("link", "", "vnet:// join link")
+		link := fs.String("link", "", "snet:// join link")
 		nid := fs.String("nid", "", "network id")
 		code := fs.String("code", "", "pairing code")
 		ca := fs.String("ca-path", "", "path to pinned server TLS certificate (PEM)")
@@ -113,7 +113,7 @@ func main() {
 		nid := fs.String("nid", "", "network id")
 		fs.Parse(args[1:])
 		if *nid == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl rejoin --nid <networkId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl rejoin --nid <networkId>")
 			os.Exit(2)
 		}
 		if err := c.do(http.MethodPost, "/ctl/rejoin", map[string]any{"nid": *nid}, nil); err != nil {
@@ -126,7 +126,7 @@ func main() {
 		nid := fs.String("nid", "", "network id")
 		fs.Parse(args[1:])
 		if *nid == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl remove --nid <networkId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl remove --nid <networkId>")
 			os.Exit(2)
 		}
 		if err := c.do(http.MethodPost, "/ctl/remove", map[string]any{"nid": *nid}, nil); err != nil {
@@ -140,7 +140,7 @@ func main() {
 		name := fs.String("name", "", "new display name")
 		fs.Parse(args[1:])
 		if *nid == "" || *name == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl rename --nid <networkId> --name <name>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl rename --nid <networkId> --name <name>")
 			os.Exit(2)
 		}
 		if err := c.do(http.MethodPost, "/ctl/rename", map[string]any{"nid": *nid, "name": *name}, nil); err != nil {
@@ -157,7 +157,7 @@ func main() {
 		approvalSet := fs.Bool("set-approval", false, "apply the -approval value")
 		fs.Parse(args[1:])
 		if *nid == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl settings --nid <networkId> [--name NAME] [--subnet CIDR] [--set-approval [--approval BOOL]]")
+			fmt.Fprintln(os.Stderr, "usage: snetctl settings --nid <networkId> [--name NAME] [--subnet CIDR] [--set-approval [--approval BOOL]]")
 			os.Exit(2)
 		}
 		body := map[string]any{"nid": *nid, "name": *name, "subnet": *subnet}
@@ -175,7 +175,7 @@ func main() {
 		pending := fs.String("pending", "", "pending request id")
 		fs.Parse(args[1:])
 		if *nid == "" || *pending == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl approve --nid <networkId> --pending <pendingId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl approve --nid <networkId> --pending <pendingId>")
 			os.Exit(2)
 		}
 		var out map[string]any
@@ -190,7 +190,7 @@ func main() {
 		pending := fs.String("pending", "", "pending request id")
 		fs.Parse(args[1:])
 		if *nid == "" || *pending == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl deny --nid <networkId> --pending <pendingId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl deny --nid <networkId> --pending <pendingId>")
 			os.Exit(2)
 		}
 		if err := c.do(http.MethodPost, "/ctl/deny", map[string]any{"nid": *nid, "pendingId": *pending}, nil); err != nil {
@@ -203,7 +203,7 @@ func main() {
 		pending := fs.String("pending", "", "pending request id")
 		fs.Parse(args[1:])
 		if *pending == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl cancel-pending --pending <pendingId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl cancel-pending --pending <pendingId>")
 			os.Exit(2)
 		}
 		if err := c.do(http.MethodPost, "/ctl/cancel-pending", map[string]any{"pendingId": *pending}, nil); err != nil {
@@ -216,7 +216,7 @@ func main() {
 		nid := fs.String("nid", "", "network id")
 		fs.Parse(args[1:])
 		if *nid == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl delete --nid <networkId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl delete --nid <networkId>")
 			os.Exit(2)
 		}
 		if err := c.do(http.MethodPost, "/ctl/delete", map[string]any{"nid": *nid}, nil); err != nil {
@@ -230,7 +230,7 @@ func main() {
 		node := fs.String("node", "", "node id to kick")
 		fs.Parse(args[1:])
 		if *nid == "" || *node == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl kick --nid <networkId> --node <nodeId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl kick --nid <networkId> --node <nodeId>")
 			os.Exit(2)
 		}
 		if err := c.do(http.MethodPost, "/ctl/kick", map[string]any{"nid": *nid, "nodeId": *node}, nil); err != nil {
@@ -243,7 +243,7 @@ func main() {
 		nid := fs.String("nid", "", "network id")
 		fs.Parse(args[1:])
 		if *nid == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl reset-code --nid <networkId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl reset-code --nid <networkId>")
 			os.Exit(2)
 		}
 		var out map[string]any
@@ -257,7 +257,7 @@ func main() {
 		nid := fs.String("nid", "", "network id")
 		fs.Parse(args[1:])
 		if *nid == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl netinfo --nid <networkId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl netinfo --nid <networkId>")
 			os.Exit(2)
 		}
 		var out map[string]any
@@ -285,7 +285,7 @@ func main() {
 		nid := fs.String("nid", "", "network id")
 		fs.Parse(args[1:])
 		if *nid == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl claim --nid <networkId>")
+			fmt.Fprintln(os.Stderr, "usage: snetctl claim --nid <networkId>")
 			os.Exit(2)
 		}
 		if err := c.do(http.MethodPost, "/ctl/claim", map[string]any{"nid": *nid}, nil); err != nil {
@@ -300,7 +300,7 @@ func main() {
 		ca := fs.String("ca-path", "", "path to pinned server TLS certificate (PEM)")
 		fs.Parse(args[1:])
 		if *server == "" || *code == "" {
-			fmt.Fprintln(os.Stderr, "usage: vnetctl bind --server URL --code CODE [--ca-path PATH]")
+			fmt.Fprintln(os.Stderr, "usage: snetctl bind --server URL --code CODE [--ca-path PATH]")
 			os.Exit(2)
 		}
 		var out map[string]any
@@ -320,11 +320,11 @@ func printJSON(v any) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: vnetctl [--ctl URL] <command> [flags]
+	fmt.Fprintln(os.Stderr, `usage: snetctl [--ctl URL] <command> [flags]
 
 commands:
   create     --server URL [--port N] [--name NAME] [--subnet CIDR] [--approval]
-  join       --link vnet:// | --nid NID --code CODE [--server URL]
+  join       --link snet:// | --nid NID --code CODE [--server URL]
   status
   networks
   leave      --nid NID (empty leaves all)

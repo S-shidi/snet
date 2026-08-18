@@ -1,11 +1,11 @@
 [package]
-name = "vnet-desktop"
+name = "snet-desktop"
 version = "0.1.0"
 description = "SNET 虚拟组网桌面端"
 edition = "2021"
 
 [lib]
-name = "vnet_desktop_lib"
+name = "snet_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

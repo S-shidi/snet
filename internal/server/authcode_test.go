@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 func genOneCode(t *testing.T, s *Store) (code, id string) {
@@ -132,7 +132,7 @@ func TestAuthCodeCountValidation(t *testing.T) {
 // TestAuthCodePersistenceAcrossRestart verifies generated and bound codes
 // survive a store reopen.
 func TestAuthCodePersistenceAcrossRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "vnet.db")
+	path := filepath.Join(t.TempDir(), "snet.db")
 	s, err := NewStoreAt(path)
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +277,7 @@ func TestAuthCodeRotationFreesSlot(t *testing.T) {
 // TestAuthCodeMultiBindPersistence verifies multi-device bindings survive a
 // store reopen with capacity intact.
 func TestAuthCodeMultiBindPersistence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "vnet.db")
+	path := filepath.Join(t.TempDir(), "snet.db")
 	s, err := NewStoreAt(path)
 	if err != nil {
 		t.Fatal(err)
@@ -314,7 +314,7 @@ func TestAuthCodeMultiBindPersistence(t *testing.T) {
 // TestAuthCodeLegacyMigration verifies a record persisted in the old
 // single-binding flat format is migrated to the multi-device format on load.
 func TestAuthCodeLegacyMigration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "vnet.db")
+	path := filepath.Join(t.TempDir(), "snet.db")
 	s, err := NewStoreAt(path)
 	if err != nil {
 		t.Fatal(err)

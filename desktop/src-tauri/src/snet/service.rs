@@ -1,6 +1,6 @@
 //! Platform-specific daemon service management.
 //!
-//! Each platform installs/repairs the vnetd background daemon so it survives
+//! Each platform installs/repairs the snetd background daemon so it survives
 //! reboots and restarts after crashes:
 //! - macOS: a root LaunchDaemon via launchctl (osascript elevation prompt).
 //! - Windows: a native service under LocalSystem via sc.exe (UAC elevation).

@@ -13,7 +13,7 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 // Tunnel owns the utun interface and the WireGuard device.
@@ -45,7 +45,7 @@ func NewTunnel(privKeyHex, ip string, port int, mtu int) (*Tunnel, error) {
 		return nil, err
 	}
 
-	logger := device.NewLogger(device.LogLevelError, "vnetd: ")
+	logger := device.NewLogger(device.LogLevelError, "snetd: ")
 	dev := device.NewDevice(t, conn.NewDefaultBind(), logger)
 	dev.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%d\n", privKeyHex, port))
 	if err := dev.Up(); err != nil {

@@ -9,7 +9,7 @@ fn ctl_err(msg: &str) -> String {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(std::env::temp_dir().join("vnet-gui-errors.log"))
+        .open(std::env::temp_dir().join("snet-gui-errors.log"))
     {
         let _ = writeln!(f, "[{}] {}", std::process::id(), msg);
     }
@@ -114,7 +114,7 @@ pub async fn create_network(server: String, port: u16, ca: String, name: String,
         )?;
         // an invite link carries the network's server so unbound joiners can
         // target it directly; keep the parameter absent for legacy servers
-        let mut link = format!("vnet://join?nid={}&code={}", resp["networkId"], resp["pairingCode"]);
+        let mut link = format!("snet://join?nid={}&code={}", resp["networkId"], resp["pairingCode"]);
         if !server.trim().is_empty() {
             link.push_str(&format!("&server={}", percent_encode(&server)));
         }

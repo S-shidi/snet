@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/windows/svc"
 
-	"virtualnet/internal/client"
+	"snet/internal/client"
 )
 
 // serviceLogPath is where the service-mode daemon writes its log. The SCM
@@ -19,7 +19,7 @@ import (
 // start would be completely invisible.
 const serviceLogPath = `C:\ProgramData\SNET\daemon.log`
 
-// daemonService implements svc.Handler so vnetd.exe runs as a native Windows
+// daemonService implements svc.Handler so snetd.exe runs as a native Windows
 // service under LocalSystem. The /ctl/shutdown endpoint stops the HTTP server,
 // which makes Execute return and reports SERVICE_STOPPED to the SCM — so the
 // crash-recovery actions (sc failure ... restart) do not fire on a clean stop.
@@ -46,7 +46,7 @@ func (s *daemonService) Execute(args []string, req <-chan svc.ChangeRequest, sta
 		if err := d.Start(); err != nil {
 			log.Printf("start: %v", err)
 		}
-		log.Printf("vnetd daemon control API on %s", s.ctlAddr)
+		log.Printf("snetd daemon control API on %s", s.ctlAddr)
 		if err := client.ServeCtl(d, s.ctlAddr, func(srv *http.Server) {
 			_ = srv.Shutdown(context.Background())
 			select {
@@ -94,7 +94,7 @@ func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
 		if err := setupServiceLog(); err != nil {
 			log.Printf("service log: %v", err)
 		}
-		if err := svc.Run("vnetd", &daemonService{cfg: cfg, configPath: configPath, ctlAddr: ctlAddr, deviceIDFile: deviceIDFile}); err != nil {
+		if err := svc.Run("snetd", &daemonService{cfg: cfg, configPath: configPath, ctlAddr: ctlAddr, deviceIDFile: deviceIDFile}); err != nil {
 			log.Fatalf("service run: %v", err)
 		}
 		return
@@ -105,7 +105,7 @@ func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
 	if err := d.Start(); err != nil {
 		log.Printf("start: %v", err)
 	}
-	log.Printf("vnetd daemon control API on %s", ctlAddr)
+	log.Printf("snetd daemon control API on %s", ctlAddr)
 	if err := client.ServeCtl(d, ctlAddr, func(_ *http.Server) { os.Exit(0) }); err != nil {
 		log.Fatal(err)
 	}

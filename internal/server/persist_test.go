@@ -11,7 +11,7 @@ import (
 
 func TestPersistenceRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "vnet.db")
+	dbPath := filepath.Join(dir, "snet.db")
 
 	s, err := NewStoreAt(dbPath)
 	if err != nil {
@@ -74,7 +74,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 
 func TestManagedNetworkPersists(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "vnet.db")
+	dbPath := filepath.Join(dir, "snet.db")
 
 	s, err := NewStoreAt(dbPath)
 	if err != nil {
@@ -111,7 +111,7 @@ func TestManagedNetworkPersists(t *testing.T) {
 
 func TestTokenStoredHashed(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "vnet.db")
+	dbPath := filepath.Join(dir, "snet.db")
 	s, err := NewStoreAt(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestTokenStoredHashed(t *testing.T) {
 
 func TestPairingCodeStoredHashed(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "vnet.db")
+	dbPath := filepath.Join(dir, "snet.db")
 	s, err := NewStoreAt(dbPath)
 	if err != nil {
 		t.Fatal(err)

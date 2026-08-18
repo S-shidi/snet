@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"virtualnet/internal/protocol"
+	"snet/internal/protocol"
 )
 
 //go:embed admin.html

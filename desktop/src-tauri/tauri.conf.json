@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SNET",
   "version": "0.1.0",
-  "identifier": "com.vnet.desktop",
+  "identifier": "com.snet.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -34,7 +34,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../../build/windows-amd64/vnetd.exe": "vnetd.exe",
+      "../../build/windows-amd64/snetd.exe": "snetd.exe",
       "../../build/windows-amd64/wintun.dll": "wintun.dll",
       "../../build/windows-amd64/LICENSE-wintun.txt": "LICENSE-wintun.txt"
     }

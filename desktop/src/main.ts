@@ -241,10 +241,10 @@ function subnetWidgetInit(wrap: HTMLElement): SubnetWidget {
 }
 
 /* ── 设置（localStorage 默认值） ────────────────── */
-const SETTINGS_KEY = "vnet.settings";
-const LEGACY_CA = "/usr/local/vnet/certs/server.pem"; // 旧自签名证书，已被公共证书取代，仅 macOS 曾经使用
+const SETTINGS_KEY = "snet.settings";
+const LEGACY_CA = "/usr/local/snet/certs/server.pem"; // 旧自签名证书，已被公共证书取代，仅 macOS 曾经使用
 const DEFAULT_SETTINGS = {
-  server: "https://vnet.uizhi.eu.org:8090",
+  server: "https://snet.uizhi.eu.org:8090",
   ca: "",
   wgport: 51820,
 };
@@ -567,7 +567,7 @@ function renderNetworks() {
     list.innerHTML = `<div class="empty">
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 4l18 26H6L24 4z"/><path d="M24 34v6"/><path d="M12 46h24"/></svg>
       <div class="t">后台服务未运行</div>
-      <div class="s">需要系统后台守护进程 vnetd 维持网络隧道</div>
+      <div class="s">需要系统后台守护进程 snetd 维持网络隧道</div>
       <div class="empty-actions"><button id="empty-start" class="btn">启动后台服务</button></div>
     </div>`;
     $("#empty-start").addEventListener("click", ensureDaemon);
@@ -884,7 +884,7 @@ async function openInviteModal(nid: string) {
     toast("获取网络ID失败", "err");
     return;
   }
-  const link = `vnet://join?nid=${encodeURIComponent(netId)}&code=${encodeURIComponent(code)}`;
+  const link = `snet://join?nid=${encodeURIComponent(netId)}&code=${encodeURIComponent(code)}`;
   const name = detail.name || netId;
   openModal({
     title: `邀请加入 · ${name}`,
@@ -1094,7 +1094,7 @@ function normalizeServerCompare(s: string): string {
 function linkServerOf(link: string): string | undefined {
   try {
     const u = new URL(link);
-    if (u.protocol === "vnet:" || u.protocol === "http:" || u.protocol === "https:") {
+    if (u.protocol === "snet:" || u.protocol === "http:" || u.protocol === "https:") {
       return u.searchParams.get("server") || undefined;
     }
   } catch {
@@ -1111,7 +1111,7 @@ function openJoinModal() {
     : `<p class="msg">未连接服务器：请先在「设置」中链接服务器；或粘贴带有服务器地址的邀请链接后加入。</p>`;
   openModal({
     title: "加入网络",
-    body: `<div class="row"><label>邀请链接</label><input id="m-link" placeholder="vnet://join?nid=...&code=..." /></div>
+    body: `<div class="row"><label>邀请链接</label><input id="m-link" placeholder="snet://join?nid=...&code=..." /></div>
       <p class="hint" style="text-align:center">或手动输入</p>
       <div class="row"><label>网络ID</label><input id="m-nid" placeholder="6 位网络ID" /></div>
       <div class="row"><label>配对码</label><input id="m-code" placeholder="12 位配对码" /></div>
@@ -1184,7 +1184,7 @@ function openJoinModal() {
             const nid = (body.querySelector("#m-nid") as HTMLInputElement).value.trim();
             const code = (body.querySelector("#m-code") as HTMLInputElement).value.trim();
             if (!nid || !code) throw new Error("请输入邀请链接，或网络ID + 配对码");
-            link = `vnet://join?nid=${nid}&code=${code}`;
+            link = `snet://join?nid=${nid}&code=${code}`;
           }
           const linkServer = linkServerOf(link);
           const srv = currentServer();

@@ -10,17 +10,17 @@ import (
 	"syscall"
 	"time"
 
-	"virtualnet/internal/protocol"
-	"virtualnet/internal/server"
+	"snet/internal/protocol"
+	"snet/internal/server"
 )
 
 func main() {
 	addr := flag.String("addr", "0.0.0.0:8090", "listen address")
 	probeAddr := flag.String("probe-addr", "0.0.0.0:8091", "UDP probe/echo address for public-IP discovery")
 	dbPath := flag.String("db", "", "bbolt database path (empty = in-memory, not persistent)")
-	adminToken := flag.String("admin-token", os.Getenv("VNET_ADMIN_TOKEN"), "admin API token (env VNET_ADMIN_TOKEN)")
-	adminUser := flag.String("admin-user", os.Getenv("VNET_ADMIN_USER"), "admin login username (env VNET_ADMIN_USER)")
-	adminPass := flag.String("admin-pass", os.Getenv("VNET_ADMIN_PASSWORD"), "admin login password (env VNET_ADMIN_PASSWORD)")
+	adminToken := flag.String("admin-token", os.Getenv("SNET_ADMIN_TOKEN"), "admin API token (env SNET_ADMIN_TOKEN)")
+	adminUser := flag.String("admin-user", os.Getenv("SNET_ADMIN_USER"), "admin login username (env SNET_ADMIN_USER)")
+	adminPass := flag.String("admin-pass", os.Getenv("SNET_ADMIN_PASSWORD"), "admin login password (env SNET_ADMIN_PASSWORD)")
 	zombieTTL := flag.Duration("zombie-ttl", 72*time.Hour, "delete networks idle for this long; 0 disables reaping")
 	trustProxy := flag.Bool("behind-proxy", false, "read client IP from X-Forwarded-For (reverse proxy deployments)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (PEM); enables HTTPS when set with -tls-key")
@@ -28,7 +28,8 @@ func main() {
 	relayHost := flag.String("relay-host", "", "public relay host (IP) advertised to peers; enables UDP relay mode")
 	relayBase := flag.Int("relay-base", protocol.DefaultWGPort, "base UDP relay port (one per network)")
 	relayCount := flag.Int("relay-count", 64, "number of assignable UDP relay ports")
-	requireDeviceAuth := flag.Bool("require-device-auth", os.Getenv("VNET_REQUIRE_DEVICE_AUTH") == "1", "only allow devices that bound an admin-generated authorization code to create/join networks (env VNET_REQUIRE_DEVICE_AUTH=1)")
+	requireDeviceAuth := flag.Bool("require-device-auth", os.Getenv("SNET_REQUIRE_DEVICE_AUTH") == "1", "only allow devices that bound an admin-generated authorization code to create/join networks (env SNET_REQUIRE_DEVICE_AUTH=1)")
+	adminReset := flag.Bool("admin-reset", false, "force-reset admin password from env/admin-pass and exit")
 	flag.Parse()
 
 	store, err := server.NewStoreAt(*dbPath)
@@ -36,6 +37,18 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+
+	if *adminReset {
+		if *adminUser == "" || *adminPass == "" {
+			log.Fatal("-admin-reset requires -admin-user and -admin-pass (or SNET_ADMIN_USER/SNET_ADMIN_PASSWORD env)")
+		}
+		if _, err := store.SetAdminPassword(*adminUser, *adminPass); err != nil {
+			log.Fatalf("reset admin password: %v", err)
+		}
+		log.Printf("admin password reset for user %q", *adminUser)
+		return
+	}
+
 	store.SetRelay(*relayHost, *relayBase, *relayCount)
 
 	var relay *server.Relay
@@ -88,7 +101,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("vnet server listening on %s (db: %s, admin: %s, require-device-auth: %v)", *addr, dbPathOrMem(*dbPath), adminState(adminEnabled), *requireDeviceAuth)
+		log.Printf("Snet server listening on %s (db: %s, admin: %s, require-device-auth: %v)", *addr, dbPathOrMem(*dbPath), adminState(adminEnabled), *requireDeviceAuth)
 		var err error
 		if *tlsCert != "" && *tlsKey != "" {
 			err = httpSrv.ListenAndServeTLS(*tlsCert, *tlsKey)
