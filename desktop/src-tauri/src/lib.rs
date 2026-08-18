@@ -1,7 +1,8 @@
 mod snet;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -19,6 +20,8 @@ const MENU_HIDE: &str = "menu_hide";
 const MENU_CLOSE: &str = "menu_close";
 const MENU_MIN: &str = "menu_min";
 const MENU_QUIT: &str = "menu_quit";
+
+static LAST_CLICK_MS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "macos")]
 fn set_dock_visible(visible: bool) {
@@ -147,12 +150,16 @@ pub fn run() {
                 ],
             )?;
 
+            let tray_icon = tauri::image::Image::from_bytes(
+                include_bytes!("../icons/tray_template_32.png"),
+            )
+            .expect("failed to load tray template icon");
+
             let tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
                 .icon_as_template(true)
                 .tooltip("SNET 虚拟组网")
                 .menu(&tray_menu)
-                .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     TRAY_OPEN => show_main(app),
                     TRAY_QUIT => app.exit(0),
@@ -165,7 +172,14 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        show_main(tray.app_handle());
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+                        let prev = LAST_CLICK_MS.swap(now, Ordering::Relaxed);
+                        if now.saturating_sub(prev) < 400 {
+                            show_main(tray.app_handle());
+                        }
                     }
                 })
                 .build(app)?;
