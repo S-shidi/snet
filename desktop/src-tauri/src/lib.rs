@@ -160,6 +160,7 @@ pub fn run() {
                 .icon_as_template(true)
                 .tooltip("SNET 虚拟组网")
                 .menu(&tray_menu)
+                .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     TRAY_OPEN => show_main(app),
                     TRAY_QUIT => app.exit(0),
@@ -177,8 +178,10 @@ pub fn run() {
                             .unwrap()
                             .as_millis() as u64;
                         let prev = LAST_CLICK_MS.swap(now, Ordering::Relaxed);
-                        if now.saturating_sub(prev) < 400 {
+                        if now.saturating_sub(prev) < 300 {
                             show_main(tray.app_handle());
+                        } else {
+                            let _ = tray.with_inner_tray_icon(|inner| inner.show_menu());
                         }
                     }
                 })
