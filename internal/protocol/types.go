@@ -157,6 +157,12 @@ type Device struct {
 type RegisterDeviceReq struct {
 	DeviceID  string `json:"deviceId"`
 	PublicKey string `json:"publicKey"`
+	Name      string `json:"name,omitempty"`
+}
+
+// AdminRenameDeviceReq updates a device's display name in the admin console.
+type AdminRenameDeviceReq struct {
+	Name string `json:"name"`
 }
 
 type RegisterDeviceResp struct {

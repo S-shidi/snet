@@ -177,13 +177,13 @@ func TestLegacyClaimAndBind(t *testing.T) {
 
 func TestDeviceRegistration(t *testing.T) {
 	s := NewStore()
-	if err := s.RegisterDevice("device-1", "PUB1=="); err != nil {
+	if err := s.RegisterDevice("device-1", "PUB1==", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterDevice("device-1", "PUB1b=="); err != nil {
+	if err := s.RegisterDevice("device-1", "PUB1b==", ""); err != nil {
 		t.Fatalf("re-register should be idempotent: %v", err)
 	}
-	if err := s.RegisterDevice("bad id!", "PUB=="); err == nil {
+	if err := s.RegisterDevice("bad id!", "PUB==", ""); err == nil {
 		t.Fatal("invalid device id should be rejected")
 	}
 	devs := s.AdminDevices()

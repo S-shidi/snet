@@ -811,7 +811,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 	}
 	s.networks[nid] = ns
 	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: nid, NodeID: nodeID}
-	if err := s.upsertDeviceLocked(deviceID, publicKey); err != nil {
+	if err := s.upsertDeviceLocked(deviceID, publicKey, ""); err != nil {
 		return protocol.CreateNetworkResp{}, err
 	}
 
@@ -843,8 +843,9 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 }
 
 // upsertDeviceLocked records or refreshes a device identity. Callers must
-// hold s.mu.
-func (s *Store) upsertDeviceLocked(deviceID, publicKey string) error {
+// hold s.mu.  The name parameter seeds the display name on new devices; an
+// empty string leaves any existing name untouched.
+func (s *Store) upsertDeviceLocked(deviceID, publicKey, name string) error {
 	if deviceID == "" {
 		return nil
 	}
@@ -854,8 +855,11 @@ func (s *Store) upsertDeviceLocked(deviceID, publicKey string) error {
 		d = &deviceRecord{
 			ID:        deviceID,
 			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			Name:      name,
 		}
 		s.devices[deviceID] = d
+	} else if name != "" && d.Name == "" {
+		d.Name = name
 	}
 	d.PublicKey = publicKey
 	d.LastSeen = now
@@ -970,7 +974,7 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 	}
 	ns.nodes[nodeID] = node
 	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: nid, NodeID: nodeID}
-	if err := s.upsertDeviceLocked(deviceID, publicKey); err != nil {
+	if err := s.upsertDeviceLocked(deviceID, publicKey, ""); err != nil {
 		return protocol.JoinResp{}, err
 	}
 	s.touchLocked(ns, now)
@@ -1121,8 +1125,9 @@ func validateDeviceID(id string) error {
 }
 
 // RegisterDevice records (or refreshes) a device identity and binds the
-// device's WireGuard public key to it.
-func (s *Store) RegisterDevice(deviceID, publicKey string) error {
+// device's WireGuard public key to it.  The name parameter seeds the display
+// name on new devices; an empty string leaves any existing name untouched.
+func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
 	if err := validateDeviceID(deviceID); err != nil {
 		return err
 	}
@@ -1134,7 +1139,7 @@ func (s *Store) RegisterDevice(deviceID, publicKey string) error {
 	if s.requireDeviceAuth && !s.deviceBoundLocked(deviceID) {
 		return ErrUnauthorized
 	}
-	return s.upsertDeviceLocked(deviceID, publicKey)
+	return s.upsertDeviceLocked(deviceID, publicKey, name)
 }
 
 // SetNodeDevice binds a device identity to one of the caller's own nodes.
@@ -1159,7 +1164,7 @@ func (s *Store) SetNodeDevice(token, nodeID, deviceID string) error {
 	if err := s.persistNode(ns.n.ID, ns.nodes[nodeID]); err != nil {
 		return err
 	}
-	return s.upsertDeviceLocked(deviceID, ns.nodes[nodeID].PublicKey)
+	return s.upsertDeviceLocked(deviceID, ns.nodes[nodeID].PublicKey, "")
 }
 
 // ClaimNetwork assigns ownership of a legacy (ownerless) network to the
@@ -1456,7 +1461,7 @@ func (s *Store) approvePendingLocked(ns *networkState, p *pendingNode) (protocol
 	}
 	ns.nodes[nodeID] = node
 	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: ns.n.ID, NodeID: nodeID}
-	if err := s.upsertDeviceLocked(p.DeviceID, p.PublicKey); err != nil {
+	if err := s.upsertDeviceLocked(p.DeviceID, p.PublicKey, ""); err != nil {
 		return protocol.PendingStatusResp{}, err
 	}
 	if s.relayEnabled() {
@@ -2297,6 +2302,71 @@ func (s *Store) AdminUnbindDevice(deviceID string) error {
 	return nil
 }
 
+// AdminDeleteDevice removes a device from the store after unbinding it from
+// all authorization codes and removing its nodes from every network.
+func (s *Store) AdminDeleteDevice(deviceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.devices[deviceID] == nil {
+		return ErrNotFound
+	}
+	// 1. Unbind from all authorization codes.
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			ac.removeBinding(deviceID)
+			if err := s.persistAuthCode(ac); err != nil {
+				return err
+			}
+		}
+	}
+	// 2. Remove from all networks.
+	for nid, ns := range s.networks {
+		for nodeID, n := range ns.nodes {
+			if n.DeviceID == deviceID {
+				delete(ns.nodes, nodeID)
+				for h, te := range s.byToken {
+					if te.NetworkID == nid && te.NodeID == nodeID {
+						delete(s.byToken, h)
+						if err := s.deleteTokenByHash(h); err != nil {
+							return err
+						}
+					}
+				}
+				if err := s.deleteNode(nid, nodeID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	// 3. Delete the device record.
+	delete(s.devices, deviceID)
+	return s.deleteDevice(deviceID)
+}
+
+// AdminRenameDevice sets a device's display name.
+func (s *Store) AdminRenameDevice(deviceID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.devices[deviceID]
+	if d == nil {
+		return ErrNotFound
+	}
+	d.Name = name
+	return s.persistDevice(d)
+}
+
+func (s *Store) deleteDevice(deviceID string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktDevices).Delete([]byte(deviceID))
+	})
+}
+
 // BindDevice consumes a generated authorization code for deviceID. Binding is
 // idempotent for the same device and same code; a code already at its
 // MaxBindings rejects further devices with ErrAuthCodeFull; binding a new code
@@ -2349,7 +2419,7 @@ func (s *Store) BindDevice(code, deviceID, publicKey string) error {
 	}
 	// Registering the device here keeps the device list consistent even when
 	// the client never calls /api/v1/devices.
-	return s.upsertDeviceLocked(deviceID, publicKey)
+	return s.upsertDeviceLocked(deviceID, publicKey, "")
 }
 
 // ---- admin credentials ----

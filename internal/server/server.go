@@ -163,7 +163,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := s.RegisterDevice(req.DeviceID, req.PublicKey); err != nil {
+		if err := s.RegisterDevice(req.DeviceID, req.PublicKey, req.Name); err != nil {
 			if writeEnrollmentErr(w, err) {
 				return
 			}
@@ -543,6 +543,29 @@ func NewHandler(s *Store, opts Options) http.Handler {
 				return
 			}
 			if err := s.AdminUnbindDevice(req.DeviceID); err != nil {
+				handleStoreErr(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		mux.HandleFunc("DELETE /admin/devices/{deviceID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+			deviceID := r.PathValue("deviceID")
+			if err := s.AdminDeleteDevice(deviceID); err != nil {
+				handleStoreErr(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		mux.HandleFunc("PATCH /admin/devices/{deviceID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+			deviceID := r.PathValue("deviceID")
+			var req protocol.AdminRenameDeviceReq
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErr(w, http.StatusBadRequest, errors.New("bad request"))
+				return
+			}
+			if err := s.AdminRenameDevice(deviceID, req.Name); err != nil {
 				handleStoreErr(w, err)
 				return
 			}

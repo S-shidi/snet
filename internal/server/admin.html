@@ -398,13 +398,13 @@
     <div class="toolbar">
       <div class="search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
-        <input id="dev-q" type="text" placeholder="搜索设备 ID / 公钥" />
+        <input id="dev-q" type="text" placeholder="搜索设备 ID / 名称 / 公钥" />
       </div>
     </div>
     <div class="tbl-wrap">
       <table>
-        <thead><tr><th>设备 ID</th><th>公钥</th><th>创建时间</th><th>最近活跃</th><th style="width:120px"></th></tr></thead>
-        <tbody id="dev-body"><tr><td colspan="5"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
+        <thead><tr><th>设备名称</th><th>设备 ID</th><th>公钥</th><th>创建时间</th><th>最近活跃</th><th style="width:160px"></th></tr></thead>
+        <tbody id="dev-body"><tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
       </table>
     </div>
   </section>
@@ -3602,7 +3602,7 @@ async function doChpass() {
 
 async function loadDevices(showLoading) {
   const body = $('dev-body');
-  if (showLoading) body.innerHTML = '<tr><td colspan="5"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
+  if (showLoading) body.innerHTML = '<tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
   try {
     const data = await api('GET', '/admin/devices');
     deviceData = (data && data.devices) || [];
@@ -3614,34 +3614,39 @@ async function loadDevices(showLoading) {
 function filteredDevices() {
   const q = ($('dev-q') ? $('dev-q').value.trim().toLowerCase() : '');
   if (!q) return deviceData;
-  return deviceData.filter(d => ((d.id || '') + ' ' + (d.publicKey || '')).toLowerCase().includes(q));
+  return deviceData.filter(d => ((d.id || '') + ' ' + (d.name || '') + ' ' + (d.publicKey || '')).toLowerCase().includes(q));
 }
 
 function renderDevices() {
   const body = $('dev-body');
   const list = filteredDevices();
   if (!deviceData.length) {
-    body.innerHTML = '<tr><td colspan="5"><div class="empty">' + icon('empty') +
+    body.innerHTML = '<tr><td colspan="6"><div class="empty">' + icon('empty') +
       '<div class="t">暂无设备</div><div class="s">客户端首次启动后会在此注册设备身份</div></div></td></tr>';
     return;
   }
   if (!list.length) {
-    body.innerHTML = '<tr><td colspan="5"><div class="empty">' + icon('empty') +
+    body.innerHTML = '<tr><td colspan="6"><div class="empty">' + icon('empty') +
       '<div class="t">没有匹配的设备</div><div class="s">调整搜索条件</div></div></td></tr>';
     return;
   }
   let rows = '';
   for (const d of list) {
     const pub = d.publicKey ? d.publicKey.slice(0, 14) + '…' : '-';
+    const displayName = d.name || '未命名';
     rows += `
       <tr>
-        <td class="mono">${esc(d.id)}</td>
+        <td><span class="dev-name" data-dev="${esc(d.id)}" title="双击编辑名称">${esc(displayName)}</span></td>
+        <td class="mono" title="${esc(d.id)}">${esc(d.id.length > 8 ? d.id.slice(0, 8) + '…' : d.id)}</td>
         <td class="mono">${esc(pub)}</td>
         <td>${fmtTime(d.createdAt)}</td>
         <td>${d.lastSeen ? relSec(d.lastSeen) + ' <span class="hint">' + fmtTime(new Date(d.lastSeen * 1000).toISOString()) + '</span>' : '—'}</td>
-        <td><button type="button" class="btn ghost sm" data-act="dev-nets" data-dev="${esc(d.id)}">所属网络</button></td>
+        <td style="white-space:nowrap">
+          <button type="button" class="btn ghost sm" data-act="dev-nets" data-dev="${esc(d.id)}">所属网络</button>
+          <button type="button" class="btn danger ghost sm" data-act="del-dev" data-dev="${esc(d.id)}" data-name="${esc(displayName)}">删除</button>
+        </td>
       </tr>
-      <tr class="devnets" hidden><td colspan="5" id="devnets-${esc(d.id)}"></td></tr>`;
+      <tr class="devnets" hidden><td colspan="6" id="devnets-${esc(d.id)}"></td></tr>`;
   }
   body.innerHTML = rows;
 }
@@ -3663,6 +3668,21 @@ async function devNets(btn, deviceID) {
         <span class="hint code">${esc(n.id)} · ${esc(n.subnet || '')} · ${n.nodeCount} 成员</span>
       </div>`).join('');
   } catch (e) { cell.innerHTML = '<span class="msg">' + esc(e.message) + '</span>'; }
+}
+
+async function delDev(deviceID, deviceName) {
+  const ok = await confirmDlg({
+    title: '删除设备',
+    message: `确定删除设备 <b class="code">${esc(deviceID)}</b>？<br>该设备将被从所有网络和授权码中移除，此操作不可恢复。`,
+    confirmText: '永久删除', danger: true, typed: deviceID,
+  });
+  if (!ok) return;
+  try {
+    await api('DELETE', '/admin/devices/' + deviceID);
+    toast('设备已删除');
+    loadDevices(false);
+    updateCounts();
+  } catch (e) { handleErr(e, '删除设备失败'); }
 }
 
 /* ── auth codes ── */
@@ -3854,6 +3874,9 @@ document.addEventListener('click', async e => {
     case 'dev-nets':
       devNets(el, el.dataset.dev);
       break;
+    case 'del-dev':
+      delDev(el.dataset.dev, el.dataset.name);
+      break;
     case 'gen-codes':
       genCodes();
       break;
@@ -3904,6 +3927,33 @@ for (const id of ['user', 'pass']) {
   $(id).addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
 }
 $('btn-login').addEventListener('click', login);
+
+/* device name: double-click to edit */
+document.addEventListener('dblclick', async e => {
+  const nameEl = e.target.closest('.dev-name');
+  if (!nameEl) return;
+  const devID = nameEl.dataset.dev;
+  const oldName = nameEl.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = oldName === '未命名' ? '' : oldName;
+  input.style.cssText = 'width:120px;font:inherit;padding:2px 4px;border:1px solid var(--accent);border-radius:4px;background:var(--bg);color:var(--text)';
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+  const save = async () => {
+    const newName = input.value.trim();
+    if (newName !== oldName) {
+      try {
+        await api('PATCH', '/admin/devices/' + devID, { name: newName });
+        toast('设备名已更新');
+      } catch (e) { handleErr(e, '重命名失败'); }
+    }
+    loadDevices(false);
+  };
+  input.addEventListener('blur', save);
+  input.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } if (ev.key === 'Escape') { loadDevices(false); } });
+});
 
 /* modal: click backdrop closes; Esc closes */
 $('modal').addEventListener('mousedown', e => { if (e.target === $('modal')) closeModal(); });

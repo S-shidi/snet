@@ -382,7 +382,7 @@ func TestRequireDeviceAuthGate(t *testing.T) {
 	if _, err := s.Join("net1", "ABCDEFGHIJKL", "pub2", "dev-bbbb"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unbound join = %v, want ErrUnauthorized", err)
 	}
-	if err := s.RegisterDevice("dev-cccc", "pub3"); !errors.Is(err, ErrUnauthorized) {
+	if err := s.RegisterDevice("dev-cccc", "pub3", ""); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unbound register = %v, want ErrUnauthorized", err)
 	}
 
@@ -393,7 +393,7 @@ func TestRequireDeviceAuthGate(t *testing.T) {
 	if _, err := s.CreateNetwork("pub1", "dev-aaaa", "", "", false); err != nil {
 		t.Fatalf("bound create = %v", err)
 	}
-	if err := s.RegisterDevice("dev-aaaa", "pub1"); err != nil {
+	if err := s.RegisterDevice("dev-aaaa", "pub1", ""); err != nil {
 		t.Fatalf("bound register = %v", err)
 	}
 
@@ -407,7 +407,7 @@ func TestRequireDeviceAuthGate(t *testing.T) {
 
 	// gate off: registration is open again
 	s.SetRequireDeviceAuth(false)
-	if err := s.RegisterDevice("dev-cccc", "pub3"); err != nil {
+	if err := s.RegisterDevice("dev-cccc", "pub3", ""); err != nil {
 		t.Fatalf("register with gate off = %v", err)
 	}
 }

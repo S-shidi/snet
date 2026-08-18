@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,8 @@ type Daemon struct {
 	retryPending map[string]struct{}
 	// retryStop signals the background retry loop to exit.
 	retryStop chan struct{}
+	// hostnameCache caches the machine hostname for device registration.
+	hostnameCache string
 }
 
 func NewDaemon(cfg *Config) *Daemon {
@@ -101,6 +104,15 @@ func (d *Daemon) apiLocked() *apiClient {
 
 func (d *Daemon) publicKeyLocked() string {
 	return pubKeyB64FromPrivHex(d.cfg.PrivateKey)
+}
+
+func (d *Daemon) hostname() string {
+	if d.hostnameCache != "" {
+		return d.hostnameCache
+	}
+	h, _ := os.Hostname()
+	d.hostnameCache = h
+	return h
 }
 
 // ensureKeys points the daemon at a server and guarantees a private key and
@@ -278,7 +290,7 @@ func (d *Daemon) verifyBinding() bool {
 	pub := d.publicKeyLocked()
 	d.mu.Unlock()
 
-	bound, err := api.RegisterDevice(deviceID, pub)
+	bound, err := api.RegisterDevice(deviceID, pub, d.hostname())
 	if err != nil {
 		// A definite "not authorized" answer means the server revoked the
 		// binding. Transient errors (timeouts, DNS) are not a revocation.
@@ -573,7 +585,7 @@ func (d *Daemon) reconcileOwnership(nid string) {
 		return
 	}
 	api := d.apiLocked()
-	if _, err := api.RegisterDevice(d.cfg.DeviceID, d.publicKeyLocked()); err != nil {
+	if _, err := api.RegisterDevice(d.cfg.DeviceID, d.publicKeyLocked(), d.hostname()); err != nil {
 		log.Printf("register device: %v", err)
 	}
 	if err := api.SetNodeDevice(nid, nc.NodeID, nc.Token, d.cfg.DeviceID); err != nil {

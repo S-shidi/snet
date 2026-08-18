@@ -117,10 +117,10 @@ func (c *apiClient) Join(nid, code, publicKey, deviceID string) (protocol.JoinRe
 // RegisterDevice records (or refreshes) this device on the server and reports
 // the server's view of the device binding. A nil bound pointer means the server
 // did not report binding status (old server); non-nil is authoritative.
-func (c *apiClient) RegisterDevice(deviceID, publicKey string) (*bool, error) {
+func (c *apiClient) RegisterDevice(deviceID, publicKey, name string) (*bool, error) {
 	var out protocol.RegisterDeviceResp
 	err := c.do(http.MethodPost, "/api/v1/devices", "",
-		protocol.RegisterDeviceReq{DeviceID: deviceID, PublicKey: publicKey}, &out)
+		protocol.RegisterDeviceReq{DeviceID: deviceID, PublicKey: publicKey, Name: name}, &out)
 	if err != nil {
 		return nil, err
 	}
