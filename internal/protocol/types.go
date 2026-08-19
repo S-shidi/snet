@@ -39,6 +39,9 @@ type Node struct {
 	LastSeen  int64  `json:"lastSeen,omitempty"`
 	DeviceID  string `json:"deviceId,omitempty"`
 	Online    bool   `json:"online,omitempty"`
+	// AllowedSubnets lists CIDR subnets this node advertises for routing.
+	// Other peers route traffic for these subnets through this node's tunnel.
+	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
 }
 
 type CreateNetworkReq struct {
@@ -110,6 +113,12 @@ type NetworkSettingsReq struct {
 	Name             string `json:"name"`
 	Subnet           string `json:"subnet"`
 	ApprovalRequired *bool  `json:"approvalRequired"`
+}
+
+// UpdateSubnetsReq sets the CIDR subnets a node advertises for routing.
+// Other peers will route traffic for these subnets through this node.
+type UpdateSubnetsReq struct {
+	Subnets []string `json:"subnets"`
 }
 
 type NetworkInfoResp struct {

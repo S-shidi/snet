@@ -27,15 +27,16 @@ type PendingJoin struct {
 // NetworkCfg is the persisted per-network state of this daemon. A daemon can
 // hold any number of networks; only Active ones are brought up on start.
 type NetworkCfg struct {
-	Name        string `json:"name,omitempty"`
-	NodeID      string `json:"nodeId"`
-	IP          string `json:"ip"`
-	Token       string `json:"token"`
-	PairingCode string `json:"pairingCode,omitempty"`
-	Subnet      string `json:"subnet,omitempty"`
-	Port        int    `json:"port,omitempty"`
-	Active      bool   `json:"active"`
-	Owner       bool   `json:"owner,omitempty"`
+	Name           string   `json:"name,omitempty"`
+	NodeID         string   `json:"nodeId"`
+	IP             string   `json:"ip"`
+	Token          string   `json:"token"`
+	PairingCode    string   `json:"pairingCode,omitempty"`
+	Subnet         string   `json:"subnet,omitempty"`
+	Port           int      `json:"port,omitempty"`
+	Active         bool     `json:"active"`
+	Owner          bool     `json:"owner,omitempty"`
+	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
 }
 
 // Config is the daemon configuration (v2, multi-network). PrivateKey is the

@@ -157,6 +157,11 @@ func (c *apiClient) UpdateNetworkSettings(nid, token, name, subnet string, appro
 		protocol.NetworkSettingsReq{Name: name, Subnet: subnet, ApprovalRequired: approvalRequired}, nil)
 }
 
+func (c *apiClient) UpdateSubnets(nid, token string, subnets []string) error {
+	return c.do(http.MethodPatch, "/api/v1/networks/"+nid+"/subnets", token,
+		protocol.UpdateSubnetsReq{Subnets: subnets}, nil)
+}
+
 func (c *apiClient) ApprovePending(nid, token, pendingID string) error {
 	return c.do(http.MethodPost, "/api/v1/networks/"+nid+"/pending/"+pendingID+"/approve", token, nil, nil)
 }

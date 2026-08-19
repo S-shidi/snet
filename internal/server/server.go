@@ -223,6 +223,19 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		writeJSON(w, http.StatusOK, peers)
 	}))
 
+	mux.HandleFunc("PATCH /api/v1/networks/{nid}/subnets", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.UpdateSubnetsReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.UpdateAllowedSubnets(tokenOf(r), req.Subnets); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
 	mux.HandleFunc("DELETE /api/v1/networks/{nid}/nodes/{nodeID}", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		if err := s.RemoveNode(tokenOf(r)); err != nil {
 			handleStoreErr(w, err)

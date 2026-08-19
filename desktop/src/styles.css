@@ -333,6 +333,23 @@ input[type=number] { width: 120px; }
 .subnet-status.warn { color: var(--warn); }
 .subnet-status.err { color: var(--err); }
 
+/* ── 子网路由标签 ─────────────────────────────── */
+.subnet-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.subnet-tags .chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 999px; color: var(--text);
+  font-size: 12px; padding: 3px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.subnet-tags .chip-del {
+  background: none; border: none; color: var(--dim); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 0 0 2px;
+}
+.subnet-tags .chip-del:hover { color: var(--err); }
+.subnet-add-row { display: flex; gap: 8px; align-items: stretch; }
+.subnet-add-row input { flex: 1; }
+
 details.help { margin-top: 12px; }
 details.help summary { cursor: pointer; color: var(--accent2); font-size: 13px; margin-bottom: 8px; }
 table.help {

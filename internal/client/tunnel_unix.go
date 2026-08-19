@@ -25,3 +25,23 @@ func configureInterface(iface, ip string, mtu int) error {
 func addHostRoute(iface, ip string) error {
 	return runCmd("route", "add", "-host", ip, "-interface", iface)
 }
+
+// removeHostRoute removes a /32 host route.
+func removeHostRoute(iface, ip string) error {
+	return runCmd("route", "delete", "-host", ip, "-interface", iface)
+}
+
+// addSubnetRoute installs a subnet route through the TUN interface.
+func addSubnetRoute(iface, cidr string) error {
+	return runCmd("route", "add", "-net", cidr, "-interface", iface)
+}
+
+// removeSubnetRoute removes a subnet route.
+func removeSubnetRoute(iface, cidr string) error {
+	return runCmd("route", "delete", "-net", cidr, "-interface", iface)
+}
+
+// enableIPForwarding enables IP forwarding on macOS (requires root).
+func enableIPForwarding() error {
+	return runCmd("sysctl", "-w", "net.inet.ip.forwarding=1")
+}

@@ -209,6 +209,16 @@ pub async fn update_settings(nid: String, name: String, subnet: String, approval
 }
 
 #[tauri::command]
+pub async fn update_subnets(nid: String, subnets: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ctl("POST", "/ctl/subnets", Some(json!({ "nid": nid, "subnets": subnets })))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn approve_pending(nid: String, pending_id: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ctl("POST", "/ctl/approve", Some(json!({ "nid": nid, "pendingId": pending_id })))

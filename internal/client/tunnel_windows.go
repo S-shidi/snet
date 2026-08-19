@@ -33,3 +33,29 @@ func addHostRoute(iface, ip string) error {
 	}
 	return nil
 }
+
+// removeHostRoute removes a /32 host route.
+func removeHostRoute(iface, ip string) error {
+	return runCmd("netsh", "interface", "ipv4", "delete", "route", ip+"/32", "interface="+iface)
+}
+
+// addSubnetRoute installs a subnet route through the wintun adapter.
+func addSubnetRoute(iface, cidr string) error {
+	_ = runCmd("netsh", "interface", "ipv4", "delete", "route", cidr, "interface="+iface)
+	if err := runCmd("netsh", "interface", "ipv4", "add", "route", cidr, "interface="+iface); err != nil {
+		return fmt.Errorf("netsh add route: %w", err)
+	}
+	return nil
+}
+
+// removeSubnetRoute removes a subnet route.
+func removeSubnetRoute(iface, cidr string) error {
+	return runCmd("netsh", "interface", "ipv4", "delete", "route", cidr, "interface="+iface)
+}
+
+// enableIPForwarding enables IP forwarding on Windows (requires admin).
+func enableIPForwarding() error {
+	return runCmd("reg", "add",
+		`HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`,
+		"/v", "IPEnableRouter", "/t", "REG_DWORD", "/d", "1", "/f")
+}

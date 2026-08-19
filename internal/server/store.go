@@ -2490,3 +2490,63 @@ func (s *Store) putAdminPasswordLocked(user, hash string) error {
 		return tx.Bucket(bktAdmin).Put([]byte(user), []byte(hash))
 	})
 }
+
+// UpdateAllowedSubnets replaces the CIDR subnets a node advertises for
+// routing. Each subnet is validated, must not overlap with the network's own
+// subnet, and must not conflict with another node's advertised subnets.
+func (s *Store) UpdateAllowedSubnets(token string, subnets []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	me := ns.nodes[te.NodeID]
+	if me == nil {
+		return ErrNotFound
+	}
+	// Validate each subnet.
+	seen := map[string]struct{}{}
+	for _, raw := range subnets {
+		cidr, err := validateSubnet(raw)
+		if err != nil {
+			return fmt.Errorf("子网 %q 无效: %w", raw, err)
+		}
+		if _, dup := seen[cidr]; dup {
+			return fmt.Errorf("重复子网 %s", cidr)
+		}
+		seen[cidr] = struct{}{}
+		// Must not overlap with the network's own VPN subnet.
+		if ns.n.Subnet != "" && subnetsOverlap(cidr, ns.n.Subnet) {
+			return fmt.Errorf("子网 %s 与网络 VPN 网段 %s 重叠", cidr, ns.n.Subnet)
+		}
+	}
+	// Must not conflict with other nodes' advertised subnets.
+	for id, n := range ns.nodes {
+		if id == te.NodeID {
+			continue
+		}
+		for _, other := range n.AllowedSubnets {
+			_, oc, _ := net.ParseCIDR(other)
+			if oc == nil {
+				continue
+			}
+			for _, raw := range subnets {
+				cidr, _ := validateSubnet(raw)
+				_, ac, _ := net.ParseCIDR(cidr)
+				if ac == nil {
+					continue
+				}
+				if oc.Contains(ac.IP) || ac.Contains(oc.IP) {
+					return fmt.Errorf("子网 %s 与节点 %s 宣告的 %s 冲突", cidr, n.ID, other)
+				}
+			}
+		}
+	}
+	me.AllowedSubnets = subnets
+	return s.persistNode(te.NetworkID, me)
+}

@@ -21,8 +21,9 @@ type CtlReq struct {
 	Subnet string `json:"subnet"`
 	NodeID string `json:"nodeId"`
 
-	ApprovalRequired *bool  `json:"approvalRequired"`
-	PendingID        string `json:"pendingId"`
+	ApprovalRequired *bool    `json:"approvalRequired"`
+	PendingID        string   `json:"pendingId"`
+	Subnets          []string `json:"subnets"`
 }
 
 // ServeCtl exposes the local control API for snetctl and the Tauri UI.
@@ -266,6 +267,19 @@ func ServeCtl(d *Daemon, addr string, onShutdown func(*http.Server)) error {
 			return
 		}
 		writeCtlJSON(w, 200, map[string]string{"pairingCode": code})
+	})
+
+	mux.HandleFunc("POST /ctl/subnets", func(w http.ResponseWriter, r *http.Request) {
+		var req CtlReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.UpdateSubnets(req.Nid, req.Subnets); err != nil {
+			writeCtlErr(w, 500, err)
+			return
+		}
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc("GET /ctl/netinfo", func(w http.ResponseWriter, r *http.Request) {

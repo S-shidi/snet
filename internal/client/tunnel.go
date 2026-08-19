@@ -56,7 +56,9 @@ func NewTunnel(privKeyHex, ip string, port int, mtu int) (*Tunnel, error) {
 	return &Tunnel{dev: dev, tun: t, iface: name, ip: ip, peers: make(map[string]protocol.Node)}, nil
 }
 
-// ApplyPeers rebuilds the full WireGuard peer set and host routes.
+// ApplyPeers rebuilds the full WireGuard peer set and OS routes, diffing
+// against the previous set to add/remove routes as peers join, leave, or
+// change their advertised subnets.
 func (t *Tunnel) ApplyPeers(peers []protocol.Node) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -66,6 +68,7 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node) error {
 		next[p.ID] = p
 	}
 
+	// Build WireGuard IPC configuration.
 	var sb strings.Builder
 	for _, p := range peers {
 		pub, err := pubToHex(p.PublicKey)
@@ -73,7 +76,14 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node) error {
 			return err
 		}
 		sb.WriteString("public_key=" + pub + "\n")
-		sb.WriteString("allowed_ip=" + p.IP + "/32\n")
+		// Use advertised subnets for routing, fall back to host /32.
+		if len(p.AllowedSubnets) > 0 {
+			for _, sub := range p.AllowedSubnets {
+				sb.WriteString("allowed_ip=" + sub + "\n")
+			}
+		} else {
+			sb.WriteString("allowed_ip=" + p.IP + "/32\n")
+		}
 		if p.Endpoint != "" {
 			sb.WriteString("endpoint=" + resolveEndpoint(p.Endpoint) + "\n")
 		}
@@ -83,16 +93,85 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node) error {
 		return fmt.Errorf("wg config: %w", err)
 	}
 
-	// add host routes for new peers
+	// OS route diff: remove routes for departed peers.
+	for id, old := range t.peers {
+		if _, ok := next[id]; !ok {
+			removePeerRoutes(t.iface, old)
+		}
+	}
+	// OS route diff: add/change routes for current peers.
 	for id, p := range next {
-		if _, ok := t.peers[id]; !ok {
-			if err := addHostRoute(t.iface, p.IP); err != nil {
-				return fmt.Errorf("route %s: %w", p.IP, err)
-			}
+		old, existed := t.peers[id]
+		if !existed {
+			addPeerRoutes(t.iface, p)
+		} else if subnetsChanged(old.AllowedSubnets, p.AllowedSubnets) || old.IP != p.IP {
+			removePeerRoutes(t.iface, old)
+			addPeerRoutes(t.iface, p)
 		}
 	}
 	t.peers = next
 	return nil
+}
+
+// Peers returns a snapshot of the current peer set. Callers must not modify
+// the returned map.
+func (t *Tunnel) Peers() map[string]protocol.Node {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.peers
+}
+
+// Iface returns the TUN interface name.
+func (t *Tunnel) Iface() string { return t.iface }
+
+// RemoveAllPeers removes all OS routes for every peer in the tunnel.
+// Used during tunnel teardown before closing the interface.
+func (t *Tunnel) RemoveAllPeers() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, p := range t.peers {
+		removePeerRoutes(t.iface, p)
+	}
+	t.peers = make(map[string]protocol.Node)
+}
+
+// addPeerRoutes installs OS routes for a peer's IP and any advertised subnets.
+func addPeerRoutes(iface string, p protocol.Node) {
+	if len(p.AllowedSubnets) > 0 {
+		for _, sub := range p.AllowedSubnets {
+			addSubnetRoute(iface, sub)
+		}
+	} else {
+		addHostRoute(iface, p.IP)
+	}
+}
+
+// removePeerRoutes removes OS routes for a peer's IP and any advertised subnets.
+func removePeerRoutes(iface string, p protocol.Node) {
+	if len(p.AllowedSubnets) > 0 {
+		for _, sub := range p.AllowedSubnets {
+			removeSubnetRoute(iface, sub)
+		}
+	}
+	// Always remove the host route (might exist from before subnets were added).
+	removeHostRoute(iface, p.IP)
+}
+
+// subnetsChanged reports whether two subnet slices differ.
+func subnetsChanged(a, b []string) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	m := make(map[string]struct{}, len(a))
+	for _, s := range a {
+		m[s] = struct{}{}
+	}
+	for _, s := range b {
+		if _, ok := m[s]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Stats returns per-peer transfer and handshake info for status display.

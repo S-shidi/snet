@@ -641,8 +641,10 @@ func (d *Daemon) bringUp(nid string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
+	// Clean up routes from the old tunnel before closing it.
 	if rt := d.nets[nid]; rt != nil {
 		if rt.tun != nil {
+			rt.tun.RemoveAllPeers()
 			rt.tun.Close()
 		}
 		close(rt.stop)
@@ -660,6 +662,13 @@ func (d *Daemon) bringUp(nid string) error {
 	delete(d.netErrs, nid)
 	rt := &netRuntime{tun: t, stop: make(chan struct{})}
 	d.nets[nid] = rt
+
+	// Enable IP forwarding if this device advertises subnets.
+	if len(nc.AllowedSubnets) > 0 {
+		if err := enableIPForwarding(); err != nil {
+			log.Printf("enable IP forwarding: %v (needs admin/root)", err)
+		}
+	}
 
 	endpoint, err := d.localEndpointLocked(nc.Port)
 	if err != nil {
@@ -1026,6 +1035,32 @@ func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool
 	return d.save()
 }
 
+// UpdateSubnets replaces the CIDR subnets this device advertises for routing
+// on the given network. Other peers will route traffic for these subnets
+// through this device's tunnel.
+func (d *Daemon) UpdateSubnets(nid string, subnets []string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	if err := d.apiLocked().UpdateSubnets(nid, nc.Token, subnets); err != nil {
+		return err
+	}
+	nc.AllowedSubnets = subnets
+	if err := d.save(); err != nil {
+		return err
+	}
+	// If subnets were added, try to enable IP forwarding (best-effort).
+	if len(subnets) > 0 {
+		if err := enableIPForwarding(); err != nil {
+			log.Printf("enable IP forwarding: %v (needs admin/root)", err)
+		}
+	}
+	return nil
+}
+
 // ApprovePending approves a member's join request on a network this node owns.
 func (d *Daemon) ApprovePending(nid, pendingID string) error {
 	d.mu.Lock()
@@ -1178,16 +1213,17 @@ func (d *Daemon) Status() (map[string]any, error) {
 	nets := make([]map[string]any, 0, len(d.cfg.Networks))
 	for nid, nc := range d.cfg.Networks {
 		entry := map[string]any{
-			"networkId": nid,
-			"name":      nc.Name,
-			"ip":        nc.IP,
-			"subnet":    nc.Subnet,
-			"port":      nc.Port,
-			"active":    nc.Active,
-			"owner":     nc.Owner,
-			"error":     "",
-			"interface": "",
-			"peerStats": map[string]PeerStats{},
+			"networkId":      nid,
+			"name":           nc.Name,
+			"ip":             nc.IP,
+			"subnet":         nc.Subnet,
+			"port":           nc.Port,
+			"active":         nc.Active,
+			"owner":          nc.Owner,
+			"error":          "",
+			"interface":      "",
+			"peerStats":      map[string]PeerStats{},
+			"allowedSubnets": nc.AllowedSubnets,
 		}
 		if rt := d.nets[nid]; rt != nil {
 			entry["error"] = rt.err

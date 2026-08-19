@@ -13,6 +13,7 @@ type NetInfo = {
   error?: string;
   interface?: string;
   peerStats?: Record<string, PeerStats>;
+  allowedSubnets?: string[];
 };
 type PendingJoin = {
   pendingId: string;
@@ -535,9 +536,11 @@ function netCard(n: NetInfo): string {
     ops.unshift(`<button data-act="info" class="btn ghost sm" title="查看服务器上该网络的完整信息（成员、中继、在线状态等）">详情</button>`);
     ops.push(`<button data-act="invite" class="btn ghost sm" title="展示邀请链接与加入二维码，供其他设备扫码加入">邀请</button>`);
     ops.push(`<button data-act="settings" class="btn ghost sm" title="修改网络名称、网段或加入批准设置（仅创建者）">设置</button>`);
+    ops.push(`<button data-act="subnets" class="btn ghost sm" title="宣告本设备的局域网子网，其他成员可通过 VPN 访问">子网路由</button>`);
     ops.push(`<button data-act="code" class="btn ghost sm" title="查看当前配对码并复制；可作废旧码并生成新码（仅创建者）">查看配对码</button>`);
     ops.push(`<button data-act="delete" class="btn danger ghost sm" title="彻底删除网络：所有成员断开、网段释放，不可恢复（仅创建者）">删除</button>`);
   } else {
+    ops.push(`<button data-act="subnets" class="btn ghost sm" title="宣告本设备的局域网子网，其他成员可通过 VPN 访问">子网路由</button>`);
     ops.push(`<button data-act="remove" class="btn danger ghost sm" title="本机退出该网络并遗忘配置，需重新扫码加入">退出网络</button>`);
   }
   const err = n.error ? `<p class="msg">${esc(n.error)}</p>` : "";
@@ -705,6 +708,10 @@ async function onAction(act: string, nid: string, btn: HTMLButtonElement) {
         await openNetworkSettings(nid);
         break;
       }
+      case "subnets": {
+        await openSubnetRouteModal(nid);
+        break;
+      }
       case "invite": {
         setPending("生成中…");
         await openInviteModal(nid);
@@ -800,6 +807,85 @@ async function openNetworkSettings(nid: string) {
           result.className = "msg";
           result.textContent = `保存失败: ${e}`;
           submit.disabled = false;
+        }
+      });
+    },
+  });
+}
+
+/* ── 子网路由弹窗 ───────────────────────────────────── */
+async function openSubnetRouteModal(nid: string) {
+  // Read current subnets from daemon status.
+  const st = await call<DaemonStatus>("daemon_status");
+  const net = (st.networks ?? []).find((n) => n.networkId === nid);
+  const curSubnets: string[] = net?.allowedSubnets ?? [];
+
+  const renderTags = (tags: string[]) =>
+    tags.length
+      ? tags.map((s) => `<span class="chip">${esc(s)}<button data-del="${esc(s)}" class="chip-del" title="移除">&times;</button></span>`).join("")
+      : `<span class="muted">未宣告任何子网</span>`;
+
+  openModal({
+    title: `子网路由 · ${nid}`,
+    body: `
+      <p class="hint">宣告本设备的局域网子网，其他成员可通过 VPN 访问。</p>
+      <div id="sr-tags" class="subnet-tags">${renderTags(curSubnets)}</div>
+      <div class="subnet-add-row">
+        <input type="text" id="sr-input" placeholder="如 192.168.3.0/24" />
+        <button id="sr-add" class="btn ghost sm">添加</button>
+      </div>
+      <p class="msg warn" style="margin-top:8px">需要本设备操作系统启用 IP 转发。daemon 需以管理员/root 权限运行。</p>
+      <p class="msg" id="sr-result"></p>`,
+    footer: `<button data-close class="btn ghost">取消</button><button id="sr-save" class="btn">保存</button>`,
+    onBody: (body) => {
+      const tags = [...curSubnets];
+      const tagsEl = body.querySelector<HTMLElement>("#sr-tags")!;
+      const input = body.querySelector<HTMLInputElement>("#sr-input")!;
+      const result = body.querySelector<HTMLElement>("#sr-result")!;
+
+      const refresh = () => { tagsEl.innerHTML = renderTags(tags); };
+
+      body.querySelector("#sr-add")!.addEventListener("click", () => {
+        const raw = input.value.trim();
+        if (!raw) return;
+        if (tags.includes(raw)) { result.textContent = "该子网已添加"; return; }
+        // Validate CIDR locally.
+        const chk = subnetCheck(raw, 24);
+        if (!chk.ok) { result.className = "msg"; result.textContent = `无效: ${chk.error}`; return; }
+        const cidr = chk.value;
+        if (tags.includes(cidr)) { result.textContent = "该子网已添加"; return; }
+        tags.push(cidr);
+        input.value = "";
+        result.textContent = "";
+        refresh();
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); (body.querySelector("#sr-add") as HTMLElement).click(); }
+      });
+      tagsEl.addEventListener("click", (e) => {
+        const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-del]");
+        if (!btn) return;
+        const val = btn.dataset.del!;
+        const idx = tags.indexOf(val);
+        if (idx >= 0) tags.splice(idx, 1);
+        refresh();
+      });
+
+      body.querySelector("#sr-save")!.addEventListener("click", async () => {
+        const saveBtn = body.querySelector<HTMLButtonElement>("#sr-save")!;
+        saveBtn.disabled = true;
+        result.className = "msg";
+        result.textContent = "保存中…";
+        try {
+          await call("update_subnets", { nid, subnets: tags });
+          result.className = "msg ok";
+          result.textContent = "已保存";
+          toast("子网路由已更新");
+          closeModal();
+        } catch (e) {
+          result.className = "msg";
+          result.textContent = `保存失败: ${e}`;
+          saveBtn.disabled = false;
         }
       });
     },

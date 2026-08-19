@@ -121,6 +121,7 @@ pub fn run() {
             remove_nid,
             rename_nid,
             update_settings,
+            update_subnets,
             approve_pending,
             deny_pending,
             cancel_pending,
