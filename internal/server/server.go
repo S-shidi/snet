@@ -851,6 +851,8 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, errors.New("设备授权码已被其他设备使用"))
 	case errors.Is(err, ErrAuthCodeFull):
 		writeErr(w, http.StatusConflict, errors.New("设备授权码可绑定的设备数已满"))
+	case errors.Is(err, ErrSubnetOverlap):
+		writeErr(w, http.StatusConflict, err)
 	default:
 		writeErr(w, http.StatusInternalServerError, err)
 	}
