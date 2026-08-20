@@ -131,11 +131,12 @@ type networkRecord struct {
 }
 
 type deviceRecord struct {
-	ID        string `json:"id"`
-	PublicKey string `json:"publicKey"`
-	CreatedAt string `json:"createdAt"`
-	LastSeen  int64  `json:"lastSeen,omitempty"`
-	Name      string `json:"name,omitempty"`
+	ID          string `json:"id"`
+	PublicKey   string `json:"publicKey"`
+	CreatedAt   string `json:"createdAt"`
+	LastSeen    int64  `json:"lastSeen,omitempty"`
+	Name        string `json:"name,omitempty"`
+	DeviceToken string `json:"deviceToken,omitempty"`
 }
 
 // authCodeBinding records one device bound to a shared authorization code.
@@ -1972,6 +1973,114 @@ func (s *Store) DeviceNetworks(deviceID string) []protocol.Network {
 	return out
 }
 
+// DeviceNetworkDetails returns the networks a device holds a node in, including
+// per-node credentials (nodeID, IP, token, publicKey) needed to reconstruct
+// the client config after a reinstall. New tokens are generated for each node
+// because the original tokens are not recoverable from their SHA-256 hashes.
+func (s *Store) DeviceNetworkDetails(deviceID string) ([]protocol.DeviceNetworkDetail, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []protocol.DeviceNetworkDetail
+	for _, ns := range s.networks {
+		for _, n := range ns.nodes {
+			if n.DeviceID == deviceID {
+				// Generate a fresh token for this node. The old token is
+				// lost (client reinstall) and cannot be recovered from its
+				// hash, so we rotate it.
+				tok, err := randomToken()
+				if err != nil {
+					return nil, err
+				}
+				// Remove old token mapping and register the new one.
+				s.rotateNodeTokenLocked(ns.n.ID, n.ID, tok)
+				c := protocol.DeviceNetworkDetail{
+					Network:   ns.n,
+					NodeID:    n.ID,
+					IP:        n.IP,
+					Token:     tok,
+					Owner:     ns.n.OwnerDeviceID == deviceID,
+					PublicKey: n.PublicKey,
+				}
+				c.RelayPort = ns.relayPort
+				c.NodeCount = len(ns.nodes)
+				c.Online = time.Now().Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second)
+				c.LastActivityAt = ns.lastActivityAt
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// rotateNodeTokenLocked removes the old token mapping for a node and registers
+// a new one. Callers must hold s.mu.
+func (s *Store) rotateNodeTokenLocked(netID, nodeID, newToken string) {
+	for h, te := range s.byToken {
+		if te.NetworkID == netID && te.NodeID == nodeID {
+			delete(s.byToken, h)
+			_ = s.deleteTokenByHash(h)
+			break
+		}
+	}
+	s.byToken[hashToken(newToken)] = tokenEntry{NetworkID: netID, NodeID: nodeID}
+	_ = s.persistToken(newToken, tokenEntry{NetworkID: netID, NodeID: nodeID})
+}
+
+// GenerateDeviceToken creates (or rotates) a device-level bearer token that
+// authenticates device-scoped API calls (e.g. fetching network details after
+// a reinstall). The token is persisted in the device record.
+func (s *Store) GenerateDeviceToken(deviceID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.devices[deviceID]
+	if d == nil {
+		return "", ErrNotFound
+	}
+	tok, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	d.DeviceToken = tok
+	if err := s.persistDevice(d); err != nil {
+		return "", err
+	}
+	return tok, nil
+}
+
+// ValidateDeviceToken checks whether the presented token matches the stored
+// device token for deviceID.
+func (s *Store) ValidateDeviceToken(deviceID, token string) bool {
+	if deviceID == "" || token == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d := s.devices[deviceID]
+	return d != nil && d.DeviceToken != "" && d.DeviceToken == token
+}
+
+// UpdateNodePublicKey updates the WireGuard public key of a node identified by
+// its device binding. This is used after a client reinstall when the device
+// generates a new keypair.
+func (s *Store) UpdateNodePublicKey(deviceID, networkID, nodeID, publicKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns := s.networks[networkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[nodeID]
+	if n == nil {
+		return ErrNotFound
+	}
+	if n.DeviceID != deviceID {
+		return ErrUnauthorized
+	}
+	n.PublicKey = publicKey
+	return s.persistNode(networkID, n)
+}
+
 func (s *Store) AdminNodes(nid string) ([]protocol.Node, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2372,12 +2481,14 @@ func (s *Store) deleteDevice(deviceID string) error {
 // MaxBindings rejects further devices with ErrAuthCodeFull; binding a new code
 // automatically releases the device's previous code so an operator can rotate
 // codes by handing out fresh ones. A device is bound to at most one code.
-func (s *Store) BindDevice(code, deviceID, publicKey string) error {
+// Returns the device token for device-scoped API calls (e.g. network sync
+// after reinstall).
+func (s *Store) BindDevice(code, deviceID, publicKey string) (string, error) {
 	if err := validateDeviceID(deviceID); err != nil {
-		return err
+		return "", err
 	}
 	if deviceID == "" {
-		return errors.New("missing deviceId")
+		return "", errors.New("missing deviceId")
 	}
 	h := hashCode(code)
 	s.mu.Lock()
@@ -2391,13 +2502,36 @@ func (s *Store) BindDevice(code, deviceID, publicKey string) error {
 		}
 	}
 	if found == nil {
-		return ErrAuthCodeInvalid
+		return "", ErrAuthCodeInvalid
 	}
 	if found.bindingIndex(deviceID) >= 0 {
-		return nil // idempotent: same device, same code
+		// Idempotent: same device, same code. Still return the device token.
+		d := s.devices[deviceID]
+		if d != nil && d.DeviceToken != "" {
+			return d.DeviceToken, nil
+		}
+		// First time binding with this device: generate a token.
+		tok, err := randomToken()
+		if err != nil {
+			return "", err
+		}
+		if d == nil {
+			d = &deviceRecord{
+				ID:        deviceID,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			s.devices[deviceID] = d
+		}
+		d.DeviceToken = tok
+		d.PublicKey = publicKey
+		d.LastSeen = time.Now().Unix()
+		if err := s.persistDevice(d); err != nil {
+			return "", err
+		}
+		return tok, nil
 	}
 	if len(found.Bindings) >= found.MaxBindings {
-		return ErrAuthCodeFull
+		return "", ErrAuthCodeFull
 	}
 	// Rotation: release the device from any other code first so it holds
 	// exactly one binding.
@@ -2405,7 +2539,7 @@ func (s *Store) BindDevice(code, deviceID, publicKey string) error {
 		if ac.bindingIndex(deviceID) >= 0 {
 			ac.removeBinding(deviceID)
 			if err := s.persistAuthCode(ac); err != nil {
-				return err
+				return "", err
 			}
 		}
 	}
@@ -2415,11 +2549,26 @@ func (s *Store) BindDevice(code, deviceID, publicKey string) error {
 		BoundAt:   time.Now().UTC(),
 	})
 	if err := s.persistAuthCode(found); err != nil {
-		return err
+		return "", err
 	}
 	// Registering the device here keeps the device list consistent even when
 	// the client never calls /api/v1/devices.
-	return s.upsertDeviceLocked(deviceID, publicKey, "")
+	if err := s.upsertDeviceLocked(deviceID, publicKey, ""); err != nil {
+		return "", err
+	}
+	// Generate a device token for device-scoped API calls.
+	tok, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	d := s.devices[deviceID]
+	if d != nil {
+		d.DeviceToken = tok
+		if err := s.persistDevice(d); err != nil {
+			return "", err
+		}
+	}
+	return tok, nil
 }
 
 // ---- admin credentials ----

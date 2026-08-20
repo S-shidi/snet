@@ -194,11 +194,64 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, errors.New("缺少设备授权码"))
 			return
 		}
-		if err := s.BindDevice(req.Code, req.DeviceID, req.PublicKey); err != nil {
+		deviceToken, err := s.BindDevice(req.Code, req.DeviceID, req.PublicKey)
+		if err != nil {
 			handleStoreErr(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, protocol.BindDeviceResp{DeviceID: req.DeviceID})
+		writeJSON(w, http.StatusOK, protocol.BindDeviceResp{DeviceID: req.DeviceID, DeviceToken: deviceToken})
+	})
+
+	// Device-scoped network listing: returns all networks the device holds a
+	// node in, including per-node credentials for config reconstruction after
+	// a reinstall. Authenticated by deviceToken (not a node token).
+	mux.HandleFunc("GET /api/v1/devices/{deviceId}/networks", func(w http.ResponseWriter, r *http.Request) {
+		deviceID := r.PathValue("deviceId")
+		deviceToken := deviceTokenOf(r)
+		if deviceID == "" || deviceToken == "" {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		if !s.ValidateDeviceToken(deviceID, deviceToken) {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		details, err := s.DeviceNetworkDetails(deviceID)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, protocol.DeviceNetworksResp{Networks: details})
+	})
+
+	// Update a node's WireGuard public key. Used after a client reinstall
+	// when the device generates a new keypair. Authenticated by deviceToken.
+	mux.HandleFunc("POST /api/v1/networks/{nid}/nodes/{nodeID}/publickey", func(w http.ResponseWriter, r *http.Request) {
+		nid := r.PathValue("nid")
+		nodeID := r.PathValue("nodeID")
+		deviceToken := deviceTokenOf(r)
+		if deviceToken == "" {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		var req protocol.UpdateNodePublicKeyReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if req.DeviceID == "" || req.PublicKey == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("缺少deviceId或publicKey"))
+			return
+		}
+		if !s.ValidateDeviceToken(req.DeviceID, deviceToken) {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
+		if err := s.UpdateNodePublicKey(req.DeviceID, nid, nodeID, req.PublicKey); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("PUT /api/v1/networks/{nid}/nodes/{nodeID}/endpoint", requireToken(func(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +282,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := s.UpdateAllowedSubnets(tokenOf(r), req.Subnets); err != nil {
+		token := tokenOf(r)
+		if err := s.UpdateAllowedSubnets(token, req.Subnets); err != nil {
 			handleStoreErr(w, err)
 			return
 		}
@@ -707,7 +761,8 @@ func (h *handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 
 func requireToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if tokenOf(r) == "" {
+		t := tokenOf(r)
+		if t == "" {
 			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
 			return
 		}
@@ -718,6 +773,11 @@ func requireToken(next http.HandlerFunc) http.HandlerFunc {
 func tokenOf(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	return strings.TrimPrefix(h, "Bearer ")
+}
+
+// deviceTokenOf extracts the device token from the X-Device-Token header.
+func deviceTokenOf(r *http.Request) string {
+	return r.Header.Get("X-Device-Token")
 }
 
 // limitBody caps request bodies to maxBodyBytes.

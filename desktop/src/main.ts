@@ -725,7 +725,8 @@ async function onAction(act: string, nid: string, btn: HTMLButtonElement) {
       case "delete": {
         if (!(await confirmDialog("删除网络", "删除将断开所有成员并释放网段，不可恢复。确定？", true))) return;
         setPending("删除中…");
-        await call("delete_nid", { nid });
+        const r = await ctlOrClean(nid, "删除网络", () => call("delete_nid", { nid }));
+        if (r === null) break;
         toast("网络已删除");
         break;
       }
@@ -747,6 +748,28 @@ async function onAction(act: string, nid: string, btn: HTMLButtonElement) {
   }
 }
 
+/** 通用网络操作 wrapper：服务端返回404（网络已删除）时弹出确认框引导清理 */
+async function ctlOrClean<T>(nid: string, label: string, fn: () => Promise<T>): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (e: any) {
+    if (String(e).includes("该网络在服务端已不存在")) {
+      const ok = await confirmDialog(
+        `${label}失败`,
+        "该网络在服务端已不存在，是否清理本地配置？",
+        true,
+      );
+      if (ok) {
+        await call("remove_nid", { nid });
+        toast("本地网络配置已清理");
+        await refresh();
+      }
+      return null;
+    }
+    throw e;
+  }
+}
+
 async function openNetworkSettings(nid: string) {
   let detail: NetInfoDetail | undefined = ownerInfo[nid];
   if (!detail) {
@@ -763,7 +786,7 @@ async function openNetworkSettings(nid: string) {
   openModal({
     title: `网络设置 · ${nid}`,
     body: `
-      <div class="row"><label>网络名称</label><input id="s-name" value="${esc(curName)}" placeholder="留空保持不变" /></div>
+      <div class="row"><label>网络名称</label><input id="s-name" type="text" value="${esc(curName)}" placeholder="留空保持不变" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
       <div class="row"><label class="inline"><input id="s-approval" type="checkbox" ${detail.approvalRequired ? "checked" : ""} /> 新成员加入需创建者批准</label></div>
       <p class="msg" id="s-warn" hidden>修改网段会重新分配所有成员 IP，已加入的 SNET 客户端会自动重连；但手机等外部 WireGuard 设备需手动重新导入新配置。</p>
@@ -791,23 +814,20 @@ async function openNetworkSettings(nid: string) {
         submit.disabled = true;
         result.className = "msg";
         result.textContent = "保存中…";
-        try {
-          await call("update_settings", {
+        const r = await ctlOrClean(nid, "保存设置", () =>
+          call("update_settings", {
             nid,
             name,
             subnet: subnet !== curSubnet ? subnet : "",
             approvalRequired: approval !== !!detail!.approvalRequired ? approval : null,
-          });
-          result.className = "msg ok";
-          result.textContent = "已保存";
-          await refreshOwnerInfo(true);
-          toast("网络设置已保存");
-          closeModal();
-        } catch (e) {
-          result.className = "msg";
-          result.textContent = `保存失败: ${e}`;
-          submit.disabled = false;
-        }
+          }),
+        );
+        if (r === null) return;
+        result.className = "msg ok";
+        result.textContent = "已保存";
+        await refreshOwnerInfo(true);
+        toast("网络设置已保存");
+        closeModal();
       });
     },
   });
@@ -876,17 +896,14 @@ async function openSubnetRouteModal(nid: string) {
         saveBtn.disabled = true;
         result.className = "msg";
         result.textContent = "保存中…";
-        try {
-          await call("update_subnets", { nid, subnets: tags });
-          result.className = "msg ok";
-          result.textContent = "已保存";
-          toast("子网路由已更新");
-          closeModal();
-        } catch (e) {
-          result.className = "msg";
-          result.textContent = `保存失败: ${e}`;
-          saveBtn.disabled = false;
-        }
+        const r = await ctlOrClean(nid, "子网路由", () =>
+          call("update_subnets", { nid, subnets: tags }),
+        );
+        if (r === null) return;
+        result.className = "msg ok";
+        result.textContent = "已保存";
+        toast("子网路由已更新");
+        closeModal();
       });
     },
   });
@@ -903,14 +920,12 @@ async function openCodeModal(nid: string) {
   }
   if (!code) {
     // 服务器重启后配对码明文不落盘；此时自动生成新码（旧码作废）。
-    try {
-      const r = await call<{ pairingCode: string }>("reset_code", { nid });
-      code = r.pairingCode;
-      toast("原配对码不可用，已生成新码（旧码作废）", "warn");
-    } catch (e) {
-      toast(`生成配对码失败: ${e}`, "err");
-      return;
-    }
+    const nr = await ctlOrClean(nid, "查看配对码", () =>
+      call<{ pairingCode: string }>("reset_code", { nid }),
+    );
+    if (nr === null) return;
+    code = nr.pairingCode;
+    toast("原配对码不可用，已生成新码（旧码作废）", "warn");
   }
   const name = nid;
   openModal({
@@ -932,7 +947,10 @@ async function openCodeModal(nid: string) {
         reset.disabled = true;
         reset.innerHTML = `${SPIN} 生成中…`;
         try {
-          const r = await call<{ pairingCode: string }>("reset_code", { nid });
+          const r = await ctlOrClean(nid, "重置配对码", () =>
+            call<{ pairingCode: string }>("reset_code", { nid }),
+          );
+          if (r === null) { reset.disabled = false; reset.textContent = "重置配对码"; return; }
           code = r.pairingCode;
           codeEl.textContent = code;
           result.className = "msg ok";
@@ -963,14 +981,12 @@ async function openInviteModal(nid: string) {
   let code = detail.pairingCode;
   if (!code) {
     // 服务器重启后配对码明文不落盘；此时自动生成新码（旧码作废）。
-    try {
-      const r = await call<{ pairingCode: string }>("reset_code", { nid });
-      code = r.pairingCode;
-      toast("原配对码不可用，已生成新码（旧码作废）", "warn");
-    } catch (e) {
-      toast(`生成配对码失败: ${e}`, "err");
-      return;
-    }
+    const nr = await ctlOrClean(nid, "邀请加入", () =>
+      call<{ pairingCode: string }>("reset_code", { nid }),
+    );
+    if (nr === null) return;
+    code = nr.pairingCode;
+    toast("原配对码不可用，已生成新码（旧码作废）", "warn");
   }
   const netId = detail.id || detail.networkId;
   if (!netId) {
@@ -1044,7 +1060,10 @@ async function showMembers(nid: string) {
             btn.disabled = true;
             btn.textContent = "踢出中…";
             try {
-              await call("kick_nid", { nid, nodeId: k.dataset.node });
+              const r = await ctlOrClean(nid, "踢出成员", () =>
+                call("kick_nid", { nid, nodeId: k.dataset.node }),
+              );
+              if (r === null) return;
               toast("已踢出");
               closeModal();
             } catch (e) {
@@ -1204,7 +1223,7 @@ function openJoinModal() {
     : `<p class="msg">未连接服务器：请先在「设置」中链接服务器；或粘贴带有服务器地址的邀请链接后加入。</p>`;
   openModal({
     title: "加入网络",
-    body: `<div class="row"><label>邀请链接</label><input id="m-link" placeholder="snet://join?nid=...&code=..." /></div>
+    body: `<div class="row"><label>邀请链接</label><input id="m-link" type="text" placeholder="snet://join?nid=...&code=..." /></div>
       <p class="hint" style="text-align:center">或手动输入</p>
       <div class="row"><label>网络ID</label><input id="m-nid" type="text" placeholder="6 位网络ID" /></div>
       <div class="row"><label>配对码</label><input id="m-code" type="text" placeholder="12 位配对码" /></div>
@@ -1227,7 +1246,7 @@ function openJoinModal() {
         authWrap.innerHTML = `
           <div class="settings-block">
             <p class="msg">该邀请属于服务器 <code>${esc(server)}</code>，本机尚未绑定该服务器。请输入设备授权码以绑定后加入：</p>
-            <div class="row"><label>设备授权码</label><input id="m-bind-code" placeholder="管理端生成的授权码" autocomplete="off" /></div>
+            <div class="row"><label>设备授权码</label><input id="m-bind-code" type="text" placeholder="管理端生成的授权码" autocomplete="off" /></div>
             <div class="settings-actions"><button id="m-bind-go" class="btn">绑定并加入</button></div>
             <p class="msg" id="m-bind-result"></p>
           </div>`;
@@ -1369,9 +1388,9 @@ function openSettingsModal() {
   openModal({
     title: "设置",
     body: `<div class="settings-block">
-        <div class="row"><label>服务器地址</label><input id="s-server" value="${esc(s.server)}" placeholder="https://example.com:8090" /></div>
-        <div class="row"><label>设备授权码</label><input id="s-code" placeholder="管理端生成的设备授权码（仅用于链接，不保存）" autocomplete="off" /></div>
-        <div class="row"><label>CA 证书路径</label><input id="s-ca" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
+        <div class="row"><label>服务器地址</label><input id="s-server" type="text" value="${esc(s.server)}" placeholder="https://example.com:8090" /></div>
+        <div class="row"><label>设备授权码</label><input id="s-code" type="text" placeholder="管理端生成的设备授权码（仅用于链接，不保存）" autocomplete="off" /></div>
+        <div class="row"><label>CA 证书路径</label><input id="s-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
         <div class="settings-actions">
           <button id="s-bind" class="btn">链接服务器</button>
         </div>

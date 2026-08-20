@@ -15,6 +15,19 @@ import (
 	"snet/internal/protocol"
 )
 
+// netGoneErr is returned when the server reports 404 for a network operation,
+// indicating the network no longer exists on the server.
+var netGoneErr = errors.New("该网络在服务端已不存在")
+
+// wrapNetGone converts a server 404 error into netGoneErr so callers can
+// present a clear "network gone" message to the user.
+func wrapNetGone(err error) error {
+	if err != nil && strings.Contains(err.Error(), "404") {
+		return netGoneErr
+	}
+	return err
+}
+
 // retryInterval is how often the daemon re-attempts tunnel creation for a
 // network whose initial bring-up failed (e.g. insufficient privileges to
 // create a TUN device) until it comes up or is left/removed.
@@ -125,11 +138,17 @@ func (d *Daemon) ensureKeys(serverAddr string, port int) error {
 		d.cfg.WireguardPort = port
 	}
 	if d.cfg.PrivateKey == "" {
-		priv, _, err := GenerateKeyPair()
-		if err != nil {
-			return err
+		// Try to load the private key from the persistent device ID file
+		// first (survives app reinstalls). Falls back to generating a new one.
+		if _, persisted, err := LoadDeviceKeypair(d.deviceIDFile); err == nil && persisted != "" {
+			d.cfg.PrivateKey = persisted
+		} else {
+			priv, _, err := GenerateKeyPair()
+			if err != nil {
+				return err
+			}
+			d.cfg.PrivateKey = b64ToHex(priv)
 		}
-		d.cfg.PrivateKey = b64ToHex(priv)
 		if err := d.save(); err != nil {
 			return err
 		}
@@ -143,6 +162,10 @@ func (d *Daemon) ensureKeys(serverAddr string, port int) error {
 		if err := d.save(); err != nil {
 			return err
 		}
+	}
+	// Persist the private key alongside the device ID so it survives reinstalls.
+	if d.deviceIDFile != "" {
+		_ = SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey)
 	}
 	return nil
 }
@@ -400,7 +423,8 @@ func (d *Daemon) Join(serverAddr string, port int, nid, code string) (protocol.J
 // device authorization code. The code travels once over the wire and is never
 // persisted. Binding puts the daemon in "custom" server mode. Binding to a
 // different server clears the previous server's networks on success; a failed
-// bind leaves them untouched.
+// bind leaves them untouched. After a successful bind, the device's historical
+// networks are synced from the server (reinstall recovery).
 func (d *Daemon) Bind(serverAddr, caPath, code string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -411,7 +435,8 @@ func (d *Daemon) Bind(serverAddr, caPath, code string) error {
 	}
 	d.cfg.ServerCAPath = caPath
 	api := d.apiLocked()
-	if _, err := api.BindDevice(d.cfg.DeviceID, d.publicKeyLocked(), code); err != nil {
+	resp, err := api.BindDevice(d.cfg.DeviceID, d.publicKeyLocked(), code)
+	if err != nil {
 		d.rollbackSwitchLocked(sw)
 		return err
 	}
@@ -421,6 +446,13 @@ func (d *Daemon) Bind(serverAddr, caPath, code string) error {
 		return err
 	}
 	d.startBindCheckLocked()
+	// Sync historical networks from the server (reinstall recovery).
+	if resp.DeviceToken != "" {
+		// Unlock before SyncNetworks since it acquires d.mu internally.
+		d.mu.Unlock()
+		_ = d.SyncNetworks(resp.DeviceToken)
+		d.mu.Lock()
+	}
 	return nil
 }
 
@@ -599,6 +631,103 @@ func (d *Daemon) reconcileOwnership(nid string) {
 	}
 }
 
+// SyncNetworks fetches the device's historical networks from the server and
+// reconstructs the local config. Used after a reinstall when the DeviceID
+// persists but the local config (networks, tokens, private key) is lost.
+// The deviceToken authenticates the request. Errors are logged but non-fatal.
+func (d *Daemon) SyncNetworks(deviceToken string) error {
+	d.mu.Lock()
+	api := d.apiLocked()
+	deviceID := d.cfg.DeviceID
+	d.mu.Unlock()
+
+	if deviceID == "" || deviceToken == "" {
+		return nil
+	}
+
+	details, err := api.DeviceNetworks(deviceID, deviceToken)
+	if err != nil {
+		log.Printf("sync networks: fetch device networks: %v", err)
+		return err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	api = d.apiLocked()
+	pub := d.publicKeyLocked()
+
+	// Register this device with its current (possibly new) public key.
+	if _, err := api.RegisterDevice(deviceID, pub, d.hostname()); err != nil {
+		log.Printf("sync networks: register device: %v", err)
+	}
+
+	synced := 0
+	for _, detail := range details {
+		nid := detail.Network.ID
+
+		// Skip networks already present locally.
+		if _, ok := d.cfg.Networks[nid]; ok {
+			continue
+		}
+
+		// Update the node's WireGuard public key on the server to match
+		// the current (new) keypair.
+		if detail.PublicKey != pub {
+			if err := api.UpdateNodePublicKey(nid, detail.NodeID, deviceID, deviceToken, pub); err != nil {
+				log.Printf("sync networks: update public key %s: %v", nid, err)
+			}
+		}
+
+		// Build local network config from server data.
+		if d.cfg.Networks == nil {
+			d.cfg.Networks = map[string]*NetworkCfg{}
+		}
+		nc := &NetworkCfg{
+			Name:     detail.Name,
+			NodeID:   detail.NodeID,
+			IP:       detail.IP,
+			Token:    detail.Token,
+			Subnet:   detail.Subnet,
+			Port:     0,
+			Active:   true,
+			Owner:    detail.Owner,
+		}
+		d.cfg.Networks[nid] = nc
+
+		// Bind the node to this device on the server.
+		if err := api.SetNodeDevice(nid, detail.NodeID, detail.Token, deviceID); err != nil {
+			log.Printf("sync networks: bind node device %s: %v", nid, err)
+		}
+
+		// Try to claim ownership if the server says we're the owner.
+		if detail.Owner {
+			if err := api.ClaimNetwork(nid, detail.Token, deviceID); err != nil {
+				log.Printf("sync networks: claim %s: %v", nid, err)
+			}
+		}
+
+		synced++
+	}
+
+	if synced > 0 {
+		if err := d.save(); err != nil {
+			log.Printf("sync networks: save: %v", err)
+		}
+		// Bring up tunnels for newly added networks.
+		for nid, nc := range d.cfg.Networks {
+			if nc.Active && d.nets[nid] == nil {
+				if err := d.bringUp(nid); err != nil {
+					log.Printf("sync networks: bring up %s: %v", nid, err)
+				}
+			}
+		}
+		log.Printf("sync networks: restored %d network(s)", synced)
+	}
+
+	return nil
+}
+
 // Start resumes from persisted state (tunnels + poll loops) for every active
 // network, then reconciles device ownership for legacy networks.
 func (d *Daemon) Start() error {
@@ -613,6 +742,15 @@ func (d *Daemon) Start() error {
 		d.cfg.DeviceID = id
 		if err := d.save(); err != nil {
 			return err
+		}
+	}
+	// Try to restore private key from the persistent device file if missing.
+	if d.cfg.PrivateKey == "" {
+		if _, key, err := LoadDeviceKeypair(d.deviceIDFile); err == nil && key != "" {
+			d.cfg.PrivateKey = key
+			if err := d.save(); err != nil {
+				log.Printf("start: save restored key: %v", err)
+			}
 		}
 	}
 	for nid := range d.cfg.Networks {
@@ -1024,7 +1162,7 @@ func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
 	if err := d.apiLocked().UpdateNetworkSettings(nid, nc.Token, name, subnet, approvalRequired); err != nil {
-		return err
+		return wrapNetGone(err)
 	}
 	if name != "" {
 		nc.Name = name
@@ -1046,7 +1184,7 @@ func (d *Daemon) UpdateSubnets(nid string, subnets []string) error {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
 	if err := d.apiLocked().UpdateSubnets(nid, nc.Token, subnets); err != nil {
-		return err
+		return wrapNetGone(err)
 	}
 	nc.AllowedSubnets = subnets
 	if err := d.save(); err != nil {
@@ -1092,7 +1230,7 @@ func (d *Daemon) DeleteNetwork(nid string) error {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
 	if err := d.apiLocked().DeleteNetwork(nid, nc.Token); err != nil {
-		return err
+		return wrapNetGone(err)
 	}
 	d.leaveLocked(nid)
 	delete(d.cfg.Networks, nid)
@@ -1107,7 +1245,7 @@ func (d *Daemon) Kick(nid, nodeID string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return d.apiLocked().KickNode(nid, nc.Token, nodeID)
+	return wrapNetGone(d.apiLocked().KickNode(nid, nc.Token, nodeID))
 }
 
 // ResetCode issues a fresh pairing code for a network this node owns.
@@ -1118,7 +1256,8 @@ func (d *Daemon) ResetCode(nid string) (string, error) {
 	if nc == nil {
 		return "", fmt.Errorf("网络 %s 未找到", nid)
 	}
-	return d.apiLocked().ResetCode(nid, nc.Token)
+	code, err := d.apiLocked().ResetCode(nid, nc.Token)
+	return code, wrapNetGone(err)
 }
 
 // Info fetches full network info from the server (owner details included).
@@ -1174,7 +1313,7 @@ func (d *Daemon) Claim(nid string) error {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
 	if err := d.apiLocked().ClaimNetwork(nid, nc.Token, d.cfg.DeviceID); err != nil {
-		return err
+		return wrapNetGone(err)
 	}
 	nc.Owner = true
 	return d.save()

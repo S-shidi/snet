@@ -213,3 +213,58 @@ func (c *apiClient) PendingJoinStatus(pendingID string) (protocol.PendingStatusR
 func (c *apiClient) RemoveNode(nid, nodeID, token string) error {
 	return c.do(http.MethodDelete, "/api/v1/networks/"+nid+"/nodes/"+nodeID, token, nil, nil)
 }
+
+// DeviceNetworks returns all networks the device holds a node in, including
+// per-node credentials needed to reconstruct the client config after a reinstall.
+func (c *apiClient) DeviceNetworks(deviceID, deviceToken string) ([]protocol.DeviceNetworkDetail, error) {
+	var out protocol.DeviceNetworksResp
+	req, err := http.NewRequest(http.MethodGet, c.server+"/api/v1/devices/"+deviceID+"/networks", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Device-Token", deviceToken)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var e protocol.ErrResp
+		_ = json.Unmarshal(data, &e)
+		return nil, fmt.Errorf("server %d: %s", resp.StatusCode, e.Error)
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out.Networks, nil
+}
+
+// UpdateNodePublicKey updates a node's WireGuard public key. Used after a
+// client reinstall when the device generates a new keypair.
+func (c *apiClient) UpdateNodePublicKey(nid, nodeID, deviceID, deviceToken, publicKey string) error {
+	path := fmt.Sprintf("/api/v1/networks/%s/nodes/%s/publickey", nid, nodeID)
+	body := protocol.UpdateNodePublicKeyReq{PublicKey: publicKey, DeviceID: deviceID}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.server+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Device-Token", deviceToken)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		var e protocol.ErrResp
+		_ = json.Unmarshal(data, &e)
+		return fmt.Errorf("server %d: %s", resp.StatusCode, e.Error)
+	}
+	return nil
+}

@@ -42,7 +42,10 @@ func LoadOrCreateDeviceID(deviceIDFile, existing string) (string, error) {
 	if deviceIDFile != "" {
 		if b, err := os.ReadFile(deviceIDFile); err == nil {
 			if s := strings.TrimSpace(string(b)); s != "" {
-				return s, nil
+				// Support both legacy (ID only) and new (ID + key) formats.
+				if lines := strings.SplitN(s, "\n", 2); len(lines) > 0 {
+					return strings.TrimSpace(lines[0]), nil
+				}
 			}
 		}
 	}
@@ -59,4 +62,46 @@ func LoadOrCreateDeviceID(deviceIDFile, existing string) (string, error) {
 		}
 	}
 	return id, nil
+}
+
+// LoadDeviceKeypair reads the persisted device identity and private key from
+// the device ID file. Returns ("", "") when no key is stored (legacy client
+// or first start). The file format is:
+//
+//	line 1: device ID
+//	line 2: hex-encoded private key (optional, added by v2+ clients)
+func LoadDeviceKeypair(deviceIDFile string) (deviceID, privateKey string, err error) {
+	if deviceIDFile == "" {
+		return "", "", nil
+	}
+	b, err := os.ReadFile(deviceIDFile)
+	if err != nil {
+		return "", "", nil // file missing is not an error
+	}
+	s := strings.TrimSpace(string(b))
+	if s == "" {
+		return "", "", nil
+	}
+	lines := strings.Split(s, "\n")
+	deviceID = strings.TrimSpace(lines[0])
+	if len(lines) > 1 {
+		privateKey = strings.TrimSpace(lines[1])
+	}
+	return deviceID, privateKey, nil
+}
+
+// SaveDeviceKeypair persists the device identity and private key to the device
+// ID file, replacing any previous content. Both values are written only when
+// non-empty; a missing private key line is allowed (legacy format).
+func SaveDeviceKeypair(deviceIDFile, deviceID, privateKey string) error {
+	if deviceIDFile == "" {
+		return nil
+	}
+	var content string
+	if privateKey != "" {
+		content = deviceID + "\n" + privateKey + "\n"
+	} else {
+		content = deviceID + "\n"
+	}
+	return writeFile0600(deviceIDFile, []byte(content))
 }

@@ -249,7 +249,8 @@ type BindDeviceReq struct {
 }
 
 type BindDeviceResp struct {
-	DeviceID string `json:"deviceId"`
+	DeviceID    string `json:"deviceId"`
+	DeviceToken string `json:"deviceToken,omitempty"`
 }
 
 // AuthCodeInfo is the admin-facing view of an authorization code. Code holds
@@ -287,4 +288,27 @@ type AdminGenerateAuthCodesResp struct {
 
 type AdminAuthCodesResp struct {
 	Codes []AuthCodeInfo `json:"codes"`
+}
+
+// DeviceNetworkDetail contains the full information for a device's membership
+// in a network, including the per-node credentials needed to reconstruct
+// the client config after a reinstall.
+type DeviceNetworkDetail struct {
+	Network
+	NodeID    string `json:"nodeId"`
+	IP        string `json:"ip"`
+	Token     string `json:"token"`
+	Owner     bool   `json:"owner,omitempty"`
+	PublicKey string `json:"publicKey,omitempty"`
+}
+
+// DeviceNetworksResp is the response for the device-scoped networks endpoint.
+type DeviceNetworksResp struct {
+	Networks []DeviceNetworkDetail `json:"networks"`
+}
+
+// UpdateNodePublicKeyReq updates a node's WireGuard public key.
+type UpdateNodePublicKeyReq struct {
+	PublicKey string `json:"publicKey"`
+	DeviceID  string `json:"deviceId"`
 }
