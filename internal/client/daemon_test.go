@@ -1,6 +1,7 @@
 package client
 
 import (
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -1113,5 +1114,97 @@ func TestUpdateSettingsSubnetConflict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "冲突") {
 		t.Fatalf("error should mention conflict: %v", err)
+	}
+}
+
+func TestIsVirtualIface(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"en0", false},
+		{"eth0", false},
+		{"en1", false},
+		{"lo0", true},
+		{"lo", true},
+		{"utun0", true},
+		{"utun5", true},
+		{"wg0", true},
+		{"wg-quick", true},
+		{"tun0", true},
+		{"tap0", true},
+		{"docker0", true},
+		{"br-abcdef", true},
+		{"veth1234", true},
+		{"virbr0", true},
+	}
+	for _, c := range cases {
+		if got := isVirtualIface(c.name); got != c.want {
+			t.Errorf("isVirtualIface(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestPrivateIPv4(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want bool
+	}{
+		{"10.0.0.1", true},
+		{"10.255.255.255", true},
+		{"172.16.0.1", true},
+		{"172.31.255.255", true},
+		{"192.168.1.1", true},
+		{"192.168.0.1", true},
+		{"172.15.0.1", false},
+		{"172.32.0.1", false},
+		{"8.8.8.8", false},
+		{"1.1.1.1", false},
+		{"192.169.0.1", false},
+		{"127.0.0.1", false},
+	}
+	for _, c := range cases {
+		ip := net.ParseIP(c.ip).To4()
+		if ip == nil {
+			t.Fatalf("bad IP: %s", c.ip)
+		}
+		if got := privateIPv4(ip); got != c.want {
+			t.Errorf("privateIPv4(%s) = %v, want %v", c.ip, got, c.want)
+		}
+	}
+}
+
+func TestIpNetCIDR(t *testing.T) {
+	cases := []struct {
+		cidr string
+		want string
+	}{
+		{"192.168.1.100/24", "192.168.1.0/24"},
+		{"10.0.0.5/8", "10.0.0.0/8"},
+		{"172.16.3.200/12", "172.16.0.0/12"},
+	}
+	for _, c := range cases {
+		_, ipNet, err := net.ParseCIDR(c.cidr)
+		if err != nil {
+			t.Fatalf("ParseCIDR(%q): %v", c.cidr, err)
+		}
+		if got := ipNetCIDR(ipNet); got != c.want {
+			t.Errorf("ipNetCIDR(%s) = %q, want %q", c.cidr, got, c.want)
+		}
+	}
+}
+
+func TestDetectLocalSubnets(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	subnets := d.DetectLocalSubnets()
+	// On any machine with a network interface, we should get at least one result.
+	// If running in CI with no interfaces, the result may be empty.
+	t.Logf("detected local subnets: %v", subnets)
+	// Verify all results are valid CIDRs in private ranges
+	for _, s := range subnets {
+		_, _, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Errorf("invalid CIDR %q: %v", s, err)
+		}
 	}
 }

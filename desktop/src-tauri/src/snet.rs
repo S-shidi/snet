@@ -219,6 +219,25 @@ pub async fn update_subnets(nid: String, subnets: Vec<String>) -> Result<(), Str
 }
 
 #[tauri::command]
+pub async fn detect_local_subnets() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let resp = ctl("GET", "/ctl/local-subnets", None)?;
+        let subnets = resp
+            .get("subnets")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(subnets)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn approve_pending(nid: String, pending_id: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ctl("POST", "/ctl/approve", Some(json!({ "nid": nid, "pendingId": pending_id })))

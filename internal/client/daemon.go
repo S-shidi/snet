@@ -1228,6 +1228,109 @@ func (d *Daemon) UpdateSubnets(nid string, subnets []string) error {
 	}
 	return nil
 }
+// DetectLocalSubnets enumerates network interfaces and returns the private
+// IPv4 CIDR subnets (e.g. "192.168.1.0/24") this device is directly on.
+// Virtual / tunnel interfaces are excluded.
+func (d *Daemon) DetectLocalSubnets() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var result []string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if iface.Flags&net.FlagPointToPoint != 0 {
+			continue
+		}
+		if isVirtualIface(iface.Name) {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP.To4() == nil {
+				continue
+			}
+			ip := ipNet.IP.To4()
+			if ip[0] == 127 {
+				continue
+			}
+			if !privateIPv4(ip) {
+				continue
+			}
+			cidr := ipNetCIDR(ipNet)
+			if cidr == "" {
+				continue
+			}
+			if _, dup := seen[cidr]; dup {
+				continue
+			}
+			seen[cidr] = struct{}{}
+			result = append(result, cidr)
+		}
+	}
+	return result
+}
+
+// isVirtualIface returns true for names known to be VPN tunnels or virtual
+// bridges that should not be advertised as routable LAN subnets.
+func isVirtualIface(name string) bool {
+	n := strings.ToLower(name)
+	prefixes := []string{"utun", "wg", "tun", "tap", "docker", "br-", "veth", "virbr", "lo"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	return n == "docker0" || n == "lo0" || n == "lo"
+}
+
+// privateIPv4 reports whether ip is in a private IPv4 range (10/8, 172.16/12,
+// 192.168/16).
+func privateIPv4(ip net.IP) bool {
+	if len(ip) != 4 {
+		return false
+	}
+	if ip[0] == 10 {
+		return true
+	}
+	if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
+		return true
+	}
+	if ip[0] == 192 && ip[1] == 168 {
+		return true
+	}
+	return false
+}
+
+// ipNetCIDR returns the CIDR string for an IPNet, computing the network base
+// address from the mask.  Example: 192.168.1.100/255.255.255.0 -> "192.168.1.0/24".
+func ipNetCIDR(n *net.IPNet) string {
+	ip := n.IP.To4()
+	if ip == nil {
+		return ""
+	}
+	mask := n.Mask
+	ones, bits := mask.Size()
+	if bits != 32 {
+		return ""
+	}
+	base := make(net.IP, 4)
+	for i := 0; i < 4; i++ {
+		base[i] = ip[i] & mask[i]
+	}
+	return fmt.Sprintf("%s/%d", base.String(), ones)
+}
+
 
 // ApprovePending approves a member's join request on a network this node owns.
 func (d *Daemon) ApprovePending(nid, pendingID string) error {

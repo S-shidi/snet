@@ -811,23 +811,31 @@ async function openNetworkSettings(nid: string) {
         const approval = (body.querySelector("#s-approval") as HTMLInputElement).checked;
         const result = body.querySelector<HTMLElement>("#s-result")!;
         const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
+        const origText = submit.textContent;
         submit.disabled = true;
         result.className = "msg";
         result.textContent = "保存中…";
-        const r = await ctlOrClean(nid, "保存设置", () =>
-          call("update_settings", {
-            nid,
-            name,
-            subnet: subnet !== curSubnet ? subnet : "",
-            approvalRequired: approval !== !!detail!.approvalRequired ? approval : null,
-          }),
-        );
-        if (r === null) return;
-        result.className = "msg ok";
-        result.textContent = "已保存";
-        await refreshOwnerInfo(true);
-        toast("网络设置已保存");
-        closeModal();
+        try {
+          const r = await ctlOrClean(nid, "保存设置", () =>
+            call("update_settings", {
+              nid,
+              name,
+              subnet: subnet !== curSubnet ? subnet : "",
+              approvalRequired: approval !== !!detail!.approvalRequired ? approval : null,
+            }),
+          );
+          if (r === null) return;
+          result.className = "msg ok";
+          result.textContent = "已保存";
+          await refreshOwnerInfo(true);
+          toast("网络设置已保存");
+          closeModal();
+        } catch (e) {
+          result.className = "msg";
+          result.textContent = `保存失败: ${e}`;
+          submit.disabled = false;
+          submit.textContent = origText;
+        }
       });
     },
   });
@@ -849,6 +857,7 @@ async function openSubnetRouteModal(nid: string) {
     title: `子网路由 · ${nid}`,
     body: `
       <p class="hint">宣告本设备的局域网子网，其他成员可通过 VPN 访问。</p>
+      <div id="sr-suggest" class="subnet-tags" style="margin-bottom:2px"></div>
       <div id="sr-tags" class="subnet-tags">${renderTags(curSubnets)}</div>
       <div class="subnet-add-row">
         <input type="text" id="sr-input" placeholder="如 192.168.3.0/24" />
@@ -860,10 +869,39 @@ async function openSubnetRouteModal(nid: string) {
     onBody: (body) => {
       const tags = [...curSubnets];
       const tagsEl = body.querySelector<HTMLElement>("#sr-tags")!;
+      const suggestEl = body.querySelector<HTMLElement>("#sr-suggest")!;
       const input = body.querySelector<HTMLInputElement>("#sr-input")!;
       const result = body.querySelector<HTMLElement>("#sr-result")!;
 
       const refresh = () => { tagsEl.innerHTML = renderTags(tags); };
+
+      // Re-render suggestion list (hide already-added subnets).
+      const refreshSuggest = (localSubnets: string[]) => {
+        const suggestions = localSubnets.filter((s) => !tags.includes(s));
+        if (!suggestions.length) { suggestEl.innerHTML = ""; return; }
+        suggestEl.innerHTML =
+          `<span class="muted" style="width:100%;margin-bottom:2px">检测到的本地子网</span>` +
+          suggestions
+            .map((s) => `<span class="chip" data-add="${esc(s)}" style="cursor:pointer">${esc(s)} <span style="opacity:0.5">+</span></span>`)
+            .join("");
+      };
+
+      // Kick off async detection of local subnets.
+      let localSubnets: string[] = [];
+      call<string[]>("detect_local_subnets")
+        .then((arr) => { localSubnets = arr; refreshSuggest(arr); })
+        .catch(() => { /* daemon offline or error – ignore */ });
+
+      // Click on suggestion chip → add to tags.
+      suggestEl.addEventListener("click", (e) => {
+        const chip = (e.target as HTMLElement).closest<HTMLElement>("[data-add]");
+        if (!chip) return;
+        const cidr = chip.dataset.add!;
+        if (tags.includes(cidr)) return;
+        tags.push(cidr);
+        refresh();
+        refreshSuggest(localSubnets);
+      });
 
       body.querySelector("#sr-add")!.addEventListener("click", () => {
         const raw = input.value.trim();
@@ -878,6 +916,7 @@ async function openSubnetRouteModal(nid: string) {
         input.value = "";
         result.textContent = "";
         refresh();
+        refreshSuggest(localSubnets);
       });
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") { e.preventDefault(); (body.querySelector("#sr-add") as HTMLElement).click(); }
@@ -889,21 +928,30 @@ async function openSubnetRouteModal(nid: string) {
         const idx = tags.indexOf(val);
         if (idx >= 0) tags.splice(idx, 1);
         refresh();
+        refreshSuggest(localSubnets);
       });
 
       body.querySelector("#sr-save")!.addEventListener("click", async () => {
         const saveBtn = body.querySelector<HTMLButtonElement>("#sr-save")!;
+        const origText = saveBtn.textContent;
         saveBtn.disabled = true;
         result.className = "msg";
         result.textContent = "保存中…";
-        const r = await ctlOrClean(nid, "子网路由", () =>
-          call("update_subnets", { nid, subnets: tags }),
-        );
-        if (r === null) return;
-        result.className = "msg ok";
-        result.textContent = "已保存";
-        toast("子网路由已更新");
-        closeModal();
+        try {
+          const r = await ctlOrClean(nid, "子网路由", () =>
+            call("update_subnets", { nid, subnets: tags }),
+          );
+          if (r === null) return;
+          result.className = "msg ok";
+          result.textContent = "已保存";
+          toast("子网路由已更新");
+          closeModal();
+        } catch (e) {
+          result.className = "msg";
+          result.textContent = `保存失败: ${e}`;
+          saveBtn.disabled = false;
+          saveBtn.textContent = origText;
+        }
       });
     },
   });

@@ -132,7 +132,8 @@ pub fn run() {
             netinfo,
             peers,
             device_id,
-            bind_server
+            bind_server,
+            detect_local_subnets
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, TRAY_OPEN, "打开主界面", true, None::<&str>)?;

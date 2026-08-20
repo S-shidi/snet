@@ -302,6 +302,11 @@ func ServeCtl(d *Daemon, addr string, onShutdown func(*http.Server)) error {
 		writeCtlJSON(w, 200, peers)
 	})
 
+	mux.HandleFunc("GET /ctl/local-subnets", func(w http.ResponseWriter, r *http.Request) {
+		subnets := d.DetectLocalSubnets()
+		writeCtlJSON(w, 200, map[string]any{"subnets": subnets})
+	})
+
 	mux.HandleFunc("POST /ctl/device-id", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			DeviceID string `json:"deviceId"`
