@@ -180,14 +180,14 @@ func TestSubnetReassign(t *testing.T) {
 	if err := s.UpdateNetworkSettings(created.Token, "", "999.0.0.0/24", nil); err == nil {
 		t.Fatal("invalid subnet should be rejected")
 	}
-	// overlapping subnet rejected (second network on 10.88.1.x)
+	// overlapping subnet is now allowed (networks are independent)
 	other, err := s.CreateNetwork("CCC==", "dev-other", "", "10.88.1.0/24", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = other
-	if err := s.UpdateNetworkSettings(created.Token, "", "10.88.1.0/24", nil); err == nil {
-		t.Fatal("overlapping subnet should be rejected")
+	if err := s.UpdateNetworkSettings(created.Token, "", "10.88.1.0/24", nil); err != nil {
+		t.Fatalf("overlapping subnet should be allowed: %v", err)
 	}
 	// unchanged subnet is a no-op (no error, nothing changes)
 	if err := s.UpdateNetworkSettings(created.Token, "", "10.88.0.0/24", nil); err != nil {

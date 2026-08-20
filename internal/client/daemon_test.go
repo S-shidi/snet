@@ -1023,3 +1023,95 @@ func TestNetworkNameSyncedFromServer(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 	}
 }
+
+// TestAttachSubnetConflict verifies that attach refuses to join a network
+// when its subnet overlaps with an already-joined network.
+func TestAttachSubnetConflict(t *testing.T) {
+	d, _ := newTestDaemon(t)
+
+	// Simulate an existing network with 10.88.0.0/24
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"NET001": {
+			Name:   "network-1",
+			NodeID: "node1",
+			IP:     "10.88.0.1",
+			Token:  "tok1",
+			Subnet: "10.88.0.0/24",
+			Active: true,
+		},
+	}
+
+	// Try to attach a second network with overlapping subnet
+	err := d.attach("NET002", "network-2", "node2", "10.88.0.2", "tok2", "", "10.88.0.0/24", false)
+	if err == nil {
+		t.Fatal("attach should reject overlapping subnet")
+	}
+	if !strings.Contains(err.Error(), "冲突") {
+		t.Fatalf("error should mention conflict: %v", err)
+	}
+
+	// Non-overlapping subnet should succeed
+	err = d.attach("NET002", "network-2", "node2", "10.88.1.1", "tok2", "", "10.88.1.0/24", false)
+	if err != nil {
+		t.Fatalf("attach should accept non-overlapping subnet: %v", err)
+	}
+}
+
+// TestAttachSubnetConflictWithInactive verifies that attach rejects overlapping
+// subnet even when the existing network is inactive.
+func TestAttachSubnetConflictWithInactive(t *testing.T) {
+	d, _ := newTestDaemon(t)
+
+	// Simulate an existing but inactive network
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"NET001": {
+			Name:   "network-1",
+			NodeID: "node1",
+			IP:     "10.88.0.1",
+			Token:  "tok1",
+			Subnet: "10.88.0.0/24",
+			Active: false, // inactive
+		},
+	}
+
+	// Should still reject overlapping subnet even if inactive
+	err := d.attach("NET002", "network-2", "node2", "10.88.0.2", "tok2", "", "10.88.0.0/24", false)
+	if err == nil {
+		t.Fatal("attach should reject overlapping subnet even with inactive network")
+	}
+}
+
+// TestUpdateSettingsSubnetConflict verifies that UpdateSettings rejects
+// changing a network's subnet when it would overlap with another network.
+func TestUpdateSettingsSubnetConflict(t *testing.T) {
+	d, _ := newTestDaemon(t)
+
+	d.cfg.Networks = map[string]*NetworkCfg{
+		"NET001": {
+			Name:   "network-1",
+			NodeID: "node1",
+			IP:     "10.88.0.1",
+			Token:  "tok1",
+			Subnet: "10.88.0.0/24",
+			Active: true,
+			Owner:  true,
+		},
+		"NET002": {
+			Name:   "network-2",
+			NodeID: "node2",
+			IP:     "10.88.1.1",
+			Token:  "tok2",
+			Subnet: "10.88.1.0/24",
+			Active: true,
+		},
+	}
+
+	// Try to change NET001's subnet to overlap with NET002
+	err := d.UpdateSettings("NET001", "", "10.88.1.0/24", nil)
+	if err == nil {
+		t.Fatal("UpdateSettings should reject overlapping subnet")
+	}
+	if !strings.Contains(err.Error(), "冲突") {
+		t.Fatalf("error should mention conflict: %v", err)
+	}
+}

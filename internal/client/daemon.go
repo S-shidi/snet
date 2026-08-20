@@ -578,8 +578,8 @@ func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string
 		subnet = defaultSubnet
 	}
 	for other, oc := range d.cfg.Networks {
-		if other != nid && oc.Active && subnetsOverlap(subnet, oc.Subnet) {
-			return fmt.Errorf("网段 %s 与已激活网络 %s（%s）冲突，请先停用", subnet, other, oc.Subnet)
+		if other != nid && subnetsOverlap(subnet, oc.Subnet) {
+			return fmt.Errorf("网段 %s 与已加入网络 %s（%s）冲突，无法加入", subnet, other, oc.Subnet)
 		}
 	}
 	if d.cfg.Networks == nil {
@@ -683,6 +683,15 @@ func (d *Daemon) SyncNetworks(deviceToken string) error {
 		if d.cfg.Networks == nil {
 			d.cfg.Networks = map[string]*NetworkCfg{}
 		}
+		// Check for subnet overlap with already-restored networks.
+		active := true
+		for other, oc := range d.cfg.Networks {
+			if other != nid && subnetsOverlap(detail.Subnet, oc.Subnet) {
+				log.Printf("sync networks: subnet %s overlaps with %s (%s), activating %s as inactive", detail.Subnet, other, oc.Subnet, nid)
+				active = false
+				break
+			}
+		}
 		nc := &NetworkCfg{
 			Name:     detail.Name,
 			NodeID:   detail.NodeID,
@@ -690,7 +699,7 @@ func (d *Daemon) SyncNetworks(deviceToken string) error {
 			Token:    detail.Token,
 			Subnet:   detail.Subnet,
 			Port:     0,
-			Active:   true,
+			Active:   active,
 			Owner:    detail.Owner,
 		}
 		d.cfg.Networks[nid] = nc
@@ -957,6 +966,13 @@ func (d *Daemon) pollLoop(nid string) {
 			if st.Subnet != "" {
 				nc.Subnet = st.Subnet
 			}
+			// Warn if the new subnet overlaps with another network on this device.
+			for other, oc := range d.cfg.Networks {
+				if other != nid && subnetsOverlap(nc.Subnet, oc.Subnet) {
+					log.Printf("WARNING: network %s subnet %s overlaps with %s (%s)", nid, nc.Subnet, other, oc.Subnet)
+					break
+				}
+			}
 			if err := d.save(); err != nil {
 				log.Printf("save after IP change %s: %v", nid, err)
 			}
@@ -970,6 +986,13 @@ func (d *Daemon) pollLoop(nid string) {
 				return
 			}
 		} else if st.Subnet != "" && st.Subnet != nc.Subnet {
+			// Warn if the new subnet overlaps with another network on this device.
+			for other, oc := range d.cfg.Networks {
+				if other != nid && subnetsOverlap(st.Subnet, oc.Subnet) {
+					log.Printf("WARNING: network %s subnet %s overlaps with %s (%s)", nid, st.Subnet, other, oc.Subnet)
+					break
+				}
+			}
 			nc.Subnet = st.Subnet
 			if err := d.save(); err != nil {
 				log.Printf("save subnet %s: %v", nid, err)
@@ -1160,6 +1183,13 @@ func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool
 	nc := d.cfg.Networks[nid]
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	if subnet != "" && subnet != nc.Subnet {
+		for other, oc := range d.cfg.Networks {
+			if other != nid && subnetsOverlap(subnet, oc.Subnet) {
+				return fmt.Errorf("网段 %s 与已加入网络 %s（%s）冲突", subnet, other, oc.Subnet)
+			}
+		}
 	}
 	if err := d.apiLocked().UpdateNetworkSettings(nid, nc.Token, name, subnet, approvalRequired); err != nil {
 		return wrapNetGone(err)

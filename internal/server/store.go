@@ -33,7 +33,6 @@ var (
 	ErrAuthCodeInvalid = errors.New("invalid device authorization code")
 	ErrAuthCodeUsed    = errors.New("device authorization code already used")
 	ErrAuthCodeFull    = errors.New("device authorization code reached max bindings")
-	ErrSubnetOverlap   = errors.New("网段与已有网络冲突")
 )
 
 const (
@@ -634,24 +633,21 @@ func subnetsOverlap(a, b string) bool {
 	return an.Contains(bn.IP) || bn.Contains(an.IP)
 }
 
-// autoSubnetLocked picks a free 10.88.N.0/24 subnet not used by any
-// non-managed network. Managed networks (server-controlled) are excluded from
-// the overlap check because they use virtual IPs and do not consume real
-// subnet capacity.
+// autoSubnetLocked picks a free 10.88.N.0/24 subnet not exactly used by any
+// existing network. Networks are independent on the server; overlap is only
+// checked at exact CIDR match to avoid giving the same subnet to two networks
+// automatically. Users may still explicitly choose overlapping subnets.
 func (s *Store) autoSubnetLocked() string {
 	for n := 0; n < 256; n++ {
 		cidr := fmt.Sprintf("10.88.%d.0/24", n)
-		free := true
+		taken := false
 		for _, other := range s.networks {
-			if other.n.Managed {
-				continue // skip managed networks
-			}
-			if other.n.Subnet != "" && subnetsOverlap(cidr, other.n.Subnet) {
-				free = false
+			if other.n.Subnet == cidr {
+				taken = true
 				break
 			}
 		}
-		if free {
+		if !taken {
 			return cidr
 		}
 	}
@@ -750,14 +746,6 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 			return protocol.CreateNetworkResp{}, err
 		}
 		sub = norm
-		for _, other := range s.networks {
-			if other.n.Managed {
-				continue // skip managed networks
-			}
-			if subnetsOverlap(sub, other.n.Subnet) {
-				return protocol.CreateNetworkResp{}, ErrSubnetOverlap
-			}
-		}
 	}
 	base, err := subnetBase(sub)
 	if err != nil {
@@ -1311,17 +1299,6 @@ func (s *Store) reassignIPsLocked(ns *networkState, subnet string) error {
 	if err != nil {
 		return err
 	}
-	for nid, other := range s.networks {
-		if nid == ns.n.ID {
-			continue
-		}
-		if other.n.Managed {
-			continue // skip managed networks
-		}
-		if other.n.Subnet != "" && subnetsOverlap(norm, other.n.Subnet) {
-			return ErrSubnetOverlap
-		}
-	}
 	base, err := subnetBase(norm)
 	if err != nil {
 		return err
@@ -1844,14 +1821,6 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool) (
 			return protocol.AdminCreateNetworkResp{}, err
 		}
 		sub = norm
-		for _, other := range s.networks {
-			if other.n.Managed {
-				continue // skip managed networks
-			}
-			if subnetsOverlap(sub, other.n.Subnet) {
-				return protocol.AdminCreateNetworkResp{}, ErrSubnetOverlap
-			}
-		}
 	}
 	base, err := subnetBase(sub)
 	if err != nil {
