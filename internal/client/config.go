@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"snet/internal/protocol"
 )
@@ -172,7 +173,7 @@ func (c *Config) NetworkIDs() []string {
 // server. The binding is tied to the exact normalized server address, so
 // changing the server address clears the effective bound state.
 func (c *Config) Bound() bool {
-	return c.BoundServer != "" && c.BoundServer == normalizeServer(c.ServerAddr)
+	return c.BoundServer != "" && strings.EqualFold(c.BoundServer, c.ServerAddr)
 }
 
 // FindUnusedPort picks a free UDP port in the range starting at base.
