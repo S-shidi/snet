@@ -11,7 +11,7 @@ mkdir -p "$DATA_DIR"
 # ---- Helper: wait for snetd control API ----
 wait_for_ctl() {
     for i in $(seq 1 30); do
-        if snetctl -ctl "$CTL_ADDR" status >/dev/null 2>&1; then
+        if snetctl -ctl "http://$CTL_ADDR" status >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -22,7 +22,7 @@ wait_for_ctl() {
 
 # ---- Helper: check if device is already bound ----
 is_bound() {
-    STATUS=$(snetctl -ctl "$CTL_ADDR" status 2>/dev/null || echo "")
+    STATUS=$(snetctl -ctl "http://$CTL_ADDR" status 2>/dev/null || echo "")
     echo "$STATUS" | grep -q '"bound":true'
 }
 
@@ -45,7 +45,7 @@ if [ -n "$SNET_SERVER" ] && [ -n "$SNET_BIND_CODE" ]; then
         echo "[entrypoint] Device already bound, skipping bind"
     else
         echo "[entrypoint] Binding to $SNET_SERVER ..."
-        if snetctl -ctl "$CTL_ADDR" bind --server "$SNET_SERVER" --code "$SNET_BIND_CODE"; then
+        if snetctl -ctl "http://$CTL_ADDR" bind --server "$SNET_SERVER" --code "$SNET_BIND_CODE"; then
             echo "[entrypoint] Bind successful"
         else
             echo "[entrypoint] WARN: bind failed (device may already be bound or code invalid)" >&2
