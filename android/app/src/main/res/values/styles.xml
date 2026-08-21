@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- App Theme: Dark navy with Material 3 -->
+    <style name="Theme.Snet" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/md_theme_dark_primary</item>
+        <item name="colorOnPrimary">@color/md_theme_dark_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/md_theme_dark_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/md_theme_dark_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/md_theme_dark_secondary</item>
+        <item name="colorOnSecondary">@color/md_theme_dark_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/md_theme_dark_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/md_theme_dark_onSecondaryContainer</item>
+        <item name="colorSurface">@color/md_theme_dark_surface</item>
+        <item name="colorOnSurface">@color/md_theme_dark_onSurface</item>
+        <item name="colorSurfaceVariant">@color/md_theme_dark_surfaceVariant</item>
+        <item name="colorOnSurfaceVariant">@color/md_theme_dark_onSurfaceVariant</item>
+        <item name="android:colorBackground">@color/md_theme_dark_background</item>
+        <item name="colorOnBackground">@color/md_theme_dark_onBackground</item>
+        <item name="colorError">@color/md_theme_dark_error</item>
+        <item name="colorOnError">@color/md_theme_dark_onError</item>
+        <item name="colorOutline">@color/md_theme_dark_outline</item>
+        <item name="colorOutlineVariant">@color/md_theme_dark_outlineVariant</item>
+        <item name="android:statusBarColor">@color/snet_bg</item>
+        <item name="android:navigationBarColor">@color/snet_bg</item>
+        <item name="android:windowBackground">@color/snet_bg</item>
+    </style>
+
+    <!-- Card style -->
+    <style name="SnetCard" parent="Widget.Material3.CardView.Filled">
+        <item name="cardBackgroundColor">@color/snet_card</item>
+        <item name="strokeColor">@color/snet_border</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="cardCornerRadius">12dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="contentPadding">16dp</item>
+    </style>
+
+    <!-- Input field style -->
+    <style name="SnetInput" parent="Widget.Material3.TextInputLayout.OutlinedBox">
+        <item name="boxBackgroundColor">@color/snet_bg2</item>
+        <item name="boxStrokeColor">@color/snet_border</item>
+        <item name="boxCornerRadiusTopStart">8dp</item>
+        <item name="boxCornerRadiusTopEnd">8dp</item>
+        <item name="boxCornerRadiusBottomStart">8dp</item>
+        <item name="boxCornerRadiusBottomEnd">8dp</item>
+        <item name="hintTextColor">@color/snet_text_dim</item>
+        <item name="android:textColorHint">@color/snet_text_faint</item>
+    </style>
+
+    <!-- Primary filled button -->
+    <style name="SnetButtonPrimary" parent="Widget.Material3.Button">
+        <item name="backgroundTint">@color/snet_accent</item>
+        <item name="android:textColor">@android:color/white</item>
+        <item name="cornerRadius">8dp</item>
+        <item name="android:minHeight">44dp</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <!-- Ghost / outline button -->
+    <style name="SnetButtonGhost" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="strokeColor">@color/snet_border</item>
+        <item name="android:textColor">@color/snet_text_dim</item>
+        <item name="cornerRadius">8dp</item>
+        <item name="android:minHeight">44dp</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <!-- Small ghost button -->
+    <style name="SnetButtonGhostSm" parent="Widget.Material3.Button.TextButton">
+        <item name="android:textColor">@color/snet_text_dim</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:paddingTop">4dp</item>
+        <item name="android:paddingBottom">4dp</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+    </style>
+
+    <!-- Danger button -->
+    <style name="SnetButtonDanger" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="strokeColor">@color/snet_err</item>
+        <item name="android:textColor">@color/snet_err</item>
+        <item name="cornerRadius">8dp</item>
+        <item name="android:minHeight">44dp</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <!-- Small danger ghost button -->
+    <style name="SnetButtonDangerSm" parent="Widget.Material3.Button.TextButton">
+        <item name="android:textColor">@color/snet_err</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:paddingTop">4dp</item>
+        <item name="android:paddingBottom">4dp</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+    </style>
+
+    <!-- Status pills -->
+    <style name="SnetPillOk">
+        <item name="android:background">@drawable/bg_pill_ok</item>
+        <item name="android:textColor">@color/snet_ok</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingBottom">2dp</item>
+    </style>
+
+    <style name="SnetPillWarn">
+        <item name="android:background">@drawable/bg_pill_warn</item>
+        <item name="android:textColor">@color/snet_warn</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingBottom">2dp</item>
+    </style>
+
+    <style name="SnetPillOff">
+        <item name="android:background">@drawable/bg_pill_off</item>
+        <item name="android:textColor">@color/snet_text_faint</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingBottom">2dp</item>
+    </style>
+
+    <!-- Tab layout -->
+    <style name="SnetTab" parent="Widget.Material3.TabLayout">
+        <item name="tabTextColor">@color/snet_text_faint</item>
+        <item name="tabSelectedTextColor">@color/snet_text</item>
+        <item name="tabIndicatorColor">@color/snet_accent</item>
+        <item name="tabIndicatorHeight">2dp</item>
+        <item name="tabBackground">@android:color/transparent</item>
+    </style>
+
+    <!-- BottomSheet dialog -->
+    <style name="SnetBottomSheet" parent="Theme.Material3.Dark.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/SnetBottomSheetStyle</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+
+    <style name="SnetBottomSheetStyle" parent="Widget.Material3.BottomSheet.Modal">
+        <item name="backgroundTint">@color/snet_card</item>
+        <item name="shapeAppearance">@style/SnetBottomSheetShape</item>
+    </style>
+
+    <style name="SnetBottomSheetShape">
+        <item name="cornerSizeTopLeft">16dp</item>
+        <item name="cornerSizeTopRight">16dp</item>
+    </style>
+
+</resources>

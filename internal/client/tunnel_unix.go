@@ -1,8 +1,12 @@
-//go:build !windows
+//go:build !windows && !android
 
 package client
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strings"
+)
 
 // tunDeviceName returns the TUN adapter name used by tun.CreateTUN. macOS
 // treats "utun" as a template prefix and allocates a fresh interface; linux
@@ -41,7 +45,33 @@ func removeSubnetRoute(iface, cidr string) error {
 	return runCmd("route", "delete", "-net", cidr, "-interface", iface)
 }
 
-// enableIPForwarding enables IP forwarding on macOS (requires root).
+// enableIPForwarding enables IP forwarding on macOS/Linux (requires root)
+// and persists the setting so it survives reboots.
 func enableIPForwarding() error {
-	return runCmd("sysctl", "-w", "net.inet.ip.forwarding=1")
+	if err := runCmd("sysctl", "-w", sysctlForwardKey+"=1"); err != nil {
+		return err
+	}
+	persistSysctl(sysctlForwardKey, "1")
+	return nil
+}
+
+// sysctlForwardKey is the OS-specific sysctl key for IP forwarding.
+const sysctlForwardKey = "net.inet.ip.forwarding"
+
+// persistSysctl appends a key=value line to /etc/sysctl.conf if not already
+// present, making the setting survive reboots. Errors are silently ignored
+// since this is best-effort (the live sysctl already took effect).
+func persistSysctl(key, value string) {
+	const path = "/etc/sysctl.conf"
+	line := key + "=" + value
+	data, err := os.ReadFile(path)
+	if err == nil && strings.Contains(string(data), line) {
+		return // already persisted
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "\n%s\n", line)
 }

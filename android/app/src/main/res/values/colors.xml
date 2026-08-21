@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Backgrounds -->
+    <color name="snet_bg">#0d1017</color>
+    <color name="snet_bg2">#121722</color>
+    <color name="snet_card">#161c29</color>
+    <color name="snet_card2">#1b2334</color>
+    <color name="snet_surface">#161c29</color>
+    <color name="snet_surface_variant">#1b2334</color>
+
+    <!-- Borders -->
+    <color name="snet_border">#252d40</color>
+    <color name="snet_border2">#323c54</color>
+
+    <!-- Text -->
+    <color name="snet_text">#e8ecf4</color>
+    <color name="snet_text_dim">#98a2b8</color>
+    <color name="snet_text_faint">#6b7690</color>
+
+    <!-- Accent Blue -->
+    <color name="snet_accent">#4f8cff</color>
+    <color name="snet_accent2">#6fa4ff</color>
+    <color name="snet_accent_soft">#234170</color>
+
+    <!-- Success Green -->
+    <color name="snet_ok">#3fb68b</color>
+    <color name="snet_ok_soft">#1a3a2e</color>
+
+    <!-- Error Red -->
+    <color name="snet_err">#e05252</color>
+    <color name="snet_err_soft">#3a1a1a</color>
+
+    <!-- Warning Amber -->
+    <color name="snet_warn">#d9a13a</color>
+    <color name="snet_warn_soft">#3a2e1a</color>
+
+    <!-- Status dot colors -->
+    <color name="snet_status_online">#3fb68b</color>
+    <color name="snet_status_offline">#6b7690</color>
+    <color name="snet_status_pending">#d9a13a</color>
+
+    <!-- Toggle -->
+    <color name="snet_toggle_track_on">#3fb68b</color>
+    <color name="snet_toggle_track_off">#262d3d</color>
+    <color name="snet_toggle_thumb">#e8ecf4</color>
+
+    <!-- Material 3 overrides -->
+    <color name="md_theme_dark_primary">#4f8cff</color>
+    <color name="md_theme_dark_onPrimary">#ffffff</color>
+    <color name="md_theme_dark_primaryContainer">#234170</color>
+    <color name="md_theme_dark_onPrimaryContainer">#e8ecf4</color>
+    <color name="md_theme_dark_secondary">#98a2b8</color>
+    <color name="md_theme_dark_onSecondary">#0d1017</color>
+    <color name="md_theme_dark_secondaryContainer">#1b2334</color>
+    <color name="md_theme_dark_onSecondaryContainer">#e8ecf4</color>
+    <color name="md_theme_dark_surface">#161c29</color>
+    <color name="md_theme_dark_onSurface">#e8ecf4</color>
+    <color name="md_theme_dark_surfaceVariant">#1b2334</color>
+    <color name="md_theme_dark_onSurfaceVariant">#98a2b8</color>
+    <color name="md_theme_dark_background">#0d1017</color>
+    <color name="md_theme_dark_onBackground">#e8ecf4</color>
+    <color name="md_theme_dark_error">#e05252</color>
+    <color name="md_theme_dark_onError">#ffffff</color>
+    <color name="md_theme_dark_outline">#252d40</color>
+    <color name="md_theme_dark_outlineVariant">#323c54</color>
+</resources>

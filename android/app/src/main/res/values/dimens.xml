@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Card spacing -->
+    <dimen name="snet_card_margin_bottom">12dp</dimen>
+    <dimen name="snet_card_padding">16dp</dimen>
+    <dimen name="snet_card_radius">12dp</dimen>
+
+    <!-- Form spacing -->
+    <dimen name="snet_form_gap">12dp</dimen>
+    <dimen name="snet_input_radius">8dp</dimen>
+
+    <!-- Content padding -->
+    <dimen name="snet_content_padding">18dp</dimen>
+    <dimen name="snet_content_padding_compact">14dp</dimen>
+
+    <!-- Button heights -->
+    <dimen name="snet_button_height">44dp</dimen>
+    <dimen name="snet_button_height_sm">36dp</dimen>
+    <dimen name="snet_button_height_xs">28dp</dimen>
+
+    <!-- Status dot -->
+    <dimen name="snet_status_dot">12dp</dimen>
+
+    <!-- Toolbar -->
+    <dimen name="snet_toolbar_height">56dp</dimen>
+
+    <!-- Typography -->
+    <dimen name="snet_text_title">18sp</dimen>
+    <dimen name="snet_text_subtitle">14sp</dimen>
+    <dimen name="snet_text_body">13sp</dimen>
+    <dimen name="snet_text_meta">12sp</dimen>
+    <dimen name="snet_text_small">11sp</dimen>
+
+    <!-- BottomSheet -->
+    <dimen name="snet_sheet_drag_width">40dp</dimen>
+    <dimen name="snet_sheet_drag_height">4dp</dimen>
+</resources>

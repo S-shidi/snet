@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+        android:id="@+id/networkRefresh"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <androidx.core.widget.NestedScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/snet_bg">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="@dimen/snet_content_padding">
+
+                <!-- Bound network list -->
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/networkList"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:nestedScrollingEnabled="false"/>
+
+                <!-- Empty state -->
+                <LinearLayout
+                    android:id="@+id/networkEmpty"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center"
+                    android:paddingTop="64dp"
+                    android:paddingBottom="64dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="无网络"
+                        android:textColor="@color/snet_text_dim"
+                        android:textSize="16sp"/>
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="点击下方按钮加入或创建网络"
+                        android:textColor="@color/snet_text_faint"
+                        android:textSize="13sp"
+                        android:layout_marginTop="4dp"/>
+
+                </LinearLayout>
+
+            </LinearLayout>
+
+        </androidx.core.widget.NestedScrollView>
+
+    </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+    <!-- Bottom action buttons -->
+    <LinearLayout
+        android:id="@+id/bottomActions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/snet_content_padding"
+        android:paddingEnd="@dimen/snet_content_padding"
+        android:paddingBottom="18dp"
+        android:background="@drawable/bg_bottombar">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCreateNetwork"
+            style="@style/SnetButtonPrimary"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/snet_button_height"
+            android:layout_weight="1"
+            android:text="创建网络"
+            android:layout_marginEnd="6dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnJoinNetwork"
+            style="@style/SnetButtonGhost"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/snet_button_height"
+            android:layout_weight="1"
+            android:text="加入网络"
+            android:layout_marginStart="6dp"/>
+
+    </LinearLayout>
+
+</FrameLayout>

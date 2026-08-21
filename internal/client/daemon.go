@@ -762,6 +762,17 @@ func (d *Daemon) Start() error {
 			}
 		}
 	}
+	// Enable IP forwarding at startup if any active network has subnets
+	// configured, so the setting is restored after a reboot.
+	for nid := range d.cfg.Networks {
+		nc := d.cfg.Networks[nid]
+		if nc.Active && len(nc.AllowedSubnets) > 0 {
+			if err := enableIPForwarding(); err != nil {
+				log.Printf("enable IP forwarding: %v (needs admin/root)", err)
+			}
+			break
+		}
+	}
 	for nid := range d.cfg.Networks {
 		nc := d.cfg.Networks[nid]
 		if !nc.Active {

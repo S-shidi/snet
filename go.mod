@@ -10,6 +10,12 @@ require (
 )
 
 require (
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/mobile v0.0.0-20260820023541-8e8303b9da6c // indirect
+	golang.org/x/mod v0.39.0 // indirect
+	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
+
+tool golang.org/x/mobile/cmd/gobind

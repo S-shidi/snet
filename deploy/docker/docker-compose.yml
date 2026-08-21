@@ -1,0 +1,27 @@
+services:
+  snetd:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: snetd
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      # Web UI
+      - "8080:8080"
+      # WireGuard UDP: 每个网络占用一个端口 (51900起)
+      - "51900-51963:51900-51963/udp"
+    volumes:
+      - snet-data:/data
+    environment:
+      # 首次运行时设置这两个变量自动绑定；后续重启会跳过
+      - SNET_SERVER=${SNET_SERVER:-}
+      - SNET_BIND_CODE=${SNET_BIND_CODE:-}
+    restart: unless-stopped
+    sysctls:
+      - net.ipv4.ip_forward=1
+
+volumes:
+  snet-data:

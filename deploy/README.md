@@ -223,3 +223,102 @@ curl.exe http://127.0.0.1:19432/ctl/status   # daemon 状态
 - `PersistentKeepalive` 建议 **10**（运营商 CGNAT 会话超时短，保活过慢会周期性丢包）；
 - 重要：在系统设置中把 WireGuard 的电池/后台限制设为「无限制」，
   否则手机 Doze 会挂起隧道、导致入向流量丢失。
+
+## 10. Docker 客户端（snetd 容器化部署）
+
+将 snetd 守护进程容器化，用于在 Docker 主机/VPS 上作为虚拟网络成员节点。
+
+### 构建镜像
+
+```bash
+# 从项目根目录
+docker compose -f deploy/docker/docker-compose.yml build
+```
+
+### Web 控制台
+
+容器内置 nginx 提供 Web GUI，访问 `http://<host>:8080` 即可管理网络。
+
+首次打开会显示绑定引导：输入服务器地址和设备授权码，点击「绑定并进入」。
+也可以点击「跳过，进入控制台」查看状态，后续在设置中绑定。
+
+### 首次运行（自动绑定）
+
+```bash
+SNET_SERVER=https://Snet.uizhi.eu.org:8090 \
+SNET_BIND_CODE=你的授权码 \
+docker compose -f deploy/docker/docker-compose.yml up -d
+```
+
+容器启动时自动完成：
+1. 启动 snetd（创建设备 ID、WireGuard 隧道）
+2. 调用 `snetctl bind` 绑定到服务器
+3. 启动 nginx 提供 Web GUI（端口 8080）
+4. 持续运行 snetd 守护进程
+
+### 首次运行（自动绑定）
+
+```bash
+SNET_SERVER=https://Snet.uizhi.eu.org:8090 \
+SNET_BIND_CODE=你的授权码 \
+docker compose -f deploy/docker/docker-compose.yml up -d
+```
+
+容器启动时自动完成：
+1. 启动 snetd（创建设备 ID、WireGuard 隧道）
+2. 调用 `snetctl bind` 绑定到服务器
+3. 持续运行 snetd 守护进程
+
+### 后续重启
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml up -d
+```
+
+已绑定的设备会自动跳过绑定步骤。
+
+### 手动绑定（不设环境变量）
+
+```bash
+# 1. 先启动容器（不设 SNET_SERVER / SNET_BIND_CODE）
+docker compose -f deploy/docker/docker-compose.yml up -d
+
+# 2. 进入容器手动绑定
+docker exec -it snetd sh
+snetctl -ctl 127.0.0.1:19432 bind --server https://Snet.uizhi.eu.org:8090 --code 你的授权码
+```
+
+### 管理操作
+
+```bash
+# 查看状态
+docker exec snetd snetctl -ctl 127.0.0.1:19432 status
+
+# 创建网络
+docker exec snetd snetctl -ctl 127.0.0.1:19432 create "my-network"
+
+# 加入网络
+docker exec snetd snetctl -ctl 127.0.0.1:19432 join <network-id> --code <invite-code>
+
+# 查看对端
+docker exec snetd snetctl -ctl 127.0.0.1:19432 peers <network-id>
+```
+
+### Docker Compose 配置说明
+
+| 配置项 | 说明 |
+|--------|------|
+| `cap_add: NET_ADMIN` | TUN 设备和 WireGuard 必需 |
+| `devices: /dev/net/tun` | 内核 TUN 设备 |
+| `ports: 8080:8080` | Web 控制台（nginx） |
+| `ports: 51900-51963/udp` | WireGuard 数据面（每个网络一个端口） |
+| `volumes: snet-data:/data` | 持久化 device.id + daemon.json |
+| `sysctls: net.ipv4.ip_forward=1` | IP 转发（容器内子网路由需要） |
+| `restart: unless-stopped` | 崩溃/重启自动恢复 |
+
+### 注意事项
+
+- Web GUI 通过 nginx 代理 snetd 控制 API（127.0.0.1:19432），仅容器内部可访问
+- WireGuard 端口范围 51900-51963（51820-51883 被服务器中继占用）
+- 容器内 snetd 以 root 运行（TUN 设备创建需要 root 权限）
+- 容器内 nginx 以 nobody 运行，仅提供静态文件和 API 代理

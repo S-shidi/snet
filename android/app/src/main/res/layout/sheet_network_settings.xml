@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="@dimen/snet_content_padding">
+
+    <View
+        android:layout_width="@dimen/snet_sheet_drag_width"
+        android:layout_height="@dimen/snet_sheet_drag_height"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="12dp"
+        android:background="@drawable/bg_sheet_drag"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="网络设置"
+        android:textColor="@color/snet_text"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp"/>
+
+    <com.google.android.material.textfield.TextInputLayout
+        style="@style/SnetInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="网络名称"
+        app:counterEnabled="true"
+        app:counterMaxLength="32">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/settingsNameInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textNoSuggestions"
+            android:textColor="@color/snet_text"
+            android:textColorHint="@color/snet_text_faint"/>
+
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <com.google.android.material.textfield.TextInputLayout
+        style="@style/SnetInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="允许的子网 (每行一个)"
+        app:helperText="格式: 192.168.0.0/16"
+        app:helperTextTextColor="@color/snet_text_faint"
+        android:layout_marginTop="@dimen/snet_form_gap">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/settingsSubnetInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textMultiLine"
+            android:minLines="2"
+            android:fontFamily="monospace"
+            android:textColor="@color/snet_text"
+            android:textColorHint="@color/snet_text_faint"/>
+
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <TextView
+        android:id="@+id/errorText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/snet_err"
+        android:textSize="13sp"
+        android:visibility="gone"
+        android:layout_marginTop="@dimen/snet_form_gap"/>
+
+    <ProgressBar
+        android:id="@+id/progressBar"
+        style="@android:style/Widget.ProgressBar.Horizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:indeterminate="true"
+        android:visibility="gone"
+        android:layout_marginTop="@dimen/snet_form_gap"/>
+
+    <!-- Action buttons -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/inviteBtn"
+        style="@style/SnetButtonGhost"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/snet_button_height"
+        android:text="邀请成员"
+        android:layout_marginTop="12dp"/>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/resetCodeBtn"
+        style="@style/SnetButtonGhost"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/snet_button_height"
+        android:text="重置邀请码"
+        android:layout_marginTop="8dp"/>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/deleteBtn"
+        style="@style/SnetButtonDanger"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/snet_button_height"
+        android:text="删除网络"
+        android:layout_marginTop="8dp"/>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="16dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/cancelBtn"
+            style="@style/SnetButtonGhost"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/snet_button_height"
+            android:layout_weight="1"
+            android:text="取消"
+            android:layout_marginEnd="6dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/settingsSaveBtn"
+            style="@style/SnetButtonPrimary"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/snet_button_height"
+            android:layout_weight="1"
+            android:text="保存"
+            android:layout_marginStart="6dp"/>
+
+    </LinearLayout>
+
+</LinearLayout>

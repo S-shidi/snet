@@ -40,9 +40,9 @@ type NetInfoDetail = {
   nodeCount?: number;
   pairingCode?: string;
   pending?: Array<{ id: string; publicKey: string; deviceId?: string; createdAt?: string }>;
-  nodes?: Array<{ id: string; ip: string; deviceId?: string; online?: boolean }>;
+  nodes?: Array<{ id: string; ip: string; deviceId?: string; online?: boolean; allowedSubnets?: string[] }>;
 };
-type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; online?: boolean };
+type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; online?: boolean; allowedSubnets?: string[] };
 type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean };
 
 const call = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => invoke<T>(cmd, args);
@@ -553,6 +553,7 @@ function netCard(n: NetInfo): string {
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
           <span>ID <code>${esc(n.networkId)}</code></span>
+          ${(n.allowedSubnets?.length ?? 0) > 0 ? `<span class="pill subnet-route">路由 ${n.allowedSubnets!.length} 个子网</span>` : ""}
         </div>
         <div class="net-stats">${memberLine}<span>收 <b>${fmtBytes(rx)}</b></span><span>发 <b>${fmtBytes(tx)}</b></span></div>
       </div>
@@ -816,14 +817,15 @@ async function openNetworkSettings(nid: string) {
         result.className = "msg";
         result.textContent = "保存中…";
         try {
-          const r = await ctlOrClean(nid, "保存设置", () =>
-            call("update_settings", {
+          const r = await ctlOrClean(nid, "保存设置", async () => {
+            await call("update_settings", {
               nid,
               name,
               subnet: subnet !== curSubnet ? subnet : "",
               approvalRequired: approval !== !!detail!.approvalRequired ? approval : null,
-            }),
-          );
+            });
+            return true;
+          });
           if (r === null) return;
           result.className = "msg ok";
           result.textContent = "已保存";
@@ -863,7 +865,7 @@ async function openSubnetRouteModal(nid: string) {
         <input type="text" id="sr-input" placeholder="如 192.168.3.0/24" />
         <button id="sr-add" class="btn ghost sm">添加</button>
       </div>
-      <p class="msg warn" style="margin-top:8px">需要本设备操作系统启用 IP 转发。daemon 需以管理员/root 权限运行。</p>
+      <p class="msg" style="margin-top:8px">IP 转发将由后台服务自动开启，无需手动配置。</p>
       <p class="msg" id="sr-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="sr-save" class="btn">保存</button>`,
     onBody: (body) => {
@@ -938,9 +940,10 @@ async function openSubnetRouteModal(nid: string) {
         result.className = "msg";
         result.textContent = "保存中…";
         try {
-          const r = await ctlOrClean(nid, "子网路由", () =>
-            call("update_subnets", { nid, subnets: tags }),
-          );
+          const r = await ctlOrClean(nid, "子网路由", async () => {
+            await call("update_subnets", { nid, subnets: tags });
+            return true;
+          });
           if (r === null) return;
           result.className = "msg ok";
           result.textContent = "已保存";
@@ -1075,10 +1078,14 @@ async function showMembers(nid: string) {
         const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
         const kick =
           nd.ip === myIp ? `<span class="muted">自己</span>` : `<button data-node="${esc(nd.id)}" class="btn danger ghost sm">踢出</button>`;
+        const subnets = (nd.allowedSubnets?.length ?? 0) > 0
+          ? `<span class="pill subnet-route">${esc(nd.allowedSubnets!.join(", "))}</span>`
+          : `<span class="muted">-</span>`;
         return `<tr>
           <td class="mono">${esc(nd.ip)}</td>
           <td>${nd.deviceId ? `<span class="muted mono">${esc(nd.deviceId.slice(0, 8))}</span>` : "-"}</td>
           <td>${online}</td>
+          <td>${subnets}</td>
           <td>${kick}</td>
         </tr>`;
       })
@@ -1088,6 +1095,7 @@ async function showMembers(nid: string) {
         return `<tr>
           <td colspan="2"><span class="muted">设备</span> <code>${p.deviceId ? esc(p.deviceId.slice(0, 8)) + "…" : "-"}</code><span class="muted"> 公钥</span> <code>${esc(p.publicKey.slice(0, 12))}…</code></td>
           <td><span class="pill warn">待批准</span></td>
+          <td>-</td>
           <td><button data-pend="${esc(p.id)}" class="btn sm" style="background:var(--ok)">批准</button> <button data-pend="${esc(p.id)}" class="btn danger sm">拒绝</button></td>
         </tr>`;
       })
@@ -1098,7 +1106,7 @@ async function showMembers(nid: string) {
     openModal({
       title: `成员 · ${nid}`,
       wide: true,
-      body: `<div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>设备</th><th>状态</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${pendingSection}`,
+      body: `<div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>设备</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${pendingSection}`,
       onBody: (b) => {
         b.querySelectorAll<HTMLElement>("[data-node]").forEach((k) =>
           k.addEventListener("click", async () => {
@@ -1154,10 +1162,14 @@ async function showMembers(nid: string) {
     .map((nd) => {
       const isSelf = nd.ip === myIp;
       const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
+      const subnets = (nd.allowedSubnets?.length ?? 0) > 0
+        ? `<span class="pill subnet-route">${esc(nd.allowedSubnets!.join(", "))}</span>`
+        : `<span class="muted">-</span>`;
       return `<tr>
         <td class="mono">${esc(nd.ip)}</td>
         <td>${nd.deviceId ? `<span class="muted mono">${esc(nd.deviceId.slice(0, 8))}</span>` : "-"}</td>
         <td>${online}</td>
+        <td>${subnets}</td>
         <td>${isSelf ? `<span class="muted">自己</span>` : ""}</td>
       </tr>`;
     })
@@ -1165,7 +1177,7 @@ async function showMembers(nid: string) {
   openModal({
     title: `成员 · ${nid}`,
     wide: true,
-    body: `<p class="hint">成员列表（只读，本机非创建者）</p><div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>设备</th><th>状态</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`,
+    body: `<p class="hint">成员列表（只读，本机非创建者）</p><div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>设备</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`,
   });
 }
 

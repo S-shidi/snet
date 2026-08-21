@@ -111,5 +111,10 @@ pub fn ensure_daemon() -> Result<(), String> {
             "/var/log/snetd.log",
         ),
         &daemon_healthy,
-    )
+    )?;
+    // Best-effort: enable IP forwarding so subnet routing works immediately.
+    let _ = Command::new("sysctl")
+        .args(["-w", "net.inet.ip.forwarding=1"])
+        .output();
+    Ok(())
 }
