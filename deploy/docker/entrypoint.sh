@@ -8,6 +8,16 @@ CTL_ADDR="127.0.0.1:19432"
 
 mkdir -p "$DATA_DIR"
 
+# Prefer the binary from the data volume if present (allows hot-upgrade
+# via bind mount without rebuilding the image).
+if [ -x "$DATA_DIR/snetd" ]; then
+    cp "$DATA_DIR/snetd" /usr/local/bin/snetd
+    echo "[entrypoint] Using snetd binary from data volume"
+fi
+if [ -x "$DATA_DIR/snetctl" ]; then
+    cp "$DATA_DIR/snetctl" /usr/local/bin/snetctl
+fi
+
 # ---- Helper: wait for snetd control API ----
 wait_for_ctl() {
     for i in $(seq 1 30); do

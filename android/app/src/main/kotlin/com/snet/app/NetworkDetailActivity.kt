@@ -67,6 +67,21 @@ class NetworkDetailActivity : AppCompatActivity() {
         rejoinButton.setOnClickListener { onRejoin() }
         leaveButton.setOnClickListener { onLeave() }
 
+        findViewById<Button>(R.id.membersButton)?.setOnClickListener {
+            val sheet = MembersBottomSheet.newInstance(nid, isOwner)
+            sheet.show(supportFragmentManager, "members")
+        }
+
+        findViewById<Button>(R.id.pendingButton)?.setOnClickListener {
+            val sheet = PendingBottomSheet.newInstance(nid, isOwner)
+            sheet.show(supportFragmentManager, "pending")
+        }
+
+        findViewById<Button>(R.id.inviteButton)?.setOnClickListener {
+            val sheet = InviteLinkSheet.newInstance(nid, netName)
+            sheet.show(supportFragmentManager, "invite_link")
+        }
+
         loadDetails()
     }
 
@@ -170,7 +185,7 @@ class NetworkDetailActivity : AppCompatActivity() {
                 val online = peer.optBoolean("online", false)
                 val lastSeen = peer.optLong("lastSeen", 0)
                 peerStatus.text = if (online) "在线" else if (lastSeen > 0) "离线 (${formatTime(lastSeen)})" else "离线"
-                peerStatus.setTextColor(if (online) 0xFF4CAF50.toInt() else 0xFF999999.toInt())
+                peerStatus.setTextColor(if (online) 0xFF3fb68b.toInt() else 0xFF6b7690.toInt())
 
                 peerList.addView(itemView)
             }
@@ -324,28 +339,23 @@ class NetworkDetailActivity : AppCompatActivity() {
     }
 
     private fun onLeave() {
-        AlertDialog.Builder(this)
-            .setTitle("离开网络")
-            .setMessage("确定要离开网络 $netName 吗？")
-            .setPositiveButton("离开") { _, _ ->
-                lifecycleScope.launch {
-                    val result = withContext(Dispatchers.IO) { SnetBridge.leaveNetwork(nid) }
-                    try {
-                        val obj = JSONObject(result)
-                        if (obj.has("error")) {
-                            Toast.makeText(this@NetworkDetailActivity, "离开失败: ${obj.getString("error")}", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(this@NetworkDetailActivity, "已离开网络", Toast.LENGTH_SHORT).show()
-                            setResult(Activity.RESULT_OK)
-                            finish()
-                        }
-                    } catch (e: Exception) {
-                        Toast.makeText(this@NetworkDetailActivity, result, Toast.LENGTH_SHORT).show()
+        ConfirmHelper.show(this, "确定要离开网络 $netName 吗？") {
+            lifecycleScope.launch {
+                val result = withContext(Dispatchers.IO) { SnetBridge.leaveNetwork(nid) }
+                try {
+                    val obj = JSONObject(result)
+                    if (obj.has("error")) {
+                        Toast.makeText(this@NetworkDetailActivity, "离开失败: ${obj.getString("error")}", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this@NetworkDetailActivity, "已离开网络", Toast.LENGTH_SHORT).show()
+                        setResult(Activity.RESULT_OK)
+                        finish()
                     }
+                } catch (e: Exception) {
+                    Toast.makeText(this@NetworkDetailActivity, result, Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNegativeButton("取消", null)
-            .show()
+        }
     }
 
     private fun formatTime(epochSec: Long): String {

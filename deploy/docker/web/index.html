@@ -8,103 +8,173 @@
 </head>
 <body>
 
-<!-- toast -->
 <div id="toast-wrap"></div>
-
-<!-- modal -->
 <div id="modal-root" hidden></div>
 
-<!-- onboarding overlay -->
-<div id="onboarding" hidden>
-  <div class="onboarding-card">
-    <div class="onboarding-logo">
-      <div class="l-logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="24" height="24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-      </div>
-      <span class="l-title">Snet</span>
-      <span class="l-sub">虚拟组网 · Web 控制台</span>
-    </div>
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- Standalone pages — only one visible at a time                  -->
+<!-- ════════════════════════════════════════════════════════════════ -->
 
-    <div class="settings-block">
-      <h3>绑定服务器</h3>
-      <div class="row"><label>服务器地址</label><input id="onb-server" type="text" placeholder="https://example.com:8090" /></div>
-      <div class="row"><label>设备授权码</label><input id="onb-code" type="text" placeholder="管理端生成的设备授权码" autocomplete="off" /></div>
-      <div class="settings-actions">
-        <button id="onb-bind" class="btn">绑定并进入</button>
+<!-- Step 1: Setup password -->
+<div id="setup-page" class="standalone-page" hidden>
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="auth-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="28" height="28"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </div>
+      <h1 class="auth-title">Snet</h1>
+      <p class="auth-subtitle">虚拟组网 · Web 控制台</p>
+    </div>
+    <div class="auth-steps">
+      <div class="step done"><span class="step-num">1</span> 设置密码</div>
+      <div class="step-line"></div>
+      <div class="step"><span class="step-num">2</span> 绑定服务器</div>
+    </div>
+    <form id="setup-form" class="auth-form" autocomplete="off">
+      <p class="auth-desc">首次使用，请设置管理密码</p>
+      <div class="field">
+        <label>新密码</label>
+        <div class="input-wrap">
+          <input id="setup-password" type="password" placeholder="至少 8 个字符" autocomplete="new-password" autofocus />
+          <button type="button" class="toggle-pw" data-target="setup-password" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="field">
+        <label>确认密码</label>
+        <div class="input-wrap">
+          <input id="setup-password2" type="password" placeholder="再次输入" autocomplete="new-password" />
+          <button type="button" class="toggle-pw" data-target="setup-password2" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <p class="msg" id="setup-result"></p>
+      <button id="setup-submit" type="submit" class="btn-full">设置密码并继续</button>
+    </form>
+  </div>
+</div>
+
+<!-- Step 2: Bind server -->
+<div id="onboarding-page" class="standalone-page" hidden>
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="auth-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="28" height="28"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </div>
+      <h1 class="auth-title">Snet</h1>
+      <p class="auth-subtitle">虚拟组网 · Web 控制台</p>
+    </div>
+    <div class="auth-steps">
+      <div class="step done"><span class="step-num">1</span> 设置密码</div>
+      <div class="step-line"></div>
+      <div class="step current"><span class="step-num">2</span> 绑定服务器</div>
+    </div>
+    <form id="onboarding-form" class="auth-form" autocomplete="off">
+      <p class="auth-desc">输入协调服务器地址和设备授权码</p>
+      <div class="field">
+        <label>服务器地址</label>
+        <input id="onb-server" type="text" placeholder="https://example.com:8090" autofocus />
+      </div>
+      <div class="field">
+        <label>设备授权码</label>
+        <input id="onb-code" type="text" placeholder="管理端生成的设备授权码" autocomplete="off" />
       </div>
       <p class="msg" id="onb-bind-result"></p>
-    </div>
-
-    <div class="onboarding-skip">
-      <a id="onb-skip">跳过，进入控制台</a>
-      <span>跳过可查看状态，但需绑定后才能加入网络</span>
-    </div>
+      <button id="onb-bind" type="submit" class="btn-full">绑定并进入控制台</button>
+      <a id="onb-skip" class="skip-link">跳过，稍后绑定</a>
+    </form>
   </div>
 </div>
 
-<!-- header -->
-<header>
-  <div class="header-inner">
-    <div class="brand">
-      <div class="logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+<!-- Login page -->
+<div id="login-page" class="standalone-page" hidden>
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="auth-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="28" height="28"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
       </div>
-      <div>
-        <h1>Snet</h1>
-        <span class="sub">虚拟组网 · Web 控制台</span>
+      <h1 class="auth-title">Snet</h1>
+      <p class="auth-subtitle">虚拟组网 · Web 控制台</p>
+    </div>
+    <form id="login-form" class="auth-form" autocomplete="off">
+      <div class="field">
+        <label>管理密码</label>
+        <div class="input-wrap">
+          <input id="login-password" type="password" placeholder="请输入密码" autocomplete="current-password" autofocus />
+          <button type="button" class="toggle-pw" data-target="login-password" tabindex="-1">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="field check-row">
+        <label><input id="login-remember" type="checkbox" checked /> 记住登录（30 天）</label>
+      </div>
+      <p class="msg" id="login-result"></p>
+      <button id="login-submit" type="submit" class="btn-full">登录</button>
+    </form>
+    <p class="auth-footer">Snet 虚拟组网控制台</p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- Main app                                                       -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+<div id="app" hidden>
+  <header>
+    <div class="header-inner">
+      <div class="brand">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        <div>
+          <h1>Snet</h1>
+          <span class="sub">虚拟组网 · Web 控制台</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <span class="live-dot ok">snetd</span>
+        <button class="btn sm" id="btn-refresh">刷新</button>
+        <button class="btn sm" id="btn-settings">设置</button>
+        <button class="btn sm ghost" id="btn-logout">退出</button>
       </div>
     </div>
-    <div class="header-right">
-      <span class="live-dot ok">snetd</span>
-      <button class="btn sm" id="btn-refresh">刷新</button>
-      <button class="btn sm" id="btn-settings">设置</button>
-    </div>
-  </div>
-</header>
+  </header>
 
-<!-- tabs -->
-<div class="tabs">
-  <button class="tab active" data-tab="networks">网络 <span class="cnt"></span></button>
-  <button class="tab" data-tab="pending">待批准 <span class="cnt"></span></button>
-  <button class="tab" data-tab="status">状态</button>
-</div>
-
-<!-- main -->
-<div id="app-main">
-
-  <!-- networks panel -->
-  <div id="panel-networks" class="tab-panel active">
-    <div class="toolbar">
-      <button class="btn sm" id="btn-create">+ 创建</button>
-      <button class="btn sm ghost" id="btn-join">加入</button>
-      <span class="spacer"></span>
-    </div>
-    <div id="net-list"></div>
+  <div class="tabs">
+    <button class="tab active" data-tab="networks">网络 <span class="cnt"></span></button>
+    <button class="tab" data-tab="status">状态</button>
   </div>
 
-  <!-- pending panel -->
-  <div id="panel-pending" class="tab-panel">
-    <div id="pending-list-panel"></div>
-  </div>
+  <div id="app-main">
+    <div id="panel-networks" class="tab-panel active">
+      <div class="toolbar">
+        <button class="btn sm" id="btn-create">+ 创建</button>
+        <button class="btn sm ghost" id="btn-join">加入</button>
+        <span class="spacer"></span>
+      </div>
+      <div id="net-list"></div>
+    </div>
 
-  <!-- status panel -->
-  <div id="panel-status" class="tab-panel">
-    <div class="stats">
-      <div class="stat"><div class="label">设备ID</div><div class="value" id="device-id">-</div></div>
-      <div class="stat"><div class="label">服务器</div><div class="value accent" id="svc-server">-</div></div>
-      <div class="stat"><div class="label">WireGuard 端口</div><div class="value" id="svc-wgport">-</div></div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h3>隧道详情</h3></div>
-      <div id="tunnel-detail"></div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h3>原始状态 JSON</h3></div>
-      <pre id="status-json" class="json"></pre>
+    <div id="panel-status" class="tab-panel">
+      <div class="stats">
+        <div class="stat"><div class="label">设备ID</div><div class="value" id="device-id">-</div></div>
+        <div class="stat"><div class="label">服务器</div><div class="value accent" id="svc-server">-</div></div>
+        <div class="stat"><div class="label">WireGuard 端口</div><div class="value" id="svc-wgport">-</div></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>隧道详情</h3></div>
+        <div id="tunnel-detail"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>原始状态 JSON</h3></div>
+        <pre id="status-json" class="json"></pre>
+      </div>
     </div>
   </div>
 </div>
 
-<script src="app.js?v=2"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

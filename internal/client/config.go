@@ -57,6 +57,10 @@ type Config struct {
 	// configured ServerAddr, so changing the server address does not leave a
 	// stale "bound" state behind.
 	BoundServer string `json:"boundServer,omitempty"`
+
+	// WebPasswordHash is the bcrypt hash of the web console login password.
+	// Empty means no password is set (authentication disabled).
+	WebPasswordHash string `json:"webPasswordHash,omitempty"`
 }
 
 func ConfigPath() (string, error) {

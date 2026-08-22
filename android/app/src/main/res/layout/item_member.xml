@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:background="@drawable/bg_card"
+    android:padding="12dp"
+    android:layout_marginBottom="8dp"
+    android:gravity="center_vertical">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/memberName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/snet_text"
+            android:textSize="14sp"
+            android:singleLine="true"/>
+
+        <TextView
+            android:id="@+id/memberInfo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/snet_text_faint"
+            android:textSize="11sp"
+            android:fontFamily="monospace"
+            android:singleLine="true"
+            android:layout_marginTop="2dp"/>
+
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/memberStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="12sp"
+        android:layout_marginEnd="8dp"/>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/kickBtn"
+        style="@style/SnetButtonDangerSm"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="踢出"
+        android:visibility="gone"/>
+
+</LinearLayout>

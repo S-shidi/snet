@@ -60,6 +60,7 @@ class NetworkSettingsSheet : BottomSheetDialogFragment() {
         deleteBtn.setOnClickListener { doDelete() }
         inviteBtn.setOnClickListener { showInvite() }
         resetCodeBtn.setOnClickListener { doResetCode() }
+        view.findViewById<MaterialButton>(R.id.inviteLinkBtn)?.setOnClickListener { showInviteLink() }
         view.findViewById<View>(R.id.cancelBtn)?.setOnClickListener { dismiss() }
     }
 
@@ -126,6 +127,12 @@ class NetworkSettingsSheet : BottomSheetDialogFragment() {
     private fun showInvite() {
         val sheet = InviteSheet.newInstance(networkID)
         sheet.show(childFragmentManager, "invite")
+    }
+
+    private fun showInviteLink() {
+        val act = activity ?: return
+        val sheet = InviteLinkSheet.newInstance(networkID, networkName)
+        sheet.show(childFragmentManager, "invite_link")
     }
 
     private fun doResetCode() {

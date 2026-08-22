@@ -105,6 +105,11 @@ func (d *Daemon) save() error {
 	return d.cfg.Save()
 }
 
+// SaveConfig persists the current daemon configuration to disk.
+func (d *Daemon) SaveConfig() error {
+	return d.save()
+}
+
 func (d *Daemon) apiLocked() *apiClient {
 	if d.api != nil && d.apiServer == d.cfg.ServerAddr && d.apiCA == d.cfg.ServerCAPath {
 		return d.api
@@ -1016,7 +1021,7 @@ func (d *Daemon) pollLoop(nid string) {
 				log.Printf("save name %s: %v", nid, err)
 			}
 		}
-		if err := rt.tun.ApplyPeers(st.Peers); err != nil {
+		if err := rt.tun.ApplyPeers(st.Peers, nc.Subnet); err != nil {
 			log.Printf("apply peers %s: %v", nid, err)
 		}
 		d.mu.Unlock()

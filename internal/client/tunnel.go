@@ -58,8 +58,9 @@ func NewTunnel(privKeyHex, ip string, port int, mtu int) (*Tunnel, error) {
 
 // ApplyPeers rebuilds the full WireGuard peer set and OS routes, diffing
 // against the previous set to add/remove routes as peers join, leave, or
-// change their advertised subnets.
-func (t *Tunnel) ApplyPeers(peers []protocol.Node) error {
+// change their advertised subnets. subnet is the tunnel subnet (e.g.
+// "10.88.1.0/24") used to route peer-to-peer traffic through the interface.
+func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -76,13 +77,11 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node) error {
 			return err
 		}
 		sb.WriteString("public_key=" + pub + "\n")
-		// Use advertised subnets for routing, fall back to host /32.
-		if len(p.AllowedSubnets) > 0 {
-			for _, sub := range p.AllowedSubnets {
-				sb.WriteString("allowed_ip=" + sub + "\n")
-			}
-		} else {
-			sb.WriteString("allowed_ip=" + p.IP + "/32\n")
+		// Always accept packets from the peer's tunnel IP (needed for replies).
+		sb.WriteString("allowed_ip=" + p.IP + "/32\n")
+		// Also accept packets from any advertised subnets.
+		for _, sub := range p.AllowedSubnets {
+			sb.WriteString("allowed_ip=" + sub + "\n")
 		}
 		if p.Endpoint != "" {
 			sb.WriteString("endpoint=" + resolveEndpoint(p.Endpoint) + "\n")
@@ -108,6 +107,11 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node) error {
 			removePeerRoutes(t.iface, old)
 			addPeerRoutes(t.iface, p)
 		}
+	}
+	// Ensure the tunnel subnet is routed through the interface so that
+	// packets to any peer's tunnel IP reach the WireGuard device.
+	if subnet != "" {
+		_ = addSubnetRoute(t.iface, subnet)
 	}
 	t.peers = next
 	return nil

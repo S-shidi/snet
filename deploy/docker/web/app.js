@@ -4,9 +4,11 @@
 /* ── constants ─────────────────────────────────────────────────── */
 const SPIN = '<span class="spinner"></span>';
 const NS = (window.__NS__ = "/ctl");
+const AUTH_NS = "/ctl/auth";
 
 /* ── state ─────────────────────────────────────────────────────── */
 let status = null;
+let authToken = localStorage.getItem("snet_token") || null;
 let $ = (s, p) => (p || document).querySelector(s);
 
 /* ── esc ───────────────────────────────────────────────────────── */
@@ -134,6 +136,95 @@ async function api(path, opts) {
   return JSON.parse(text);
 }
 
+/* ── auth API helper ───────────────────────────────────────────── */
+async function authApi(path, opts) {
+  const headers = opts?.headers || {};
+  if (authToken) headers["Authorization"] = "Bearer " + authToken;
+  if (opts?.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+  const res = await fetch(AUTH_NS + path, { ...opts, headers });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = "HTTP " + res.status;
+    try { const j = JSON.parse(text); if (j.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
+  if (!text) return null;
+  return JSON.parse(text);
+}
+
+/* ── auth flow ─────────────────────────────────────────────────── */
+async function checkAuth() {
+  try {
+    const resp = await authApi("/check");
+    if (!resp.hasPassword) return "no_password";
+    if (resp.authenticated) return "authenticated";
+    return "needs_login";
+  } catch {
+    return "authenticated"; // fallback: assume OK if auth endpoint unreachable
+  }
+}
+
+async function doLogin(password, remember) {
+  const resp = await authApi("/login", {
+    method: "POST",
+    body: JSON.stringify({ password, remember }),
+  });
+  authToken = resp.token;
+  localStorage.setItem("snet_token", authToken);
+  return true;
+}
+
+async function doLogout() {
+  try { await authApi("/logout", { method: "POST" }); } catch {}
+  authToken = null;
+  localStorage.removeItem("snet_token");
+}
+
+async function doSetPassword(current, newPass) {
+  await authApi("/password", {
+    method: "POST",
+    body: JSON.stringify({ current, new: newPass }),
+  });
+}
+
+/* ── standalone pages ──────────────────────────────────────────── */
+function showApp() {
+  $("#app").hidden = false;
+  $("#login-page").hidden = true;
+  $("#setup-page").hidden = true;
+  $("#onboarding-page").hidden = true;
+}
+
+function showLoginPage() {
+  $("#app").hidden = true;
+  $("#setup-page").hidden = true;
+  $("#onboarding-page").hidden = true;
+  const pg = $("#login-page");
+  pg.hidden = false;
+  const pw = pg.querySelector("#login-password");
+  if (pw) pw.focus();
+}
+
+function showSetupPage() {
+  $("#app").hidden = true;
+  $("#login-page").hidden = true;
+  $("#onboarding-page").hidden = true;
+  const pg = $("#setup-page");
+  pg.hidden = false;
+  const pw = pg.querySelector("#setup-password");
+  if (pw) pw.focus();
+}
+
+function showOnboardingPage() {
+  $("#app").hidden = true;
+  $("#login-page").hidden = true;
+  $("#setup-page").hidden = true;
+  const pg = $("#onboarding-page");
+  pg.hidden = false;
+  const srv = pg.querySelector("#onb-server");
+  if (srv) srv.focus();
+}
+
 /* ── refresh ───────────────────────────────────────────────────── */
 async function refresh() {
   try {
@@ -152,20 +243,9 @@ async function refresh() {
 /* ── tabs ──────────────────────────────────────────────────────── */
 function renderTabs() {
   const nets = status?.networks ?? [];
-  const pending = status?.pendingJoins ?? [];
   const cntNet = nets.length;
-  const cntPending = pending.length;
   const netCnt = $('[data-tab="networks"] .cnt');
-  const pendCnt = $('[data-tab="pending"] .cnt');
   if (netCnt) netCnt.textContent = cntNet ? "(" + cntNet + ")" : "";
-  if (pendCnt) pendCnt.textContent = cntPending ? "(" + cntPending + ")" : "";
-  if (cntPending) {
-    const hotEl = $('[data-tab="pending"] .cnt');
-    if (hotEl) hotEl.classList.add("hot");
-  } else {
-    const hotEl = $('[data-tab="pending"] .cnt');
-    if (hotEl) hotEl.classList.remove("hot");
-  }
 }
 
 function switchTab(id) {
@@ -181,9 +261,8 @@ function switchTab(id) {
 function renderNetworks() {
   const list = $("#net-list");
   const nets = status?.networks ?? [];
-  const pending = status?.pendingJoins ?? [];
 
-  if (!nets.length && !pending.length) {
+  if (!nets.length) {
     list.innerHTML = `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
       <p class="t">未加入任何网络</p>
@@ -192,32 +271,8 @@ function renderNetworks() {
     return;
   }
 
-  let html = "";
-
-  if (pending.length) {
-    html += `<div class="card">
-      <div class="card-head"><h3>待批准 · 加入请求</h3><button class="btn sm ghost" id="pending-clear-all">全部取消</button></div>
-      <div id="pending-list">`;
-    for (const p of pending) {
-      const tid = esc(p.targetNid ?? "");
-      html += `<div class="net pending">
-        <div class="net-row">
-          <div class="net-main">
-            <div class="net-name"><span class="pill warn">待批准</span> <code>${esc(p.name || tid)}</code></div>
-            <div class="net-meta"><span>网络 <code>${tid}</code></span></div>
-          </div>
-          <div class="net-side">
-            <button class="btn sm danger ghost" data-cancel-pending="${esc(p.pendingId || p.targetNid)}">取消</button>
-          </div>
-        </div>
-      </div>`;
-    }
-    html += `</div></div>`;
-  }
-
-  if (nets.length) {
-    html += `<div class="net-list">`;
-    for (const n of nets) {
+  let html = `<div class="net-list">`;
+  for (const n of nets) {
       const on = !!n.interface;
       const stats = Object.values(n.peerStats ?? {});
       const bytes = stats.reduce((a, p) => a + (p.RxBytes ?? 0) + (p.TxBytes ?? 0), 0);
@@ -265,7 +320,6 @@ function renderNetworks() {
       </div>`;
     }
     html += `</div>`;
-  }
 
   list.innerHTML = html;
 
@@ -292,13 +346,6 @@ function renderNetworks() {
   list.querySelectorAll("[data-delete]").forEach((b) => b.addEventListener("click", (e) => deleteNetwork(e.currentTarget.dataset.delete)));
   list.querySelectorAll("[data-rejoin]").forEach((b) => b.addEventListener("click", (e) => rejoinNetwork(e.currentTarget.dataset.rejoin)));
   list.querySelectorAll("[data-leave]").forEach((b) => b.addEventListener("click", (e) => leaveNetwork(e.currentTarget.dataset.leave)));
-  list.querySelectorAll("[data-cancel-pending]").forEach((b) => b.addEventListener("click", (e) => cancelPending(e.currentTarget.dataset.cancelPending)));
-  const clearAllBtn = $("#pending-clear-all");
-  if (clearAllBtn) clearAllBtn.addEventListener("click", async () => {
-    const pends = status?.pendingJoins ?? [];
-    for (const p of pends) { try { await cancelPending(p.pendingId || p.targetNid); } catch {} }
-    await refresh();
-  });
 }
 
 /* ── render status ─────────────────────────────────────────────── */
@@ -494,7 +541,7 @@ async function openJoinModal() {
               });
               result.className = "msg ok";
               if (r.status === "pending") {
-                result.innerHTML = '<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在上方「待批准 · 加入请求」卡片中取消。</p>';
+                result.innerHTML = '<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在「成员」模态框中取消。</p>';
               } else {
                 result.textContent = "已加入: IP " + (r.ip ?? "-") + "，网络 " + (r.networkId ?? "-");
               }
@@ -576,6 +623,7 @@ async function openMembersModal(nid) {
   const all = selfNode ? [selfNode, ...peers] : peers;
   const n = (status?.networks ?? []).find((x) => x.networkId === nid);
   const isOwner = !!n?.owner;
+  const pending = (status?.pendingJoins ?? []).filter((p) => (p.targetNid ?? p.networkId) === nid);
   let rows = "";
   for (const nd of all) {
     const isSelf = selfNode && nd.ip === selfNode.ip;
@@ -591,16 +639,50 @@ async function openMembersModal(nid) {
       <td>${isSelf ? '<span class="muted">自己</span>' : isOwner ? '<button class="btn sm danger ghost" data-kick="' + esc(nd.ip) + '">踢出</button>' : ""}</td>
     </tr>`;
   }
+  let pendingRows = "";
+  if (isOwner && pending.length) {
+    for (const p of pending) {
+      const pid = esc(p.pendingId || p.targetNid);
+      const tid = esc(p.targetNid ?? "");
+      pendingRows += `<tr>
+        <td colspan="2"><span class="pill warn">待批准</span> <code>${esc(p.name || tid)}</code></td>
+        <td colspan="3">
+          <button class="btn sm" data-approve="${pid}">批准</button>
+          <button class="btn sm danger ghost" data-deny="${pid}">拒绝</button>
+        </td>
+      </tr>`;
+    }
+  }
   openModal({
     title: "成员 · " + nid,
     wide: true,
     body: (isOwner ? "" : '<p class="hint">成员列表（只读，本机非创建者）</p>') +
+      (pendingRows ? '<div class="tbl-wrap"><table class="members"><thead><tr><th colspan="2">待批准</th><th colspan="3">操作</th></tr></thead><tbody>' + pendingRows + '</tbody></table></div><div style="height:12px"></div>' : '') +
       '<div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>设备</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>' +
       (rows || '<tr><td colspan="5" style="text-align:center;color:var(--dim)">暂无成员</td></tr>') +
       "</tbody></table></div>",
     footer: `<button data-close class="btn ghost">关闭</button>`,
     onBody: (body) => {
       if (!isOwner) return;
+      body.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", async (e) => {
+        const pendingId = e.currentTarget.dataset.approve;
+        try {
+          await api("/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid, pendingId }) });
+          toast("已批准");
+          closeModal();
+          await refresh();
+        } catch (err) { toast("操作失败: " + err, "err"); }
+      }));
+      body.querySelectorAll("[data-deny]").forEach((b) => b.addEventListener("click", async (e) => {
+        const pendingId = e.currentTarget.dataset.deny;
+        if (!(await confirmDialog("拒绝加入", "确定拒绝该加入请求？", true))) return;
+        try {
+          await api("/deny", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid, pendingId }) });
+          toast("已拒绝");
+          closeModal();
+          await refresh();
+        } catch (err) { toast("操作失败: " + err, "err"); }
+      }));
       body.querySelectorAll("[data-kick]").forEach((b) => b.addEventListener("click", async (e) => {
         const ip = e.currentTarget.dataset.kick;
         if (!(await confirmDialog("踢出成员", "踢出该成员？该设备将立即断开。", true))) return;
@@ -706,6 +788,7 @@ const HELP_ROWS = [
   ["查看配对码", "创建者", "查看当前配对码并复制；可作废旧码并生成新码，旧码立即失效、已加入成员不受影响"],
   ["删除", "创建者", "彻底删除该网络：所有成员断开、网段释放，不可恢复"],
   ["退出网络", "成员", "本机移出该网络并遗忘配置，需重新扫码加入；创建者无此按钮"],
+  ["批准/拒绝", "创建者", "在「成员」模态框中批准或拒绝待批准的加入请求"],
 ];
 
 function openSettingsModal() {
@@ -725,6 +808,16 @@ function openSettingsModal() {
           <button id="s-bind" class="btn">${bound ? "重新绑定" : "绑定服务器"}</button>
         </div>
         <p class="msg" id="s-bind-result"></p>
+      </div>
+      <div class="settings-block">
+        <h3>修改密码</h3>
+        <div class="row"><label>当前密码</label><input id="s-cur-pw" type="password" placeholder="当前管理密码" autocomplete="current-password" /></div>
+        <div class="row"><label>新密码</label><input id="s-new-pw" type="password" placeholder="至少 8 个字符" autocomplete="new-password" /></div>
+        <div class="row"><label>确认新密码</label><input id="s-new-pw2" type="password" placeholder="再次输入" autocomplete="new-password" /></div>
+        <div class="settings-actions">
+          <button id="s-pw-submit" class="btn">修改密码</button>
+        </div>
+        <p class="msg" id="s-pw-result"></p>
       </div>
       <div class="row"><label>WireGuard 端口</label><input id="s-wgport" type="number" min="1024" max="65535" value="${s?.wgPort ?? 51820}" /></div>
       <p class="msg" id="s-msg"></p>
@@ -753,6 +846,25 @@ function openSettingsModal() {
           await refresh();
         } catch (e) { bindResult.className = "msg"; bindResult.textContent = "绑定失败: " + e; }
       });
+
+      // password change
+      const pwResult = body.querySelector("#s-pw-result");
+      body.querySelector("#s-pw-submit")?.addEventListener("click", async () => {
+        const cur = body.querySelector("#s-cur-pw").value;
+        const newPw = body.querySelector("#s-new-pw").value;
+        const newPw2 = body.querySelector("#s-new-pw2").value;
+        if (newPw.length < 8) { pwResult.className = "msg"; pwResult.textContent = "新密码至少需要 8 个字符"; return; }
+        if (newPw !== newPw2) { pwResult.className = "msg"; pwResult.textContent = "两次输入不一致"; return; }
+        try {
+          await doSetPassword(cur, newPw);
+          pwResult.className = "msg ok"; pwResult.textContent = "密码已修改，请重新登录";
+          toast("密码已修改");
+          setTimeout(() => {
+            closeModal();
+            doLogout().then(() => showLoginPage());
+          }, 1500);
+        } catch (e) { pwResult.className = "msg"; pwResult.textContent = "修改失败: " + e; }
+      });
     },
   });
 }
@@ -762,16 +874,12 @@ let onboardingShown = false;
 function maybeShowOnboarding() {
   if (onboardingShown) return;
   if (status && status.bound) return;
-  if (status && (status.networks?.length || status.pendingJoins?.length)) return;
+  if (status && status.networks?.length) return;
   onboardingShown = true;
-  renderOnboarding();
-}
-function renderOnboarding() {
-  const ov = $("#onboarding");
-  ov.hidden = false;
+  showOnboardingPage();
 }
 async function finishOnboarding() {
-  $("#onboarding").hidden = true;
+  showApp();
   await refresh();
 }
 
@@ -785,6 +893,53 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-create").addEventListener("click", openCreateModal);
   $("#btn-join").addEventListener("click", openJoinModal);
   $("#btn-refresh").addEventListener("click", () => void refresh());
+  $("#btn-logout")?.addEventListener("click", async () => {
+    if (!(await confirmDialog("退出登录", "确定退出当前会话？", true))) return;
+    await doLogout();
+    showLoginPage();
+  });
+
+  // login form
+  const loginSubmit = $("#login-submit");
+  if (loginSubmit) loginSubmit.addEventListener("click", async () => {
+    const pw = $("#login-password").value;
+    const remember = $("#login-remember").checked;
+    const result = $("#login-result");
+    if (!pw) { result.className = "msg"; result.textContent = "请输入密码"; return; }
+    loginSubmit.disabled = true;
+    result.className = "msg"; result.textContent = "正在登录…";
+    try {
+      await doLogin(pw, remember);
+      showApp();
+      await refresh();
+    } catch (e) {
+      result.className = "msg"; result.textContent = "登录失败: " + e;
+      loginSubmit.disabled = false;
+    }
+  });
+  $("#login-password")?.addEventListener("keydown", (e) => { if (e.key === "Enter") loginSubmit?.click(); });
+
+  // setup password form
+  const setupSubmit = $("#setup-submit");
+  if (setupSubmit) setupSubmit.addEventListener("click", async () => {
+    const pw = $("#setup-password").value;
+    const pw2 = $("#setup-password2").value;
+    const result = $("#setup-result");
+    if (pw.length < 8) { result.className = "msg"; result.textContent = "密码至少需要 8 个字符"; return; }
+    if (pw !== pw2) { result.className = "msg"; result.textContent = "两次输入不一致"; return; }
+    setupSubmit.disabled = true;
+    result.className = "msg"; result.textContent = "正在设置…";
+    try {
+      await doSetPassword("", pw);
+      await doLogin(pw, true);
+      showApp();
+      await refresh();
+    } catch (e) {
+      result.className = "msg"; result.textContent = "设置失败: " + e;
+      setupSubmit.disabled = false;
+    }
+  });
+  $("#setup-password2")?.addEventListener("keydown", (e) => { if (e.key === "Enter") setupSubmit?.click(); });
 
   // onboarding bind
   const onbBind = $("#onb-bind");
@@ -804,7 +959,32 @@ document.addEventListener("DOMContentLoaded", () => {
   const onbSkip = $("#onb-skip");
   if (onbSkip) onbSkip.addEventListener("click", (e) => { e.preventDefault(); finishOnboarding(); });
 
-  // initial load
-  refresh();
-  setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+  // password visibility toggle
+  document.querySelectorAll(".toggle-pw").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const input = document.getElementById(btn.dataset.target);
+      if (!input) return;
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.innerHTML = show
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    });
+  });
+
+  // initial load with auth check
+  (async () => {
+    const authState = await checkAuth();
+    if (authState === "needs_login") {
+      showLoginPage();
+      return;
+    }
+    if (authState === "no_password") {
+      showSetupPage();
+      return;
+    }
+    showApp();
+    await refresh();
+    setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+  })();
 });

@@ -3,7 +3,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FAFAFA">
+    android:background="@color/snet_bg">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -17,7 +17,7 @@
             android:layout_height="wrap_content"
             android:textSize="20sp"
             android:textStyle="bold"
-            android:textColor="#333333"
+            android:textColor="@color/snet_text"
             android:layout_marginBottom="4dp"/>
 
         <TextView
@@ -25,7 +25,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textSize="14sp"
-            android:textColor="#666666"
+            android:textColor="@color/snet_text_dim"
             android:layout_marginBottom="4dp"/>
 
         <TextView
@@ -33,21 +33,59 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textSize="14sp"
-            android:textColor="#4CAF50"
+            android:textColor="@color/snet_ok"
             android:layout_marginBottom="16dp"/>
 
-        <com.google.android.material.card.MaterialCardView
+        <!-- Action buttons: members, pending, invite -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            app:cardElevation="1dp"
-            app:cardCornerRadius="8dp">
+            android:orientation="horizontal"
+            android:layout_marginBottom="16dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/membersButton"
+                style="@style/SnetButtonGhost"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/snet_button_height_sm"
+                android:layout_weight="1"
+                android:text="成员"
+                android:textSize="12sp"
+                android:layout_marginEnd="4dp"/>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/pendingButton"
+                style="@style/SnetButtonGhost"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/snet_button_height_sm"
+                android:layout_weight="1"
+                android:text="待审批"
+                android:textSize="12sp"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"/>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/inviteButton"
+                style="@style/SnetButtonPrimary"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/snet_button_height_sm"
+                android:layout_weight="1"
+                android:text="邀请"
+                android:textSize="12sp"
+                android:layout_marginStart="4dp"/>
+
+        </LinearLayout>
+
+        <com.google.android.material.card.MaterialCardView
+            style="@style/SnetCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                android:orientation="vertical">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -63,7 +101,7 @@
                         android:text="子网路由"
                         android:textSize="15sp"
                         android:textStyle="bold"
-                        android:textColor="#333333"/>
+                        android:textColor="@color/snet_text"/>
 
                     <Button
                         android:id="@+id/addSubnetButton"
@@ -81,7 +119,7 @@
                     android:layout_height="wrap_content"
                     android:text="暂无子网"
                     android:textSize="13sp"
-                    android:textColor="#999999"
+                    android:textColor="@color/snet_text_faint"
                     android:gravity="center"
                     android:padding="16dp"/>
 
@@ -94,17 +132,15 @@
         </com.google.android.material.card.MaterialCardView>
 
         <com.google.android.material.card.MaterialCardView
+            style="@style/SnetCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            app:cardElevation="1dp"
-            app:cardCornerRadius="8dp">
+            android:layout_marginBottom="12dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                android:orientation="vertical">
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -112,7 +148,7 @@
                     android:text="对等节点"
                     android:textSize="15sp"
                     android:textStyle="bold"
-                    android:textColor="#333333"
+                    android:textColor="@color/snet_text"
                     android:layout_marginBottom="8dp"/>
 
                 <TextView
@@ -121,7 +157,7 @@
                     android:layout_height="wrap_content"
                     android:text="暂无对等节点"
                     android:textSize="13sp"
-                    android:textColor="#999999"
+                    android:textColor="@color/snet_text_faint"
                     android:gravity="center"
                     android:padding="16dp"/>
 
@@ -139,26 +175,24 @@
             android:orientation="horizontal"
             android:layout_marginTop="8dp">
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/rejoinButton"
+                style="@style/SnetButtonGhost"
                 android:layout_width="0dp"
-                android:layout_height="44dp"
+                android:layout_height="@dimen/snet_button_height"
                 android:layout_weight="1"
                 android:text="重新连接"
-                android:textSize="14sp"
-                android:layout_marginEnd="4dp"
-                style="@style/Widget.Material3.Button.OutlinedButton"/>
+                android:layout_marginEnd="4dp"/>
 
-            <Button
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/leaveButton"
+                style="@style/SnetButtonDanger"
                 android:layout_width="0dp"
-                android:layout_height="44dp"
+                android:layout_height="@dimen/snet_button_height"
                 android:layout_weight="1"
                 android:text="离开网络"
-                android:textSize="14sp"
-                android:layout_marginStart="4dp"
-                android:textColor="#F44336"
-                style="@style/Widget.Material3.Button.OutlinedButton"/>
+                android:layout_marginStart="4dp"/>
+
         </LinearLayout>
 
     </LinearLayout>

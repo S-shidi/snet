@@ -85,8 +85,16 @@
         style="@style/SnetButtonGhost"
         android:layout_width="match_parent"
         android:layout_height="@dimen/snet_button_height"
-        android:text="邀请成员"
+        android:text="查看邀请码"
         android:layout_marginTop="12dp"/>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/inviteLinkBtn"
+        style="@style/SnetButtonPrimary"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/snet_button_height"
+        android:text="邀请链接 / 分享"
+        android:layout_marginTop="8dp"/>
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/resetCodeBtn"

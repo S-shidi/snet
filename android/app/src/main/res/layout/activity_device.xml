@@ -3,7 +3,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FAFAFA">
+    android:background="@color/snet_bg">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -15,8 +15,11 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
-            app:cardElevation="1dp"
-            app:cardCornerRadius="8dp">
+            app:cardElevation="0dp"
+            app:cardCornerRadius="@dimen/snet_card_radius"
+            app:strokeColor="@color/snet_border"
+            app:strokeWidth="1dp"
+            app:cardBackgroundColor="@color/snet_card">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -30,7 +33,7 @@
                     android:text="设备标识"
                     android:textSize="15sp"
                     android:textStyle="bold"
-                    android:textColor="#333333"
+                    android:textColor="@color/snet_text"
                     android:layout_marginBottom="12dp"/>
 
                 <LinearLayout
@@ -44,7 +47,7 @@
                         android:layout_height="wrap_content"
                         android:text="设备 ID"
                         android:textSize="13sp"
-                        android:textColor="#666666"/>
+                        android:textColor="@color/snet_text_dim"/>
 
                     <TextView
                         android:id="@+id/deviceID"
@@ -53,7 +56,7 @@
                         android:layout_weight="1"
                         android:textSize="13sp"
                         android:fontFamily="monospace"
-                        android:textColor="#333333"/>
+                        android:textColor="@color/snet_text"/>
                 </LinearLayout>
 
                 <LinearLayout
@@ -67,7 +70,7 @@
                         android:layout_height="wrap_content"
                         android:text="公钥"
                         android:textSize="13sp"
-                        android:textColor="#666666"/>
+                        android:textColor="@color/snet_text_dim"/>
 
                     <TextView
                         android:id="@+id/devicePublicKey"
@@ -76,7 +79,7 @@
                         android:layout_weight="1"
                         android:textSize="13sp"
                         android:fontFamily="monospace"
-                        android:textColor="#333333"/>
+                        android:textColor="@color/snet_text"/>
                 </LinearLayout>
 
                 <LinearLayout
@@ -90,7 +93,7 @@
                         android:layout_height="wrap_content"
                         android:text="服务器"
                         android:textSize="13sp"
-                        android:textColor="#666666"/>
+                        android:textColor="@color/snet_text_dim"/>
 
                     <TextView
                         android:id="@+id/deviceServer"
@@ -98,7 +101,7 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:textSize="13sp"
-                        android:textColor="#333333"/>
+                        android:textColor="@color/snet_text"/>
                 </LinearLayout>
 
                 <LinearLayout
@@ -112,7 +115,7 @@
                         android:layout_height="wrap_content"
                         android:text="绑定状态"
                         android:textSize="13sp"
-                        android:textColor="#666666"/>
+                        android:textColor="@color/snet_text_dim"/>
 
                     <TextView
                         android:id="@+id/deviceBoundStatus"
@@ -120,7 +123,7 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:textSize="13sp"
-                        android:textColor="#333333"/>
+                        android:textColor="@color/snet_text"/>
                 </LinearLayout>
 
                 <LinearLayout
@@ -134,7 +137,7 @@
                         android:layout_height="wrap_content"
                         android:text="网络数"
                         android:textSize="13sp"
-                        android:textColor="#666666"/>
+                        android:textColor="@color/snet_text_dim"/>
 
                     <TextView
                         android:id="@+id/deviceNetworkCount"
@@ -142,7 +145,7 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:textSize="13sp"
-                        android:textColor="#333333"/>
+                        android:textColor="@color/snet_text"/>
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -151,8 +154,11 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
-            app:cardElevation="1dp"
-            app:cardCornerRadius="8dp">
+            app:cardElevation="0dp"
+            app:cardCornerRadius="@dimen/snet_card_radius"
+            app:strokeColor="@color/snet_border"
+            app:strokeWidth="1dp"
+            app:cardBackgroundColor="@color/snet_card">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -166,7 +172,7 @@
                     android:text="应用信息"
                     android:textSize="15sp"
                     android:textStyle="bold"
-                    android:textColor="#333333"
+                    android:textColor="@color/snet_text"
                     android:layout_marginBottom="12dp"/>
 
                 <LinearLayout
@@ -180,7 +186,7 @@
                         android:layout_height="wrap_content"
                         android:text="版本"
                         android:textSize="13sp"
-                        android:textColor="#666666"/>
+                        android:textColor="@color/snet_text_dim"/>
 
                     <TextView
                         android:id="@+id/deviceVersion"
@@ -188,7 +194,7 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:textSize="13sp"
-                        android:textColor="#333333"/>
+                        android:textColor="@color/snet_text"/>
                 </LinearLayout>
 
                 <LinearLayout
@@ -201,7 +207,7 @@
                         android:layout_height="wrap_content"
                         android:text="配置路径"
                         android:textSize="13sp"
-                        android:textColor="#666666"/>
+                        android:textColor="@color/snet_text_dim"/>
 
                     <TextView
                         android:id="@+id/deviceConfigPath"
@@ -210,7 +216,7 @@
                         android:layout_weight="1"
                         android:textSize="13sp"
                         android:fontFamily="monospace"
-                        android:textColor="#333333"/>
+                        android:textColor="@color/snet_text"/>
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>

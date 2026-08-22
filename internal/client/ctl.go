@@ -1,12 +1,17 @@
 package client
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"snet/internal/protocol"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // CtlReq is the request body for create/join control endpoints.
@@ -354,8 +359,159 @@ func ServeCtl(d *Daemon, addr string, onShutdown func(*http.Server)) error {
 		}()
 	})
 
+	// ── Auth endpoints ──────────────────────────────────────────────
+	auth := &authManager{d: d}
+	mux.HandleFunc("POST /ctl/auth/login", auth.handleLogin)
+	mux.HandleFunc("POST /ctl/auth/logout", auth.handleLogout)
+	mux.HandleFunc("GET /ctl/auth/check", auth.handleCheck)
+	mux.HandleFunc("POST /ctl/auth/password", auth.handlePassword)
+
 	srv = &http.Server{Addr: addr, Handler: mux}
 	return srv.ListenAndServe()
+}
+
+// authManager handles web console authentication with bcrypt passwords
+// and in-memory session tokens.
+type authManager struct {
+	d        *Daemon
+	mu       sync.Mutex
+	sessions map[string]time.Time // token -> expiry
+}
+
+func (a *authManager) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Password string `json:"password"`
+		Remember bool   `json:"remember"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeCtlErr(w, 400, err)
+		return
+	}
+	a.d.mu.Lock()
+	hash := a.d.cfg.WebPasswordHash
+	a.d.mu.Unlock()
+	if hash == "" {
+		writeCtlErr(w, 400, errors.New("未设置密码"))
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+		writeCtlErr(w, 401, errors.New("密码错误"))
+		return
+	}
+	token, err := generateToken(32)
+	if err != nil {
+		writeCtlErr(w, 500, err)
+		return
+	}
+	a.mu.Lock()
+	if a.sessions == nil {
+		a.sessions = make(map[string]time.Time)
+	}
+	expiry := time.Now().Add(24 * time.Hour)
+	if req.Remember {
+		expiry = time.Now().Add(30 * 24 * time.Hour)
+	}
+	a.sessions[token] = expiry
+	a.mu.Unlock()
+	writeCtlJSON(w, 200, map[string]string{"token": token})
+}
+
+func (a *authManager) handleLogout(w http.ResponseWriter, r *http.Request) {
+	token := extractToken(r)
+	if token != "" {
+		a.mu.Lock()
+		delete(a.sessions, token)
+		a.mu.Unlock()
+	}
+	w.WriteHeader(204)
+}
+
+func (a *authManager) handleCheck(w http.ResponseWriter, r *http.Request) {
+	a.d.mu.Lock()
+	hasPassword := a.d.cfg.WebPasswordHash != ""
+	a.d.mu.Unlock()
+	if !hasPassword {
+		writeCtlJSON(w, 200, map[string]any{"hasPassword": false, "authenticated": true})
+		return
+	}
+	token := extractToken(r)
+	a.mu.Lock()
+	expiry, ok := a.sessions[token]
+	a.mu.Unlock()
+	authenticated := ok && time.Now().Before(expiry)
+	writeCtlJSON(w, 200, map[string]any{"hasPassword": true, "authenticated": authenticated})
+}
+
+func (a *authManager) handlePassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeCtlErr(w, 400, err)
+		return
+	}
+	if len(req.New) < 8 {
+		writeCtlErr(w, 400, errors.New("密码至少需要8个字符"))
+		return
+	}
+	a.d.mu.Lock()
+	hasPassword := a.d.cfg.WebPasswordHash != ""
+	a.d.mu.Unlock()
+
+	if hasPassword {
+		token := extractToken(r)
+		a.mu.Lock()
+		_, ok := a.sessions[token]
+		a.mu.Unlock()
+		if !ok {
+			writeCtlErr(w, 401, errors.New("未登录"))
+			return
+		}
+		a.d.mu.Lock()
+		if err := bcrypt.CompareHashAndPassword([]byte(a.d.cfg.WebPasswordHash), []byte(req.Current)); err != nil {
+			a.d.mu.Unlock()
+			writeCtlErr(w, 401, errors.New("当前密码错误"))
+			return
+		}
+		a.d.mu.Unlock()
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.New), bcrypt.DefaultCost)
+	if err != nil {
+		writeCtlErr(w, 500, err)
+		return
+	}
+	a.d.mu.Lock()
+	a.d.cfg.WebPasswordHash = string(hash)
+	a.d.mu.Unlock()
+	if err := a.d.SaveConfig(); err != nil {
+		writeCtlErr(w, 500, err)
+		return
+	}
+	if hasPassword {
+		token := extractToken(r)
+		a.mu.Lock()
+		a.sessions = map[string]time.Time{token: a.sessions[token]}
+		a.mu.Unlock()
+	}
+	w.WriteHeader(204)
+}
+
+func extractToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
+}
+
+func generateToken(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func writeCtlJSON(w http.ResponseWriter, status int, v any) {
