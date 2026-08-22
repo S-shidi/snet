@@ -124,8 +124,12 @@ async function copyText(text, btn) {
 /* ── fetch API helper ──────────────────────────────────────────── */
 async function api(path, opts) {
   const res = await fetch(NS + path, opts);
-  if (!res.ok) throw new Error("HTTP " + res.status);
   const text = await res.text();
+  if (!res.ok) {
+    let msg = "HTTP " + res.status;
+    try { const j = JSON.parse(text); if (j.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
   if (!text) return null;
   return JSON.parse(text);
 }
@@ -340,7 +344,7 @@ async function openCreateModal() {
 
   // fetch local subnets for suggestions
   let localSubnets = [];
-  try { localSubnets = await api("/local-subnets"); } catch {}
+  try { const resp = await api("/local-subnets"); localSubnets = resp?.subnets ?? (Array.isArray(resp) ? resp : []); } catch {}
 
   openModal({
     title: "创建网络",
@@ -631,6 +635,8 @@ async function openSubnetsModal(nid) {
       async function saveSubnets(newList) {
         try {
           await api("/subnets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid, subnets: newList }) });
+          subnets.length = 0;
+          for (const s of newList) subnets.push(s);
           resultEl.className = "msg ok"; resultEl.textContent = "已保存";
           tagsWrap.innerHTML = newList.map((s) => `<span class="chip" data-del-subnet="${esc(s)}">${esc(s)} <button class="chip-del">&times;</button></span>`).join("") || '<span class="hint">暂无子网</span>';
           bindDel();
