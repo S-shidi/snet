@@ -322,3 +322,213 @@ docker exec snetd snetctl -ctl 127.0.0.1:19432 peers <network-id>
 - WireGuard 端口范围 51900-51963（51820-51883 被服务器中继占用）
 - 容器内 snetd 以 root 运行（TUN 设备创建需要 root 权限）
 - 容器内 nginx 以 nobody 运行，仅提供静态文件和 API 代理
+
+## 11. 群晖 NAS Docker 部署
+
+在群晖 Synology NAS 上使用 Docker 部署 snetd 客户端，加入虚拟网络。
+
+### 前置条件
+
+1. 群晖已安装 **Container Manager**（DSM 7.2+）或 **Docker**（DSM 7.1 及以下）
+2. 已开启 SSH 访问（控制面板 → 终端机和 SNMP → 启用 SSH）
+3. 已获取服务器设备授权码（在 VPS Web UI「设备」页生成）
+
+### 方式一：通过 Docker Compose 部署（推荐）
+
+#### 步骤 1：上传部署文件
+
+1. 在群晖 **File Station** 中创建文件夹 `/docker/snet/`
+2. 上传以下文件到 `/docker/snet/`：
+   - `docker-compose.yml`（见下方模板）
+   - `snet-server.tar`（预构建镜像，从本地 Mac 桌面上传）
+
+#### 步骤 2：创建 docker-compose.yml
+
+在 `/docker/snet/` 目录下创建 `docker-compose.yml`：
+
+```yaml
+version: '3.8'
+
+services:
+  snet-client:
+    image: snet-server:latest
+    container_name: snet-client
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./data:/data
+    environment:
+      - SNET_SERVER=${SNET_SERVER:-}
+      - SNET_BIND_CODE=${SNET_BIND_CODE:-}
+```
+
+#### 步骤 3：导入镜像
+
+1. 打开 **Container Manager → 镜像**
+2. 点击 **导入 → 从文件添加**
+3. 选择 `/docker/snet/snet-server.tar`
+4. 等待导入完成
+
+#### 步骤 4：启动容器
+
+**方式 A：自动绑定（推荐首次使用）**
+
+编辑 `/docker/snet/.env` 文件（如没有则创建）：
+
+```bash
+SNET_SERVER=https://snet.uizhi.eu.org:8090
+SNET_BIND_CODE=你的设备授权码
+```
+
+然后在 **Container Manager → 项目** 中：
+1. 点击 **新增**
+2. 项目名称：`snet`
+3. 路径：选择 `/docker/snet/`
+4. 来源：选择 `docker-compose.yml`
+5. 点击 **下一步 → 完成**
+
+**方式 B：手动绑定**
+
+不创建 `.env` 文件，直接启动容器后通过 Web UI 绑定：
+
+1. 启动容器后访问 `http://群晖IP:8080`
+2. 在 Web UI 中点击 **链接服务器**
+3. 输入服务器地址和设备授权码
+
+#### 步骤 5：加入网络
+
+容器启动并绑定服务器后：
+
+1. 访问 `http://群晖IP:8080` 打开 Web UI
+2. 点击 **加入网络**
+3. 粘贴邀请链接（格式：`snet://join?nid=...&code=...`）
+4. 点击 **加入**
+
+### 方式二：通过群晖 GUI 部署
+
+#### 步骤 1：导入镜像
+
+1. 打开 **Container Manager → 镜像 → 导入**
+2. 选择 `snet-server.tar` 文件
+
+#### 步骤 2：创建容器
+
+1. 打开 **Container Manager → 容器 → 新增**
+2. **常规设置**：
+   - 容器名称：`snet-client`
+   - 启用资源限制：关闭
+3. **端口设置**：
+   | 宿主机 | 容器 | 类型 |
+   |--------|------|------|
+   | 8080 | 8080 | TCP |
+   | 8443 | 8443 | TCP |
+   | 51900 | 51900 | UDP |
+   | 51901 | 51901 | UDP |
+   | 51902 | 51902 | UDP |
+4. **存储空间**：
+   | 宿主机路径 | 容器路径 | 权限 |
+   |-----------|---------|------|
+   | `/docker/snet/data` | `/data` | 读写 |
+5. **环境变量**（可选，用于自动绑定）：
+   | 变量 | 值 |
+   |------|-----|
+   | `SNET_SERVER` | `https://snet.uizhi.eu.org:8090` |
+   | `SNET_BIND_CODE` | `你的设备授权码` |
+6. **网络**：选择 **host** 模式
+7. **高级设置 → 权限**：
+   - 启用 **特权模式**（或添加 `/dev/net/tun` 设备）
+8. 点击 **下一步 → 完成**
+
+#### 步骤 3：绑定和加入网络
+
+参考方式一的步骤 5。
+
+### 群晖 NAS 特殊配置
+
+#### 开启 TUN 设备支持
+
+群晖默认可能禁用 TUN 设备，需要 SSH 登录后执行：
+
+```bash
+# 检查 TUN 设备
+ls -la /dev/net/tun
+
+# 如果不存在，创建 TUN 设备
+sudo mkdir -p /dev/net
+sudo mknod /dev/net/tun c 10 200
+sudo chmod 600 /dev/net/tun
+
+# 开机自动创建（添加到 /etc/rc.local）
+echo 'mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 600 /dev/net/tun' | sudo tee -a /etc/rc.local
+```
+
+#### 防火墙配置
+
+如果群晖启用了防火墙，需要放行以下端口：
+
+- **8080/tcp**：Web UI（HTTP）
+- **8443/tcp**：Web UI（HTTPS）
+- **51900-51963/udp**：WireGuard 数据面
+
+### 验证部署
+
+1. **检查容器状态**：
+   ```bash
+   docker ps | grep snet-client
+   ```
+
+2. **查看日志**：
+   ```bash
+   docker logs snet-client
+   ```
+
+3. **检查网络连接**：
+   ```bash
+   docker exec snet-client snetctl -ctl 127.0.0.1:19432 status
+   ```
+
+4. **访问 Web UI**：
+   - 浏览器打开 `http://群晖IP:8080`
+   - 确认显示已绑定服务器和加入的网络
+
+### 故障排查
+
+**问题：容器启动失败，提示 TUN 设备不存在**
+```bash
+# 解决方案：手动创建 TUN 设备
+sudo mkdir -p /dev/net
+sudo mknod /dev/net/tun c 10 200
+sudo chmod 600 /dev/net/tun
+```
+
+**问题：Web UI 无法访问**
+```bash
+# 检查端口是否被占用
+netstat -tlnp | grep 8080
+# 检查容器日志
+docker logs snet-client
+```
+
+**问题：无法绑定服务器**
+```bash
+# 检查网络连通性
+docker exec snet-client curl -sk https://snet.uizhi.eu.org:8090/healthz
+# 检查授权码是否有效
+docker exec snet-client snetctl -ctl 127.0.0.1:19432 status
+```
+
+### 升级容器
+
+```bash
+# 1. 导入新镜像
+docker load -i snet-server.tar
+
+# 2. 重启容器
+docker restart snet-client
+# 或使用 docker compose
+cd /docker/snet && docker compose up -d
+```

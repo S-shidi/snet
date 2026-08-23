@@ -58,6 +58,7 @@ cd desktop/src-tauri && cargo check
 ## 部署 / CI
 
 - 服务端部署、证书、systemd、防火墙、设备授权：见 [`deploy/README.md`](deploy/README.md)。
+- **Docker 部署**：支持在 Docker 主机、VPS、群晖 NAS 等环境容器化部署客户端，详见 [`deploy/README.md` 第 10-11 节](deploy/README.md)。
 - Windows 安装包：推送后手动触发 `.github/workflows/build-windows.yml`（Actions），
   或打 `v*` tag 自动构建；安装包在 `snet-windows-nsis` artifact 中。
 - 服务器 rollout：`scripts/rollout-vps.sh`（本机构建 linux-amd64 并 scp/systemctl rollout）。

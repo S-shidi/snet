@@ -6,6 +6,7 @@ RUN apk add --no-cache git
 # Cache dependencies
 WORKDIR /src
 COPY go.mod go.sum ./
+ENV GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 
 # Build static binaries

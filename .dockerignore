@@ -1,0 +1,8 @@
+.git
+desktop/src-tauri
+desktop/node_modules
+android
+*.apk
+*.aab
+*.dmg
+*.app
