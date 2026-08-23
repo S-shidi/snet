@@ -1,126 +1,131 @@
 package com.snet.app
 
+import android.annotation.SuppressLint
 import android.content.Intent
+import android.net.VpnService
 import android.os.Bundle
-import android.view.View
-import android.widget.ImageButton
-import android.widget.TextView
+import android.util.Log
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
-import com.google.android.material.tabs.TabLayout
-import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
+    private companion object {
+        const val TAG = "MainActivity"
+        const val VPN_REQUEST_CODE = 100
+    }
 
-    private lateinit var headerStatusDot: View
-    private lateinit var headerStatusText: TextView
-    private lateinit var headerDeviceId: TextView
-    private lateinit var fragmentNetwork: View
-    private lateinit var fragmentStatus: View
-    private lateinit var tabLayout: TabLayout
-    private var activeTab = 0
+    private lateinit var webView: WebView
+    private var pendingVpnStart = false
 
-    private var networkFragment = NetworkFragment()
-    private var statusFragment = StatusFragment()
-
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
-        // CRITICAL: Initialize SnetBridge before any fragment loads
+        // Initialize SnetBridge before WebView loads
         if (SnetBridge.getStatus(this) == null) {
             SnetBridge.init(filesDir.absolutePath)
         }
 
-        headerStatusDot = findViewById(R.id.headerStatusDot)
-        headerStatusText = findViewById(R.id.headerStatusText)
-        headerDeviceId = findViewById(R.id.headerDeviceId)
-        fragmentNetwork = findViewById(R.id.fragmentNetwork)
-        fragmentStatus = findViewById(R.id.fragmentStatus)
-        tabLayout = findViewById(R.id.tabLayout)
+        // Simple full-screen WebView
+        webView = WebView(this)
+        setContentView(webView)
 
-        // Setup tabs
-        tabLayout.addTab(tabLayout.newTab().setText("网络"))
-        tabLayout.addTab(tabLayout.newTab().setText("状态"))
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            cacheMode = WebSettings.LOAD_DEFAULT
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        }
 
-        tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: TabLayout.Tab) {
-                activeTab = tab.position
-                when (tab.position) {
-                    0 -> { fragmentNetwork.visibility = View.VISIBLE; fragmentStatus.visibility = View.GONE }
-                    1 -> { fragmentNetwork.visibility = View.GONE; fragmentStatus.visibility = View.VISIBLE }
-                }
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(cm: ConsoleMessage?): Boolean {
+                cm?.let { Log.d(TAG, "JS: ${it.message()} [${it.sourceId()}:${it.lineNumber()}]") }
+                return true
             }
-            override fun onTabUnselected(tab: TabLayout.Tab) {}
-            override fun onTabReselected(tab: TabLayout.Tab) {}
-        })
+        }
 
-        // Setup fragments
-        supportFragmentManager.beginTransaction()
-            .replace(R.id.fragmentNetwork, networkFragment)
-            .replace(R.id.fragmentStatus, statusFragment)
-            .commit()
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                // Inject bridge and init after page loads
+                view?.evaluateJavascript("""
+                    (function() {
+                        // WebBridge is already registered via addJavascriptInterface
+                        // Just signal that the bridge is ready
+                        window.__ANDROID_BRIDGE__ = true;
+                        console.log('[Android] Bridge ready');
+                    })();
+                """, null)
+            }
+        }
 
-        // Settings button
-        findViewById<ImageButton>(R.id.settingsButton).setOnClickListener {
-            startActivity(Intent(this, DeviceActivity::class.java))
+        // Register JavaScript interface
+        webView.addJavascriptInterface(WebBridge(this), "WebBridge")
+
+        // Load the shared web app from assets
+        webView.loadUrl("file:///android_asset/web/index.html")
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == VPN_REQUEST_CODE) {
+            if (resultCode == RESULT_OK) {
+                // VPN permission granted, start the service
+                val intent = Intent(this, SnetVpnService::class.java)
+                intent.action = "START"
+                startForegroundService(intent)
+            } else {
+                Log.w(TAG, "VPN permission denied")
+                // Notify JavaScript
+                webView.evaluateJavascript("""
+                    (function() {
+                        if (typeof toast === 'function') toast('需要 VPN 权限', 'err');
+                    })();
+                """, null)
+            }
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        refreshHeader()
+    override fun onBackPressed() {
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            super.onBackPressed()
+        }
     }
 
-    fun refreshHeader() {
-        Thread {
-            val act = this@MainActivity
-            val statusJson = SnetBridge.getStatus(act) ?: return@Thread
-            try {
-                val status = JSONObject(statusJson)
-                val bound = status.optBoolean("bound", false)
-                val deviceID = SnetBridge.getDeviceID(act)
-                val networkCount = status.optInt("network_count", 0)
-                val connected = status.optBoolean("connected", false)
-
-                val statusLabel: String
-                val statusColor: Int
-                val statusDotColor: Int
-                when {
-                    bound && connected -> {
-                        statusLabel = "已连接 · $networkCount 网络"
-                        statusColor = R.color.snet_ok
-                        statusDotColor = R.color.snet_ok
-                    }
-                    bound -> {
-                        statusLabel = "已绑定 · $networkCount 网络"
-                        statusColor = R.color.snet_warn
-                        statusDotColor = R.color.snet_warn
-                    }
-                    else -> {
-                        statusLabel = "未绑定"
-                        statusColor = R.color.snet_err
-                        statusDotColor = R.color.snet_err
-                    }
-                }
-
-                runOnUiThread {
-                    headerStatusText.text = statusLabel
-                    headerStatusText.setTextColor(getColor(statusColor))
-                    headerDeviceId.text = deviceID ?: ""
-                    headerStatusDot.backgroundTintList =
-                        android.content.res.ColorStateList.valueOf(getColor(statusDotColor))
-                }
-            } catch (_: Exception) {}
-        }.start()
+    override fun onDestroy() {
+        webView.destroy()
+        super.onDestroy()
     }
 
-    fun showCreateNetwork() {
-        val sheet = CreateNetworkSheet.newInstance()
-        sheet.show(supportFragmentManager, "create_network")
+    /**
+     * Called from WebBridge to request VPN permission
+     */
+    fun requestVpnPermission() {
+        val intent = VpnService.prepare(this)
+        if (intent != null) {
+            pendingVpnStart = true
+            startActivityForResult(intent, VPN_REQUEST_CODE)
+        } else {
+            // Permission already granted
+            val startIntent = Intent(this, SnetVpnService::class.java)
+            startIntent.action = "START"
+            startForegroundService(startIntent)
+        }
     }
 
-    fun showJoinNetwork() {
-        val sheet = JoinNetworkSheet.newInstance()
-        sheet.show(supportFragmentManager, "join_network")
+    /**
+     * Called from JavaScript to evaluate code on the UI thread
+     */
+    fun evaluateJs(script: String) {
+        runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 }
