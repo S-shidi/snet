@@ -46,15 +46,29 @@ func TestAdminWebRoot(t *testing.T) {
 	}
 
 	disabled, _ := newTestServer(t)
+	// Fresh server without credentials: the page itself is served so the
+	// first-run setup wizard can initialize the admin account; other paths
+	// redirect into it.
 	for _, p := range []string{"/", "/admin/"} {
 		resp, err := client.Get(disabled.URL + p)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("disabled %s status = %d, want 404", p, resp.StatusCode)
+		if resp.StatusCode != http.StatusMovedPermanently {
+			t.Fatalf("fresh %s status = %d, want 301", p, resp.StatusCode)
 		}
+		if loc := resp.Header.Get("Location"); loc != "/admin" {
+			t.Fatalf("fresh %s Location = %q, want /admin", p, loc)
+		}
+	}
+	resp, err := client.Get(disabled.URL + "/admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("fresh /admin status = %d, want 200", resp.StatusCode)
 	}
 }
 
@@ -63,6 +77,116 @@ func TestAdminDisabledByDefault(t *testing.T) {
 	resp := doJSON(t, http.MethodGet, ts.URL+"/admin/networks", "", nil, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("admin without token configured should be 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestAdminBootstrapFlow(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	st, err := NewStoreAt(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(NewHandler(st, Options{}))
+
+	// admin APIs stay locked before bootstrap
+	resp := doJSON(t, http.MethodGet, ts.URL+"/admin/networks", "", nil, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("pre-bootstrap networks = %d, want 404", resp.StatusCode)
+	}
+
+	// wizard reports availability
+	var avail map[string]bool
+	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/bootstrap", "", nil, &avail)
+	if resp.StatusCode != http.StatusOK || !avail["available"] {
+		t.Fatalf("bootstrap available = %d %v", resp.StatusCode, avail)
+	}
+
+	// validation errors
+	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/bootstrap", "", map[string]any{"username": "root", "password": "short"}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("weak password = %d, want 400", resp.StatusCode)
+	}
+	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/bootstrap", "", map[string]any{"username": " ", "password": "longenough1"}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("blank username = %d, want 400", resp.StatusCode)
+	}
+
+	// create the account; response is a session that can call admin APIs
+	var login protocol.AdminLoginResp
+	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/bootstrap", "",
+		map[string]any{"username": "root", "password": "hunter2hunter2"}, &login)
+	if resp.StatusCode != http.StatusOK || login.Token == "" {
+		t.Fatalf("bootstrap = %d token=%q", resp.StatusCode, login.Token)
+	}
+	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/networks", login.Token, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post-bootstrap networks = %d, want 200", resp.StatusCode)
+	}
+
+	// replaying the wizard fails
+	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/bootstrap", "",
+		map[string]any{"username": "other", "password": "hunter2hunter2"}, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("replay bootstrap = %d, want 409", resp.StatusCode)
+	}
+	var avail2 map[string]bool
+	doJSON(t, http.MethodGet, ts.URL+"/admin/bootstrap", "", nil, &avail2)
+	if avail2["available"] {
+		t.Fatal("bootstrap should be unavailable after init")
+	}
+
+	// password login with the created account
+	var relogin protocol.AdminLoginResp
+	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/login", "",
+		map[string]any{"username": "root", "password": "hunter2hunter2"}, &relogin)
+	if resp.StatusCode != http.StatusOK || relogin.Token == "" {
+		t.Fatalf("login = %d", resp.StatusCode)
+	}
+
+	// password change works for the bootstrapped account
+	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/password", relogin.Token,
+		map[string]any{"oldPassword": "hunter2hunter2", "newPassword": "n3w-password"}, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("password change = %d", resp.StatusCode)
+	}
+	var relogin2 protocol.AdminLoginResp
+	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/login", "",
+		map[string]any{"username": "root", "password": "n3w-password"}, &relogin2)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login after change = %d", resp.StatusCode)
+	}
+	st.Close()
+
+	// restart without flags: the stored account keeps working and the
+	// wizard stays unavailable.
+	st2, err := NewStoreAt(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	ts2 := httptest.NewServer(NewHandler(st2, Options{}))
+	defer ts2.Close()
+	var avail3 map[string]bool
+	doJSON(t, http.MethodGet, ts2.URL+"/admin/bootstrap", "", nil, &avail3)
+	if avail3["available"] {
+		t.Fatal("bootstrap should be unavailable after restart")
+	}
+	resp = doJSON(t, http.MethodPost, ts2.URL+"/admin/login", "",
+		map[string]any{"username": "root", "password": "wrong-pass"}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad login after restart = %d, want 401", resp.StatusCode)
+	}
+	var rl protocol.AdminLoginResp
+	resp = doJSON(t, http.MethodPost, ts2.URL+"/admin/login", "",
+		map[string]any{"username": "root", "password": "n3w-password"}, &rl)
+	if resp.StatusCode != http.StatusOK || rl.Token == "" {
+		t.Fatalf("restart login = %d", resp.StatusCode)
+	}
+	resp = doJSON(t, http.MethodGet, ts2.URL+"/admin/networks", rl.Token, nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("restart admin networks = %d, want 200", resp.StatusCode)
 	}
 }
 
@@ -88,10 +212,13 @@ func TestAdminFlow(t *testing.T) {
 		map[string]any{"code": code, "publicKey": "BBB=="}, &joined)
 
 	// list networks (admin)
-	var nets []networkSummary
-	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/networks", "secret", nil, &nets)
-	if resp.StatusCode != http.StatusOK || len(nets) != 1 || nets[0].NodeCount != 2 {
-		t.Fatalf("admin networks = %d %+v", resp.StatusCode, nets)
+	var netPage struct {
+		Items []networkSummary `json:"items"`
+		Total int              `json:"total"`
+	}
+	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/networks", "secret", nil, &netPage)
+	if resp.StatusCode != http.StatusOK || len(netPage.Items) != 1 || netPage.Items[0].NodeCount != 2 {
+		t.Fatalf("admin networks = %d %+v", resp.StatusCode, netPage)
 	}
 
 	// list nodes (admin)
@@ -145,9 +272,9 @@ func TestAdminFlow(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete network = %d", resp.StatusCode)
 	}
-	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/networks", "secret", nil, &nets)
-	if len(nets) != 0 {
-		t.Fatalf("networks after delete = %d", len(nets))
+	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/networks", "secret", nil, &netPage)
+	if len(netPage.Items) != 0 || netPage.Total != 0 {
+		t.Fatalf("networks after delete = %d total=%d", len(netPage.Items), netPage.Total)
 	}
 }
 
@@ -235,8 +362,11 @@ func TestAdminCreateNetwork(t *testing.T) {
 	}
 
 	// listed as managed, no owner, zero nodes
-	var nets []networkSummary
-	doJSON(t, http.MethodGet, ts.URL+"/admin/networks", "secret", nil, &nets)
+	var netPage struct {
+		Items []networkSummary `json:"items"`
+	}
+	doJSON(t, http.MethodGet, ts.URL+"/admin/networks", "secret", nil, &netPage)
+	nets := netPage.Items
 	if len(nets) != 1 || !nets[0].Network.Managed || nets[0].NodeCount != 0 || nets[0].Network.OwnerDeviceID != "" {
 		t.Fatalf("managed summary wrong: %+v", nets)
 	}

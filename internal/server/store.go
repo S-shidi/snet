@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,9 @@ var (
 	ErrAuthCodeInvalid = errors.New("invalid device authorization code")
 	ErrAuthCodeUsed    = errors.New("device authorization code already used")
 	ErrAuthCodeFull    = errors.New("device authorization code reached max bindings")
+	// ErrAdminExists is returned by BootstrapAdmin when an admin account has
+	// already been initialized.
+	ErrAdminExists = errors.New("管理员账号已初始化")
 )
 
 const (
@@ -95,6 +99,7 @@ type pendingNode struct {
 
 type networkState struct {
 	n              protocol.Network
+	seq            uint64 // creation sequence, monotonic per store
 	pairing        *pairing
 	nodes          map[string]*protocol.Node
 	pending        map[string]*pendingNode
@@ -154,12 +159,12 @@ type authCodeBinding struct {
 // DeviceID/PublicKey/BoundAt fields exist only to migrate records persisted
 // before multi-device codes were introduced.
 type authCodeRecord struct {
-	ID          string    `json:"id"`
-	CodePlain   string    `json:"codePlain,omitempty"`
-	CodeHash    string    `json:"codeHash"`
-	Hint        string    `json:"hint"`
-	CreatedAt   time.Time `json:"createdAt"`
-	MaxBindings int       `json:"maxBindings,omitempty"`
+	ID          string            `json:"id"`
+	CodePlain   string            `json:"codePlain,omitempty"`
+	CodeHash    string            `json:"codeHash"`
+	Hint        string            `json:"hint"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	MaxBindings int               `json:"maxBindings,omitempty"`
 	Bindings    []authCodeBinding `json:"bindings,omitempty"`
 
 	// Legacy single-binding fields, kept for migration only.
@@ -175,6 +180,7 @@ type Store struct {
 	byToken   map[string]tokenEntry // key = SHA-256 hex of the raw token
 	devices   map[string]*deviceRecord
 	authCodes map[string]*authCodeRecord // key = public auth-code ID
+	netSeq    uint64                     // monotonic creation counter for networks
 
 	// requireDeviceAuth gates CreateNetwork/Join/RegisterDevice: when on, only
 	// devices that successfully bound a generated authorization code may
@@ -248,7 +254,9 @@ func (s *Store) load() error {
 				if lastAct == 0 {
 					lastAct = time.Now().Unix()
 				}
-				s.networks[r.ID] = &networkState{
+				s.netSeq++
+				ns := &networkState{
+					seq: s.netSeq,
 					n: protocol.Network{
 						ID:               r.ID,
 						OwnerNodeID:      r.OwnerNodeID,
@@ -275,6 +283,7 @@ func (s *Store) load() error {
 					lastActivityAt: lastAct,
 					subnetBase:     base,
 				}
+				s.networks[r.ID] = ns
 			}
 		}
 		if ndb := tx.Bucket(bktNodes); ndb != nil {
@@ -795,6 +804,8 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		lastActivityAt: now.Unix(),
 		subnetBase:     base,
 	}
+	s.netSeq++
+	ns.seq = s.netSeq
 	ip, err := ns.allocIP()
 	if err != nil {
 		return protocol.CreateNetworkResp{}, err
@@ -1860,6 +1871,8 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool) (
 		lastActivityAt: now.Unix(),
 		subnetBase:     base,
 	}
+	s.netSeq++
+	ns.seq = s.netSeq
 	s.networks[nid] = ns
 	if s.relayEnabled() {
 		if err := s.ensureRelayPort(ns); err != nil {
@@ -1879,11 +1892,138 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool) (
 
 type networkSummary struct {
 	Network        protocol.Network `json:"network"`
+	Seq            uint64           `json:"-"`
 	NodeCount      int              `json:"nodeCount"`
 	RelayPort      int              `json:"relayPort"`
 	Online         bool             `json:"online"`
 	Zombie         bool             `json:"zombie"`
 	LastActivityAt int64            `json:"lastActivityAt"`
+	PendingCount   int              `json:"pendingCount"`
+}
+
+// ---- admin paged listings ----
+
+const (
+	defaultAdminPageSize = 20
+	maxAdminPageSize     = 100
+)
+
+// clampPage normalizes pagination params: page >= 1, 1 <= pageSize <= max.
+func clampPage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = defaultAdminPageSize
+	}
+	if pageSize > maxAdminPageSize {
+		pageSize = maxAdminPageSize
+	}
+	return page, pageSize
+}
+
+// adminTimeOf parses an RFC3339 timestamp, returning the zero time when
+// missing or malformed so such records sort last in descending order.
+func adminTimeOf(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// pageSlice windows a fully sorted slice. total is the pre-window length so
+// callers can report it even when the requested page is out of range.
+func pageSlice[T any](items []T, page, pageSize int) ([]T, int) {
+	total := len(items)
+	start := (page - 1) * pageSize
+	if start >= total || start < 0 {
+		return []T{}, total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return items[start:end], total
+}
+
+// clampToLastPage resolves an out-of-range request onto the last non-empty
+// page (a no-op while the collection is empty).
+func clampToLastPage(page, pageSize, total int) int {
+	if total > 0 {
+		if pages := (total + pageSize - 1) / pageSize; page > pages {
+			return pages
+		}
+	}
+	return page
+}
+
+func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, page, pageSize int) ([]networkSummary, int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	page, pageSize = clampPage(page, pageSize)
+	needle := strings.ToLower(strings.TrimSpace(q))
+	out := make([]networkSummary, 0, len(s.networks))
+	for _, ns := range s.networks {
+		zombie := false
+		if zombieTTL > 0 && ns.lastActivityAt > 0 && now.Sub(time.Unix(ns.lastActivityAt, 0)) >= zombieTTL {
+			zombie = true
+		}
+		sum := networkSummary{
+			Network:        ns.n,
+			Seq:            ns.seq,
+			NodeCount:      len(ns.nodes),
+			RelayPort:      ns.relayPort,
+			Online:         now.Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second),
+			Zombie:         zombie,
+			LastActivityAt: ns.lastActivityAt,
+			PendingCount:   len(ns.pending),
+		}
+		switch status {
+		case "", "all":
+		case "online":
+			if !sum.Online {
+				continue
+			}
+		case "offline":
+			if sum.Online {
+				continue
+			}
+		case "managed":
+			if !ns.n.Managed {
+				continue
+			}
+		case "zombie":
+			if !zombie {
+				continue
+			}
+		case "pending":
+			if sum.PendingCount == 0 {
+				continue
+			}
+		default:
+			continue // unknown status matches nothing
+		}
+		if needle != "" {
+			hay := strings.ToLower(ns.n.Name + " " + ns.n.ID + " " + ns.n.Subnet)
+			if !strings.Contains(hay, needle) {
+				continue
+			}
+		}
+		out = append(out, sum)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti, tj := adminTimeOf(out[i].Network.CreatedAt), adminTimeOf(out[j].Network.CreatedAt)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return out[i].Seq > out[j].Seq
+	})
+	total := len(out)
+	page = clampToLastPage(page, pageSize, total)
+	items, _ := pageSlice(out, page, pageSize)
+	return items, total, page
 }
 
 func (s *Store) AdminNetworks(zombieTTL time.Duration) []networkSummary {
@@ -1934,6 +2074,43 @@ func (s *Store) AdminDevices() []protocol.Device {
 		})
 	}
 	return out
+}
+
+// AdminDevicesPage returns one page of registered devices sorted by creation
+// time (newest first), optionally filtered by q across id/name/public key.
+func (s *Store) AdminDevicesPage(q string, page, pageSize int) ([]protocol.Device, int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	page, pageSize = clampPage(page, pageSize)
+	needle := strings.ToLower(strings.TrimSpace(q))
+	out := make([]protocol.Device, 0, len(s.devices))
+	for _, d := range s.devices {
+		dev := protocol.Device{
+			ID:        d.ID,
+			PublicKey: d.PublicKey,
+			CreatedAt: d.CreatedAt,
+			LastSeen:  d.LastSeen,
+			Name:      d.Name,
+		}
+		if needle != "" {
+			hay := strings.ToLower(dev.ID + " " + dev.Name + " " + dev.PublicKey)
+			if !strings.Contains(hay, needle) {
+				continue
+			}
+		}
+		out = append(out, dev)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ti, tj := adminTimeOf(out[i].CreatedAt), adminTimeOf(out[j].CreatedAt)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return out[i].ID < out[j].ID
+	})
+	total := len(out)
+	page = clampToLastPage(page, pageSize, total)
+	items, _ := pageSlice(out, page, pageSize)
+	return items, total, page
 }
 
 // DeviceNetworks returns the networks a device holds a node in.
@@ -2359,6 +2536,85 @@ func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
 	return out
 }
 
+// AdminAuthCodesPage returns one page of auth codes sorted by creation time
+// (newest first).
+func (s *Store) AdminAuthCodesPage(page, pageSize int) ([]protocol.AuthCodeInfo, int, int) {
+	all := s.AdminAuthCodes()
+	sort.Slice(all, func(i, j int) bool {
+		ti, tj := adminTimeOf(all[i].CreatedAt), adminTimeOf(all[j].CreatedAt)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return all[i].ID < all[j].ID
+	})
+	page, pageSize = clampPage(page, pageSize)
+	total := len(all)
+	page = clampToLastPage(page, pageSize, total)
+	items, _ := pageSlice(all, page, pageSize)
+	return items, total, page
+}
+
+// AdminOverview carries the aggregate numbers shown on the admin overview
+// page plus the most recently active networks. It exists so the console can
+// render totals without pulling every paged list.
+type AdminOverview struct {
+	NetworksTotal  int              `json:"networksTotal"`
+	NetworksOnline int              `json:"networksOnline"`
+	NodesTotal     int              `json:"nodesTotal"`
+	PendingTotal   int              `json:"pendingTotal"`
+	DevicesTotal   int              `json:"devicesTotal"`
+	CodesTotal     int              `json:"codesTotal"`
+	CodesBound     int              `json:"codesBound"`
+	CodesFree      int              `json:"codesFree"`
+	RecentNetworks []networkSummary `json:"recentNetworks"`
+}
+
+// AdminOverview computes the aggregate stats for the admin console.
+func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
+	ov := AdminOverview{}
+	s.mu.Lock()
+	now := time.Now()
+	recent := make([]networkSummary, 0, len(s.networks))
+	for _, ns := range s.networks {
+		online := now.Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second)
+		ov.NetworksTotal++
+		if online {
+			ov.NetworksOnline++
+		}
+		ov.NodesTotal += len(ns.nodes)
+		ov.PendingTotal += len(ns.pending)
+		zombie := false
+		if zombieTTL > 0 && ns.lastActivityAt > 0 && now.Sub(time.Unix(ns.lastActivityAt, 0)) >= zombieTTL {
+			zombie = true
+		}
+		recent = append(recent, networkSummary{
+			Network:        ns.n,
+			NodeCount:      len(ns.nodes),
+			RelayPort:      ns.relayPort,
+			Online:         online,
+			Zombie:         zombie,
+			LastActivityAt: ns.lastActivityAt,
+			PendingCount:   len(ns.pending),
+		})
+	}
+	ov.DevicesTotal = len(s.devices)
+	for _, ac := range s.authCodes {
+		ov.CodesTotal++
+		if len(ac.Bindings) > 0 {
+			ov.CodesBound++
+		} else {
+			ov.CodesFree++
+		}
+	}
+	sort.Slice(recent, func(i, j int) bool { return recent[i].LastActivityAt > recent[j].LastActivityAt })
+	s.mu.Unlock()
+	if len(recent) > 6 {
+		recent = recent[:6]
+	}
+	ov.RecentNetworks = recent
+	return ov
+}
+
 // AdminRevokeAuthCode permanently deletes a code by its public ID. A bound
 // code is revoked too; the device keeps access to networks it already joined
 // until its nodes are removed.
@@ -2610,6 +2866,13 @@ func (s *Store) adminPasswordHashLocked(user string) string {
 	return out
 }
 
+// adminPasswordHash reads the stored bcrypt hash for user, if any.
+func (s *Store) adminPasswordHash(user string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.adminPasswordHashLocked(user)
+}
+
 // putAdminPasswordLocked writes the bcrypt hash for user. Callers must hold
 // s.mu.
 func (s *Store) putAdminPasswordLocked(user, hash string) error {
@@ -2622,6 +2885,56 @@ func (s *Store) putAdminPasswordLocked(user, hash string) error {
 		}
 		return tx.Bucket(bktAdmin).Put([]byte(user), []byte(hash))
 	})
+}
+
+// AdminUsernames lists the admin usernames recorded in the store, sorted.
+func (s *Store) AdminUsernames() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil
+	}
+	var out []string
+	_ = s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bktAdmin)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, _ []byte) error {
+			if len(k) > 0 {
+				out = append(out, string(k))
+			}
+			return nil
+		})
+	})
+	sort.Strings(out)
+	return out
+}
+
+// BootstrapAdmin creates the very first admin account and returns its bcrypt
+// hash. It refuses when any admin account already exists so the web setup
+// wizard cannot be replayed after initialization.
+func (s *Store) BootstrapAdmin(user, pass string) (string, error) {
+	h, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		exists := false
+		_ = s.db.View(func(tx *bbolt.Tx) error {
+			if b := tx.Bucket(bktAdmin); b != nil {
+				k, _ := b.Cursor().First()
+				exists = k != nil
+			}
+			return nil
+		})
+		if exists {
+			return "", ErrAdminExists
+		}
+	}
+	return string(h), s.putAdminPasswordLocked(user, string(h))
 }
 
 // UpdateAllowedSubnets replaces the CIDR subnets a node advertises for

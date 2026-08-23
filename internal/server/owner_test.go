@@ -472,10 +472,13 @@ func TestAdminDevicesEndpoint(t *testing.T) {
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
 		protocol.CreateNetworkReq{PublicKey: "AAA==", DeviceID: "dev-owner"}, &created)
 
-	var devs protocol.AdminDevicesResp
-	resp := doJSON(t, http.MethodGet, ts.URL+"/admin/devices", "secret", nil, &devs)
-	if resp.StatusCode != http.StatusOK || len(devs.Devices) != 1 || devs.Devices[0].ID != "dev-owner" {
-		t.Fatalf("devices = %d %+v", resp.StatusCode, devs)
+	var devPage struct {
+		Items []protocol.Device `json:"items"`
+		Total int               `json:"total"`
+	}
+	resp := doJSON(t, http.MethodGet, ts.URL+"/admin/devices", "secret", nil, &devPage)
+	if resp.StatusCode != http.StatusOK || len(devPage.Items) != 1 || devPage.Items[0].ID != "dev-owner" {
+		t.Fatalf("devices = %d %+v", resp.StatusCode, devPage)
 	}
 
 	var nets protocol.NetworksResp

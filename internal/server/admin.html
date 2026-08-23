@@ -67,10 +67,14 @@
   .live-dot::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 3px var(--ok-soft); }
 
   /* ── login ── */
-  #login-card { margin:auto; width:100%; max-width:390px; }
+  #login-card, #setup-card { margin:auto; width:100%; max-width:390px; }
   #main { display:none; width:100%; max-width:1040px; margin:0 auto; padding:20px 22px 60px; }
   html[data-authed] #main { display:block; }
-  html[data-authed] #login-card { display:none; }
+  #setup-card { display:none; }
+  html[data-setup] #setup-card { display:block; }
+  html[data-setup] #login-card { display:none; }
+  /* keep last: an authenticated session always hides login and setup cards */
+  html[data-authed] #login-card, html[data-authed] #setup-card { display:none !important; }
   #btn-refresh, #logout { display:none; }
   html[data-authed] #btn-refresh, html[data-authed] #logout { display:inline-flex; }
   #chpass { display:none; }
@@ -108,11 +112,11 @@
   .btn.icon:hover { background:var(--card2); color:var(--text); border-color:var(--border); }
 
   /* ── tabs ── */
-  .tabs { display:flex; gap:6px; margin-bottom:18px; border-bottom:1px solid var(--border); padding-bottom:0; }
+  .tabs { display:flex; gap:24px; margin-bottom:18px; }
   .tab {
-    background:transparent; border:1px solid transparent; border-bottom:2px solid transparent;
-    color:var(--dim); padding:9px 16px; font-size:13.5px; cursor:pointer; border-radius:8px 8px 0 0;
-    transition:color .12s, background .12s;
+    background:transparent; border:none; border-bottom:2px solid transparent;
+    color:var(--dim); padding:9px 0; font-size:13.5px; cursor:pointer;
+    transition:color .12s, background .12s, border-color .12s;
   }
   .tab:hover { color:var(--text); background:rgba(255,255,255,.03); }
   .tab.active { color:var(--text); font-weight:600; border-bottom-color:var(--accent); }
@@ -120,7 +124,15 @@
   .tab .cnt.hot { color:var(--warn); font-weight:700; }
 
   /* ── toolbar ── */
-  .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:16px; }
+  .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:16px; --ctl-h:34px; }
+  /* uniform height & radius for every control in the toolbar */
+  .toolbar .search input { height:var(--ctl-h); padding-top:0; padding-bottom:0; }
+  .toolbar .chips { gap:8px; }
+  .toolbar .chip {
+    display:inline-flex; align-items:center; height:var(--ctl-h);
+    padding:0 14px; border-radius:var(--radius-s);
+  }
+  .toolbar > .btn { height:var(--ctl-h); padding-top:0; padding-bottom:0; }
   .search { position:relative; flex:1; min-width:220px; }
   .search svg { position:absolute; left:10px; top:50%; transform:translateY(-50%); width:14px; height:14px; color:var(--faint); pointer-events:none; }
   .search input {
@@ -189,15 +201,40 @@
   .quick-actions { display:flex; flex-wrap:wrap; gap:8px; }
 
   /* ── network list ── */
-  .net { border:1px solid var(--border); border-radius:var(--radius); background:var(--card); margin-bottom:12px; overflow:hidden; }
+  .net { border:1px solid var(--border); border-radius:var(--radius); background:var(--card); margin-bottom:12px; }
   .net-head { display:flex; align-items:flex-start; gap:10px; padding:14px 16px 6px; }
   .net-name { font-size:14.5px; font-weight:600; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .net-id { font-size:11px; color:var(--faint); margin-top:2px; display:flex; align-items:center; gap:4px; }
-  .net-meta { padding:6px 16px 8px; color:var(--dim); font-size:12.5px; display:flex; flex-wrap:wrap; gap:4px 12px; }
+  .net-meta { padding:6px 16px 12px; color:var(--dim); font-size:12.5px; display:flex; flex-wrap:wrap; gap:4px 12px; }
   .net-meta b { color:var(--text); font-weight:600; }
-  .net-actions { display:flex; flex-wrap:wrap; gap:6px; padding:4px 16px 12px; }
-  .net-members { border-top:1px solid var(--border); background:var(--bg2); }
+  .net-members { border-top:1px solid var(--border); background:var(--bg2); border-radius:0 0 var(--radius) var(--radius); }
   .net-members .wrap { padding:12px 16px; overflow-x:auto; }
+
+  /* ⋯ more-actions dropdown on network cards */
+  .net-menu-wrap { position:relative; margin-left:auto; flex:none; }
+  .net-more {
+    width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center;
+    background:transparent; border:1px solid transparent; border-radius:8px; color:var(--dim);
+    cursor:pointer; transition:all .12s;
+  }
+  .net-more:hover, .net-more.open { color:var(--text); border-color:var(--border2); background:var(--card2); }
+  .net-menu {
+    position:absolute; right:0; top:calc(100% + 4px); min-width:150px; z-index:30;
+    background:var(--card); border:1px solid var(--border2); border-radius:10px;
+    box-shadow:0 10px 28px rgba(0,0,0,.18); padding:4px; animation:menuIn .12s ease-out;
+  }
+  .net-menu.up { top:auto; bottom:calc(100% + 4px); animation:menuInUp .12s ease-out; }
+  @keyframes menuIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
+  @keyframes menuInUp { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+  .net-menu button {
+    display:flex; align-items:center; gap:8px; width:100%; padding:7px 10px; border:0; border-radius:7px;
+    background:transparent; color:var(--text); font-size:13px; text-align:left; cursor:pointer;
+  }
+  .net-menu button:hover { background:var(--accent-soft); color:var(--accent); }
+  .net-menu button.danger { color:var(--err); }
+  .net-menu button.danger:hover { background:var(--err-soft); color:var(--err); }
+  .net-menu button svg { width:15px; height:15px; flex:none; }
+  .net-menu hr { border:0; border-top:1px solid var(--border); margin:4px 6px; }
 
   /* ── pills ── */
   .pill { display:inline-flex; align-items:center; gap:5px; padding:1px 9px; border-radius:999px; font-size:11.5px; font-weight:500; line-height:18px; white-space:nowrap; }
@@ -236,6 +273,24 @@
   .dropdown-item:hover { background:rgba(255,255,255,.04); }
   .dropdown-item .dev-id { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim); overflow:hidden; text-overflow:ellipsis; max-width:140px; }
   .dropdown-item .act { color:var(--err); font-weight:500; flex-shrink:0; }
+
+  /* bound-device list inside the auth-code status cell */
+  .bound-devs { margin-top:4px; max-height:76px; overflow-y:auto; padding-right:2px; }
+  .bound-devs::-webkit-scrollbar { width:6px; }
+  .bound-devs::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+
+  /* ── pagination ── */
+  .pager { display:flex; align-items:center; justify-content:flex-end; gap:5px; padding:12px 2px 0; font-size:12.5px; color:var(--dim); }
+  .pager .pg {
+    min-width:26px; height:26px; padding:0 6px; display:inline-flex; align-items:center; justify-content:center;
+    background:transparent; border:1px solid var(--border); border-radius:6px; color:var(--dim);
+    font-size:12.5px; cursor:pointer; transition:all .12s;
+  }
+  .pager .pg:hover:not(:disabled) { color:var(--text); border-color:var(--border2); background:var(--card2); }
+  .pager .pg.active { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .pager .pg:disabled { opacity:.35; cursor:not-allowed; }
+  .pager .pg-dots { padding:0 2px; color:var(--faint); }
+  .pager .pg-info { margin-left:8px; color:var(--faint); }
 
   /* ── forms ── */
   .row { margin-bottom:12px; }
@@ -358,6 +413,34 @@
   <p class="msg" id="login-msg"></p>
 </section>
 
+<!-- first-run setup wizard -->
+<section id="setup-card" class="login-card">
+  <div class="l-brand">
+    <span class="l-logo">
+      <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><path d="M10 11 C16 11, 16 21, 22 21" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="10" cy="11" r="3.5" fill="#fff"/><circle cx="16" cy="16" r="2.5" fill="#fff"/><circle cx="22" cy="21" r="3.5" fill="#fff"/></svg>
+    </span>
+    <div class="l-title">初始化管理后台</div>
+    <div class="l-sub">首次使用：创建管理员账号与密码</div>
+  </div>
+  <div class="row">
+    <label for="su-user">用户名</label>
+    <input id="su-user" type="text" placeholder="管理员用户名（1-64 个字符）" autocomplete="username" spellcheck="false" />
+  </div>
+  <div class="row">
+    <label for="su-pass">密码</label>
+    <input id="su-pass" type="password" placeholder="至少 8 位" autocomplete="new-password" />
+  </div>
+  <div class="row">
+    <label for="su-pass2">确认密码</label>
+    <input id="su-pass2" type="password" placeholder="再次输入密码" autocomplete="new-password" />
+  </div>
+  <p class="hint" style="margin:2px 0 12px">该账号仅可创建一次；请妥善保管密码。服务器地址若暴露在公网，建议尽快完成初始化。</p>
+  <div class="row mb0">
+    <button type="button" class="btn" id="btn-setup" style="width:100%;padding:9px 14px">完成初始化</button>
+  </div>
+  <p class="msg" id="setup-msg"></p>
+</section>
+
 <!-- app -->
 <main id="main">
   <nav class="tabs" role="tablist">
@@ -407,6 +490,7 @@
       <button type="button" class="btn" data-act="create-net">+ 创建网络</button>
     </div>
     <div id="net-list"><div class="loading"><span class="spinner"></span>加载中…</div></div>
+    <div class="pager" id="net-pager"></div>
   </section>
 
   <!-- 设备 -->
@@ -423,6 +507,7 @@
         <tbody id="dev-body"><tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
       </table>
     </div>
+    <div class="pager" id="dev-pager"></div>
   </section>
 
   <!-- 授权码 -->
@@ -445,10 +530,11 @@
     </div>
     <div class="tbl-wrap">
       <table>
-        <thead><tr><th>ID</th><th>授权码</th><th>状态</th><th>创建时间</th><th style="width:150px">操作</th></tr></thead>
-        <tbody id="code-body"><tr><td colspan="5"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
+        <thead><tr><th>授权码</th><th>状态</th><th>创建时间</th><th style="width:150px">操作</th></tr></thead>
+        <tbody id="code-body"><tr><td colspan="4"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
       </table>
     </div>
+    <div class="pager" id="code-pager"></div>
   </section>
 </main>
 
@@ -2773,9 +2859,13 @@ const $ = id => document.getElementById(id);
 let tok = sessionStorage.getItem('snet_admin_tok') || '';
 let pwAuth = sessionStorage.getItem('snet_admin_pw') === '1';
 let tab = 'overview';
-let netData = [];      // network summaries cache
-let deviceData = [];   // devices cache
-let codeData = [];     // auth codes cache
+let netData = [];      // network summaries cache (current page)
+let deviceData = [];   // devices cache (current page)
+let codeData = [];     // auth codes cache (current page)
+const PAGE_SIZE = 20;
+let netPage = 1, devPage = 1, codePage = 1;
+let netTotal = 0, devTotal = 0, codeTotal = 0;
+let statsData = null;  // /admin/stats cache
 let confirmState = null;
 let pollTimer = null;
 let cnSubnet = null;   // create-net subnet widget instance
@@ -2824,6 +2914,13 @@ function icon(name) {
     copy: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
     empty: '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="12" width="36" height="26" rx="3"/><path d="M6 18h36M14 12V7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5"/></svg>',
     alert: '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M24 8 42 40H6L24 8z"/><path d="M24 20v9"/><circle cx="24" cy="33" r="1.2" fill="currentColor"/></svg>',
+    more: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
+    members: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    plusNode: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M12 3v8M8 7l4-4 4 4"/></svg>',
+    invite: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="m22 6-10 7L2 6"/></svg>',
+    code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z"/></svg>',
   };
   return I[name] || '';
 }
@@ -3073,6 +3170,35 @@ async function login() {
   }
 }
 
+async function bootstrapSetup() {
+  const user = $('su-user').value.trim();
+  const pass = $('su-pass').value;
+  const pass2 = $('su-pass2').value;
+  const msg = $('setup-msg');
+  msg.textContent = '';
+  if (!user) { msg.textContent = '请输入用户名'; return; }
+  if (pass.length < 8) { msg.textContent = '密码至少 8 位'; return; }
+  if (pass !== pass2) { msg.textContent = '两次输入的密码不一致'; return; }
+  const btn = $('btn-setup');
+  btn.disabled = true; btn.textContent = '初始化中…';
+  try {
+    const r = await api('POST', '/admin/bootstrap', { username: user, password: pass });
+    tok = r.token;
+    pwAuth = true;
+    sessionStorage.setItem('snet_admin_tok', tok);
+    sessionStorage.setItem('snet_admin_pw', '1');
+    document.documentElement.removeAttribute('data-setup');
+    document.documentElement.setAttribute('data-authed', '1');
+    document.documentElement.setAttribute('data-pw', '1');
+    startApp();
+    toast('管理员账号已创建');
+  } catch (e) {
+    msg.textContent = '初始化失败：' + e.message.replace(/^\d+\s*/, '');
+  } finally {
+    btn.disabled = false; btn.textContent = '完成初始化';
+  }
+}
+
 function logout() {
   tok = '';
   sessionStorage.removeItem('snet_admin_tok');
@@ -3088,8 +3214,8 @@ function startApp() {
   clearInterval(pollTimer);
   pollTimer = setInterval(() => {
     if (document.hidden) return;
-    if (tab === 'overview') loadOverview(false);
-    else if (tab === 'net') loadNetworks(false);
+    loadOverview(false);
+    if (tab === 'net') loadNetworks(false);
     else if (tab === 'dev') loadDevices(false);
     else if (tab === 'code') loadAuthCodes(false);
   }, 30000);
@@ -3113,10 +3239,11 @@ function showTab(name) {
 }
 
 function updateCounts() {
-  const pending = netData.reduce((a, n) => a + (n.network.pendingCount || 0), 0);
-  $('cnt-net').textContent = netData.length ? String(netData.length) : '';
-  $('cnt-dev').textContent = deviceData.length ? String(deviceData.length) : '';
-  $('cnt-code').textContent = codeData.length ? String(codeData.length) : '';
+  const pending = statsData ? statsData.pendingTotal : 0;
+  const set = (id, n) => { $(id).textContent = n > 0 ? String(n) : ''; };
+  set('cnt-net', netTotal || (statsData ? statsData.networksTotal : 0));
+  set('cnt-dev', devTotal || (statsData ? statsData.devicesTotal : 0));
+  set('cnt-code', codeTotal || (statsData ? statsData.codesTotal : 0));
   $('cnt-net').classList.toggle('hot', pending > 0);
 }
 
@@ -3124,38 +3251,25 @@ function updateCounts() {
 
 async function loadOverview(showLoading) {
   try {
-    const [nets, devs, codes] = await Promise.all([
-      api('GET', '/admin/networks'),
-      api('GET', '/admin/devices'),
-      api('GET', '/admin/devices/authcodes'),
-    ]);
-    netData = nets || [];
-    deviceData = (devs && devs.devices) || [];
-    codeData = (codes && codes.codes) || [];
+    statsData = await api('GET', '/admin/stats');
     renderOverview();
     updateCounts();
   } catch (e) { handleErr(e, '加载总览失败'); }
 }
 
 function renderOverview() {
-  const nets = netData;
-  const total = nets.length;
-  const online = nets.filter(n => n.online).length;
-  const nodes = nets.reduce((a, n) => a + (n.nodeCount || 0), 0);
-  const bound = codeData.filter(c => (c.boundCount || 0) > 0).length;
-  const free = codeData.length - bound;
-  const pending = nets.reduce((a, n) => a + (n.network.pendingCount || 0), 0);
-
+  if (!statsData) return;
+  const s = statsData;
   $('ov-stats').innerHTML = `
-    <div class="stat"><div class="label">网络总数</div><div class="value accent">${total}</div></div>
-    <div class="stat"><div class="label">在线网络</div><div class="value ok">${online}</div></div>
-    <div class="stat"><div class="label">节点总数</div><div class="value">${nodes}</div></div>
-    <div class="stat"><div class="label">设备总数</div><div class="value">${deviceData.length}</div></div>
-    <div class="stat"><div class="label">授权码 · 已绑定</div><div class="value accent">${bound}</div></div>
-    <div class="stat"><div class="label">授权码 · 未绑定</div><div class="value ${free ? 'warn' : ''}">${free}</div></div>
-    ${pending ? `<div class="stat"><div class="label">待批准加入</div><div class="value warn">${pending}</div></div>` : ''}`;
+    <div class="stat"><div class="label">网络总数</div><div class="value accent">${s.networksTotal}</div></div>
+    <div class="stat"><div class="label">在线网络</div><div class="value ok">${s.networksOnline}</div></div>
+    <div class="stat"><div class="label">节点总数</div><div class="value">${s.nodesTotal}</div></div>
+    <div class="stat"><div class="label">设备总数</div><div class="value">${s.devicesTotal}</div></div>
+    <div class="stat"><div class="label">授权码 · 已绑定</div><div class="value accent">${s.codesBound}</div></div>
+    <div class="stat"><div class="label">授权码 · 未绑定</div><div class="value ${s.codesFree ? 'warn' : ''}">${s.codesFree}</div></div>
+    ${s.pendingTotal ? `<div class="stat"><div class="label">待批准加入</div><div class="value warn">${s.pendingTotal}</div></div>` : ''}`;
 
-  const recent = [...nets].sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0)).slice(0, 6);
+  const recent = s.recentNetworks || [];
   $('ov-recent').innerHTML = recent.length
     ? recent.map(n => `
         <div class="recent-item">
@@ -3166,41 +3280,68 @@ function renderOverview() {
     : '<div class="empty">' + icon('empty') + '<div class="t">暂无网络</div><div class="s">创建第一个网络开始组网</div></div>';
 }
 
+/* ── pagination ── */
+
+function pagerNums(page, pages) {
+  const out = [];
+  for (let i = 1; i <= pages; i++) {
+    if (i === 1 || i === pages || Math.abs(i - page) <= 1) out.push(i);
+    else if (out[out.length - 1] !== '…') out.push('…');
+  }
+  return out;
+}
+
+function mountPager(elId, page, pageSize, total, go) {
+  const box = $(elId);
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (!total) { box.innerHTML = ''; return; }
+  if (pages <= 1) { box.innerHTML = `<span class="pg-info">共 ${total} 条</span>`; return; }
+  box.innerHTML = `
+    <button type="button" class="pg" data-p="1" ${page === 1 ? 'disabled' : ''} title="首页">«</button>
+    <button type="button" class="pg" data-p="${page - 1}" ${page === 1 ? 'disabled' : ''} title="上一页">‹</button>
+    ${pagerNums(page, pages).map(n => n === '…'
+      ? '<span class="pg-dots">…</span>'
+      : `<button type="button" class="pg ${n === page ? 'active' : ''}" data-p="${n}">${n}</button>`).join('')}
+    <button type="button" class="pg" data-p="${page + 1}" ${page === pages ? 'disabled' : ''} title="下一页">›</button>
+    <button type="button" class="pg" data-p="${pages}" ${page === pages ? 'disabled' : ''} title="末页">»</button>
+    <span class="pg-info">共 ${total} 条</span>`;
+  box.querySelectorAll('button.pg[data-p]').forEach(b =>
+    b.addEventListener('click', () => go(Number(b.dataset.p))));
+}
+
 /* ── networks ── */
 
-async function loadNetworks(showLoading) {
+function netFilterState() {
+  const q = ($('net-q') ? $('net-q').value.trim() : '');
+  const f = document.querySelector('#net-filters .chip.active');
+  return { q, status: f ? f.dataset.filter : 'all' };
+}
+
+async function loadNetworks(showLoading, page) {
   const box = $('net-list');
   if (showLoading) box.innerHTML = '<div class="loading"><span class="spinner"></span>加载中…</div>';
+  const { q, status } = netFilterState();
+  if (page !== undefined) netPage = page;
   try {
-    netData = await api('GET', '/admin/networks') || [];
+    const qs = new URLSearchParams({ page: String(netPage), page_size: String(PAGE_SIZE) });
+    if (q) qs.set('q', q);
+    if (status && status !== 'all') qs.set('status', status);
+    const data = await api('GET', '/admin/networks?' + qs.toString());
+    netData = (data && data.items) || [];
+    netTotal = (data && data.total) || 0;
+    // clamp: e.g. the last item on the last page was deleted
+    if (!netData.length && netTotal && netPage > 1) return loadNetworks(false, Math.ceil(netTotal / PAGE_SIZE));
     renderNets();
+    mountPager('net-pager', netPage, PAGE_SIZE, netTotal, p => loadNetworks(false, p));
     updateCounts();
   } catch (e) { handleErr(e, '加载网络失败'); }
 }
 
-function filteredNets() {
-  const q = ($('net-q') ? $('net-q').value.trim().toLowerCase() : '');
-  const f = document.querySelector('#net-filters .chip.active');
-  const status = f ? f.dataset.filter : 'all';
-  return netData.filter(n => {
-    const net = n.network || {};
-    if (q) {
-      const hay = ((net.name || '') + ' ' + (net.id || '') + ' ' + (net.subnet || '')).toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    if (status === 'online') return n.online;
-    if (status === 'offline') return !n.online;
-    if (status === 'managed') return !!net.managed;
-    if (status === 'zombie') return !!n.zombie;
-    if (status === 'pending') return (net.pendingCount || 0) > 0;
-    return true;
-  });
-}
-
 function renderNets() {
-  const list = filteredNets();
+  const list = netData;
   const box = $('net-list');
-  if (!netData.length) {
+  const { q, status } = netFilterState();
+  if (!netTotal && !q && status === 'all') {
     box.innerHTML = '<div class="card"><div class="empty">' + icon('empty') +
       '<div class="t">暂无网络</div><div class="s">点击右上角「创建网络」开始</div></div></div>';
     return;
@@ -3226,7 +3367,7 @@ function netCard(n) {
   pills.push(n.online ? '<span class="pill online">在线</span>' : '<span class="pill offline">离线</span>');
   if (!managed && n.zombie) pills.push('<span class="pill zombie">僵尸 · 将自动清理</span>');
   if (net.approvalRequired) pills.push('<span class="pill pending">需批准</span>');
-  if (net.pendingCount > 0) pills.push(`<span class="pill pending">${net.pendingCount} 待批准</span>`);
+  if ((n.pendingCount || 0) > 0) pills.push(`<span class="pill pending">${n.pendingCount} 待批准</span>`);
 
   const owner = managed ? '服务端' : esc(net.ownerDeviceId || '未认领');
   const reap = managed ? '服务端创建，不参与自动清理' : '超过 72 小时无设备在线将自动删除';
@@ -3237,11 +3378,15 @@ function netCard(n) {
         <div class="net-name">
           ${esc(net.name || net.id)}
           ${pills.join(' ')}
+          ${(n.pendingCount || 0) > 0 ? `<button type="button" class="btn sm" data-act="show-pending" data-nid="${esc(net.id)}">待批准 (${n.pendingCount})</button>` : ''}
         </div>
         <div class="net-id">
           <span class="code">${esc(net.id)}</span>
           <button type="button" class="btn icon sm" data-act="copy" data-copy="${esc(net.id)}" title="复制网络 ID">${icon('copy')}</button>
         </div>
+      </div>
+      <div class="net-menu-wrap">
+        <button type="button" class="net-more" data-act="net-menu" data-nid="${esc(net.id)}" title="更多操作" aria-haspopup="menu">${icon('more')}</button>
       </div>
     </div>
     <div class="net-meta">
@@ -3253,26 +3398,55 @@ function netCard(n) {
       <span>最近活跃 <b>${relSec(n.lastActivityAt)}</b></span>
       <span class="hint">${reap}</span>
     </div>
-    <div class="net-actions">
-      <button type="button" class="btn ghost sm" data-act="toggle-members" data-nid="${esc(net.id)}">查看成员</button>
-      <button type="button" class="btn ghost sm" data-act="edit-net" data-nid="${esc(net.id)}">编辑设置</button>
-      <button type="button" class="btn ghost sm" data-act="add-node" data-nid="${esc(net.id)}">添加节点</button>
-      ${net.pendingCount > 0 ? `<button type="button" class="btn sm" data-act="show-pending" data-nid="${esc(net.id)}">待批准 (${net.pendingCount})</button>` : ''}
-      <button type="button" class="btn ghost sm" data-act="invite-net" data-nid="${esc(net.id)}">邀请</button>
-      <button type="button" class="btn ghost sm" data-act="view-code" data-nid="${esc(net.id)}">查看配对码</button>
-      <button type="button" class="btn danger ghost sm" data-act="del-net" data-nid="${esc(net.id)}">删除网络</button>
-    </div>
     <div class="net-members" hidden><div class="wrap" id="members-${esc(net.id)}"></div></div>`;
   return el;
 }
 
+function buildNetMenu(nid) {
+  const card = document.querySelector(`.net[data-nid="${CSS.escape(nid)}"]`);
+  const expanded = card ? !card.querySelector('.net-members')?.hidden : false;
+  const wrap = card.querySelector('.net-menu-wrap');
+  wrap.querySelector('.net-menu')?.remove();
+  const menu = document.createElement('div');
+  menu.className = 'net-menu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = `
+    <button type="button" data-act="toggle-members" data-nid="${esc(nid)}">${icon('members')} ${expanded ? '收起成员' : '查看成员'}</button>
+    <button type="button" data-act="edit-net" data-nid="${esc(nid)}">${icon('settings')} 编辑设置</button>
+    <button type="button" data-act="add-node" data-nid="${esc(nid)}">${icon('plusNode')} 添加节点</button>
+    <button type="button" data-act="invite-net" data-nid="${esc(nid)}">${icon('invite')} 邀请</button>
+    <button type="button" data-act="view-code" data-nid="${esc(nid)}">${icon('code')} 查看配对码</button>
+    <hr/>
+    <button type="button" class="danger" data-act="del-net" data-nid="${esc(nid)}">${icon('trash')} 删除网络</button>`;
+  wrap.appendChild(menu);
+  const mr = menu.getBoundingClientRect();
+  const btnTop = wrap.querySelector('.net-more').getBoundingClientRect().top;
+  if (mr.bottom > window.innerHeight - 8 && mr.height < btnTop - 8) {
+    menu.classList.add('up');
+  }
+  return menu;
+}
+
+function closeNetMenus() {
+  document.querySelectorAll('.net-menu').forEach(m => m.remove());
+  document.querySelectorAll('.net-more.open').forEach(b => b.classList.remove('open'));
+}
+
+function toggleNetMenu(btn, nid) {
+  const wrap = btn.closest('.net-menu-wrap');
+  const isOpen = !!wrap.querySelector('.net-menu');
+  closeNetMenus();
+  if (isOpen) return;
+  btn.classList.add('open');
+  buildNetMenu(nid);
+}
+
 async function toggleMembers(btn, nid) {
-  const card = btn.closest('.net');
+  const card = document.querySelector(`.net[data-nid="${CSS.escape(nid)}"]`);
   const div = card.querySelector('.net-members');
   const box = $('members-' + nid);
-  if (!div.hidden) { div.hidden = true; btn.textContent = '查看成员'; return; }
+  if (!div.hidden) { div.hidden = true; return; }
   div.hidden = false;
-  btn.textContent = '收起';
   box.innerHTML = '<div class="loading"><span class="spinner"></span>加载成员…</div>';
   try {
     const nodes = await api('GET', '/admin/networks/' + nid + '/nodes') || [];
@@ -3449,20 +3623,9 @@ async function doCreateNet() {
   if (!cnSubnet.check().ok) { msg.textContent = '网段无效：' + cnSubnet.check().error; return; }
   try {
     const r = await api('POST', '/admin/networks', { name, subnet, approvalRequired: approval });
-    setModal('网络已创建', `
-      <p class="hint mt0">以下信息仅显示一次，请复制并妥善保存。</p>
-      <div class="row"><label>网络 ID</label>
-        <div class="fresh-code"><span class="code">${esc(r.networkId)}</span>
-          <button type="button" class="btn sm" data-act="copy" data-copy="${esc(r.networkId)}">${icon('copy')} 复制</button></div>
-      </div>
-      <div class="row"><label>配对码</label>
-        <div class="fresh-code"><span class="code" style="letter-spacing:1.5px">${esc(r.pairingCode)}</span>
-          <button type="button" class="btn sm" data-act="copy" data-copy="${esc(r.pairingCode)}">${icon('copy')} 复制</button></div>
-      </div>
-      <p class="hint">网段 ${esc(r.subnet || '自动分配')}${r.relayPort ? ' · 中继端口 :' + r.relayPort : ''}</p>
-      <div class="modal-foot"><button type="button" class="btn" data-act="close-modal">完成</button></div>`);
-    loadNetworks(false);
-    loadOverview(false);
+    closeModal();
+    showTab('net');
+    toast('网络「' + name + '」已创建');
   } catch (e) { msg.textContent = '创建失败：' + e.message.replace(/^\d+\s*/, ''); }
 }
 
@@ -3623,27 +3786,29 @@ async function doChpass() {
 
 /* ── devices ── */
 
-async function loadDevices(showLoading) {
+async function loadDevices(showLoading, page) {
   const body = $('dev-body');
   if (showLoading) body.innerHTML = '<tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
+  if (page !== undefined) devPage = page;
   try {
-    const data = await api('GET', '/admin/devices');
-    deviceData = (data && data.devices) || [];
+    const q = ($('dev-q') ? $('dev-q').value.trim() : '');
+    const qs = new URLSearchParams({ page: String(devPage), page_size: String(PAGE_SIZE) });
+    if (q) qs.set('q', q);
+    const data = await api('GET', '/admin/devices?' + qs.toString());
+    deviceData = (data && data.items) || [];
+    devTotal = (data && data.total) || 0;
+    if (!deviceData.length && devTotal && devPage > 1) return loadDevices(false, Math.ceil(devTotal / PAGE_SIZE));
     renderDevices();
+    mountPager('dev-pager', devPage, PAGE_SIZE, devTotal, p => loadDevices(false, p));
     updateCounts();
   } catch (e) { handleErr(e, '加载设备失败'); }
 }
 
-function filteredDevices() {
-  const q = ($('dev-q') ? $('dev-q').value.trim().toLowerCase() : '');
-  if (!q) return deviceData;
-  return deviceData.filter(d => ((d.id || '') + ' ' + (d.name || '') + ' ' + (d.publicKey || '')).toLowerCase().includes(q));
-}
-
 function renderDevices() {
   const body = $('dev-body');
-  const list = filteredDevices();
-  if (!deviceData.length) {
+  const list = deviceData;
+  const q = ($('dev-q') ? $('dev-q').value.trim() : '');
+  if (!devTotal && !q) {
     body.innerHTML = '<tr><td colspan="6"><div class="empty">' + icon('empty') +
       '<div class="t">暂无设备</div><div class="s">客户端首次启动后会在此注册设备身份</div></div></td></tr>';
     return;
@@ -3710,13 +3875,18 @@ async function delDev(deviceID, deviceName) {
 
 /* ── auth codes ── */
 
-async function loadAuthCodes(showLoading) {
+async function loadAuthCodes(showLoading, page) {
   const body = $('code-body');
-  if (showLoading) body.innerHTML = '<tr><td colspan="5"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
+  if (showLoading) body.innerHTML = '<tr><td colspan="4"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
+  if (page !== undefined) codePage = page;
   try {
-    const data = await api('GET', '/admin/devices/authcodes');
-    codeData = (data && data.codes) || [];
+    const qs = new URLSearchParams({ page: String(codePage), page_size: String(PAGE_SIZE) });
+    const data = await api('GET', '/admin/devices/authcodes?' + qs.toString());
+    codeData = (data && data.items) || [];
+    codeTotal = (data && data.total) || 0;
+    if (!codeData.length && codeTotal && codePage > 1) return loadAuthCodes(false, Math.ceil(codeTotal / PAGE_SIZE));
     renderCodes();
+    mountPager('code-pager', codePage, PAGE_SIZE, codeTotal, p => loadAuthCodes(false, p));
     updateCounts();
   } catch (e) { handleErr(e, '加载授权码失败'); }
 }
@@ -3724,8 +3894,8 @@ async function loadAuthCodes(showLoading) {
 function renderCodes() {
   const body = $('code-body');
   if (!codeData.length) {
-    body.innerHTML = '<tr><td colspan="5"><div class="empty">' + icon('empty') +
-      '<div class="t">暂无授权码</div><div class="s">生成后分发给各设备用于绑定</div></div></td></tr>';
+    body.innerHTML = '<tr><td colspan="4"><div class="empty">' + icon('empty') +
+      '<div class="t">暂无授权码</div><div class="s">点击上方「生成授权码」开始</div></div></td></tr>';
     return;
   }
   let rows = '';
@@ -3736,11 +3906,10 @@ function renderCodes() {
       ? `<span class="pill bound">已绑定 ${c.boundCount}/${max}</span>`
       : `<span class="pill free">未绑定 0/${max}</span>`;
     const devices = bound
-      ? `<div class="hint code" style="margin-top:4px">` + (c.boundDevices || []).map(d =>
+      ? `<div class="hint code bound-devs">` + (c.boundDevices || []).map(d =>
           `<span class="code">${esc(d.deviceId)}</span> · ${fmtTime(d.boundAt)}<br/>`).join('') + `</div>`
       : '';
     rows += `<tr>
-      <td class="mono">${esc(c.id)}</td>
       <td class="mono">${esc(c.code)}</td>
       <td>${statusPill}${devices}</td>
       <td>${fmtTime(c.createdAt)}</td>
@@ -3768,20 +3937,18 @@ async function genCodes() {
   try {
     const r = await api('POST', '/admin/devices/authcodes/generate', { count, maxBindings });
     const codes = r.codes || [];
-    const ids = r.ids || [];
-    const items = codes.map((c, i) => `
+    const items = codes.map(c => `
       <div class="fresh-code">
         <span class="code">${esc(c)}</span>
         <button type="button" class="btn sm" data-act="copy" data-copy="${esc(c)}">${icon('copy')} 复制</button>
-        <span class="hint code" style="font-size:11px">${esc(ids[i] || '')}</span>
       </div>`).join('');
     setModal('新生成的设备授权码', `
-      <p class="hint mt0">每个授权码可绑定 <b>${maxBindings}</b> 台设备。明文会保存在列表中，随时可查看复制。无需时可按 ID 吊销。</p>
+      <p class="hint mt0">每个授权码可绑定 <b>${maxBindings}</b> 台设备。明文会保存在列表中，随时可查看复制，无需时可吊销。</p>
       <div class="fresh-codes">${items}</div>
       <div class="modal-foot">
         <button type="button" class="btn" data-act="close-modal">完成</button>
       </div>`);
-    loadAuthCodes(false);
+    loadAuthCodes(false, 1);
   } catch (e) { msg.textContent = '生成失败：' + e.message.replace(/^\d+\s*/, ''); }
 }
 
@@ -3820,6 +3987,13 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.dropdown')) {
     document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
   }
+  if (!e.target.closest('.net-menu') && !e.target.closest('.net-more')) {
+    closeNetMenus();
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeNetMenus();
 });
 
 /* ── global click delegation ── */
@@ -3828,8 +4002,12 @@ document.addEventListener('click', async e => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const act = el.dataset.act;
+  if (act !== 'net-menu') closeNetMenus();
 
   switch (act) {
+    case 'net-menu':
+      toggleNetMenu(el, el.dataset.nid);
+      break;
     case 'copy':
       copyText(el.dataset.copy, el);
       break;
@@ -3943,24 +4121,24 @@ document.addEventListener('click', async e => {
 document.querySelectorAll('.tab').forEach(b =>
   b.addEventListener('click', () => showTab(b.dataset.tab)));
 
-/* network filters */
+/* network filters (server-side) */
 $('net-filters').addEventListener('click', e => {
   const chip = e.target.closest('.chip');
-  if (!chip) return;
+  if (!chip || chip.classList.contains('active')) return;
   document.querySelectorAll('#net-filters .chip').forEach(c => c.classList.toggle('active', c === chip));
-  renderNets();
+  loadNetworks(true, 1);
 });
 
-/* search inputs (debounced) */
+/* search inputs (debounced, server-side) */
 let netQTimer = null;
 $('net-q').addEventListener('input', () => {
   clearTimeout(netQTimer);
-  netQTimer = setTimeout(renderNets, 200);
+  netQTimer = setTimeout(() => loadNetworks(true, 1), 300);
 });
 let devQTimer = null;
 $('dev-q').addEventListener('input', () => {
   clearTimeout(devQTimer);
-  devQTimer = setTimeout(renderDevices, 200);
+  devQTimer = setTimeout(() => loadDevices(true, 1), 300);
 });
 
 /* Enter to login */
@@ -3968,6 +4146,12 @@ for (const id of ['user', 'pass']) {
   $(id).addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
 }
 $('btn-login').addEventListener('click', login);
+
+/* Enter to bootstrap setup */
+for (const id of ['su-user', 'su-pass', 'su-pass2']) {
+  $(id).addEventListener('keydown', e => { if (e.key === 'Enter') bootstrapSetup(); });
+}
+$('btn-setup').addEventListener('click', bootstrapSetup);
 
 /* device name: double-click to edit */
 document.addEventListener('dblclick', async e => {
@@ -4003,7 +4187,14 @@ document.addEventListener('keydown', e => {
 });
 
 /* ── init ── */
-if (tok) { startApp(); }
+(async function init() {
+  if (tok) { startApp(); return; }
+  // First-run: show the setup wizard when the server has no admin account yet.
+  try {
+    const b = await api('GET', '/admin/bootstrap');
+    if (b && b.available) document.documentElement.setAttribute('data-setup', '1');
+  } catch (_) {}
+})();
 </script>
 </body>
 </html>

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,11 @@ type handler struct {
 	binds   *rateLimiter
 	logins  *rateLimiter
 
+	// adminUser is the active session-login username: seeded from
+	// opts.AdminUser on first start, loaded from the store on later starts,
+	// or created through the web setup wizard (POST /admin/bootstrap).
+	adminUser string
+
 	// adminPassHash is the active bcrypt hash of the admin login password. It
 	// is seeded from opts.AdminPass on first start and can be rotated via
 	// POST /admin/password.
@@ -98,8 +104,14 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		if hash, err := s.EnsureAdminPassword(opts.AdminUser, opts.AdminPass); err != nil {
 			log.Printf("admin: seed password: %v", err)
 		} else {
+			h.adminUser = opts.AdminUser
 			h.adminPassHash = hash
 		}
+	} else if users := s.AdminUsernames(); len(users) > 0 {
+		// Restart without flags: reload the previously bootstrapped/configured
+		// account so login keeps working.
+		h.adminUser = users[0]
+		h.adminPassHash = s.adminPasswordHash(users[0])
 	}
 	mux := http.NewServeMux()
 
@@ -436,219 +448,256 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	}))
 
 	// ---- admin surface ----
-	if h.adminEnabled() {
-		mux.HandleFunc("POST /admin/login", h.adminLogin)
-		mux.HandleFunc("POST /admin/password", h.requireAdmin(h.adminPasswordChange))
-		mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			data, _ := adminPage.ReadFile("admin.html")
-			_, _ = w.Write(data)
-		})
-		mux.HandleFunc("GET /admin/", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/admin", http.StatusMovedPermanently)
-		})
-		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/admin", http.StatusMovedPermanently)
-		})
-		mux.HandleFunc("POST /admin/networks", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			var req protocol.AdminCreateNetworkReq
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				writeErr(w, http.StatusBadRequest, err)
-				return
-			}
-			resp, err := s.AdminCreateNetwork(req.Name, req.Subnet, req.ApprovalRequired)
-			if err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			writeJSON(w, http.StatusCreated, resp)
-		}))
-		mux.HandleFunc("GET /admin/networks", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusOK, s.AdminNetworks(h.opts.ZombieTTL))
-		}))
-		mux.HandleFunc("GET /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			info, err := s.AdminNetworkInfo(r.PathValue("nid"))
-			if err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, info)
-		}))
-		mux.HandleFunc("PATCH /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			var req protocol.NetworkSettingsReq
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				writeErr(w, http.StatusBadRequest, err)
-				return
-			}
-			if err := s.AdminUpdateNetwork(r.PathValue("nid"), req.Name, req.Subnet, req.ApprovalRequired); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		mux.HandleFunc("GET /admin/networks/{nid}/pending", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			pending, err := s.AdminPending(r.PathValue("nid"))
-			if err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, pending)
-		}))
-		mux.HandleFunc("POST /admin/networks/{nid}/pending/{pid}/approve", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			status, err := s.AdminApprove(r.PathValue("nid"), r.PathValue("pid"))
-			if err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, status)
-		}))
-		mux.HandleFunc("POST /admin/networks/{nid}/pending/{pid}/deny", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			if err := s.AdminDeny(r.PathValue("nid"), r.PathValue("pid")); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		mux.HandleFunc("GET /admin/networks/{nid}/nodes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			nodes, err := s.AdminNodes(r.PathValue("nid"))
-			if err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, nodes)
-		}))
-		mux.HandleFunc("DELETE /admin/networks/{nid}/nodes/{nodeID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			if err := s.AdminRemoveNode(r.PathValue("nid"), r.PathValue("nodeID")); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		mux.HandleFunc("POST /admin/networks/{nid}/code", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			code, err := s.AdminResetCode(r.PathValue("nid"))
-			if err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]string{"code": code})
-		}))
-		mux.HandleFunc("POST /admin/networks/{nid}/external-node", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			var req struct {
-				PublicKey string `json:"publicKey"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PublicKey == "" {
-				writeErr(w, http.StatusBadRequest, errors.New("bad request"))
-				return
-			}
-			nodeID, ip, err := s.AdminAddExternalNode(r.PathValue("nid"), req.PublicKey)
-			if err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]string{"nodeId": nodeID, "ip": ip})
-		}))
-		mux.HandleFunc("DELETE /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			if err := s.AdminDeleteNetwork(r.PathValue("nid")); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		mux.HandleFunc("GET /admin/devices", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusOK, protocol.AdminDevicesResp{Devices: s.AdminDevices()})
-		}))
-		mux.HandleFunc("GET /admin/devices/{deviceID}/networks", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusOK, protocol.NetworksResp{Networks: s.DeviceNetworks(r.PathValue("deviceID"))})
-		}))
-		mux.HandleFunc("POST /admin/devices/authcodes/generate", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			var req protocol.AdminGenerateAuthCodesReq
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				writeErr(w, http.StatusBadRequest, err)
-				return
-			}
-			if req.Count < 1 || req.Count > 100 {
-				writeErr(w, http.StatusBadRequest, errors.New("count must be between 1 and 100"))
-				return
-			}
-			if req.MaxBindings == 0 {
-				req.MaxBindings = 1 // default: one device per code
-			}
-			if req.MaxBindings < 1 || req.MaxBindings > 100 {
-				writeErr(w, http.StatusBadRequest, errors.New("maxBindings must be between 1 and 100"))
-				return
-			}
-			codes, ids, err := s.AdminGenerateAuthCodes(req.Count, req.MaxBindings)
-			if err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			writeJSON(w, http.StatusOK, protocol.AdminGenerateAuthCodesResp{Codes: codes, IDs: ids})
-		}))
-		mux.HandleFunc("GET /admin/devices/authcodes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusOK, protocol.AdminAuthCodesResp{Codes: s.AdminAuthCodes()})
-		}))
-		mux.HandleFunc("POST /admin/devices/authcodes/revoke", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			var req struct {
-				ID string `json:"id"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
-				writeErr(w, http.StatusBadRequest, errors.New("bad request"))
-				return
-			}
-			if err := s.AdminRevokeAuthCode(req.ID); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
-		mux.HandleFunc("POST /admin/devices/authcodes/unbind", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			var req struct {
-				DeviceID string `json:"deviceId"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceID == "" {
-				writeErr(w, http.StatusBadRequest, errors.New("bad request"))
-				return
-			}
-			if err := s.AdminUnbindDevice(req.DeviceID); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
+	// The page, login and bootstrap routes are always served so a fresh
+	// deployment can initialize the admin account from the web UI; every
+	// other admin route is gated by requireAdmin (404 while locked).
+	mux.HandleFunc("POST /admin/login", h.adminLogin)
+	mux.HandleFunc("GET /admin/bootstrap", h.adminBootstrapStatus)
+	mux.HandleFunc("POST /admin/bootstrap", h.adminBootstrapCreate)
+	mux.HandleFunc("POST /admin/password", h.requireAdmin(h.adminPasswordChange))
+	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		data, _ := adminPage.ReadFile("admin.html")
+		_, _ = w.Write(data)
+	})
+	mux.HandleFunc("GET /admin/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("POST /admin/networks", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.AdminCreateNetworkReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		resp, err := s.AdminCreateNetwork(req.Name, req.Subnet, req.ApprovalRequired)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, resp)
+	}))
+	mux.HandleFunc("GET /admin/networks", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		reqPage, pageSize := adminPageParams(r)
+		items, total, page := s.AdminNetworksPage(h.opts.ZombieTTL, r.URL.Query().Get("q"), r.URL.Query().Get("status"), reqPage, pageSize)
+		writeJSON(w, http.StatusOK, adminPageResp[networkSummary]{Items: items, Total: total, Page: page, PageSize: pageSize})
+	}))
+	mux.HandleFunc("GET /admin/stats", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, s.AdminOverview(h.opts.ZombieTTL))
+	}))
+	mux.HandleFunc("GET /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		info, err := s.AdminNetworkInfo(r.PathValue("nid"))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, info)
+	}))
+	mux.HandleFunc("PATCH /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.NetworkSettingsReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.AdminUpdateNetwork(r.PathValue("nid"), req.Name, req.Subnet, req.ApprovalRequired); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc("GET /admin/networks/{nid}/pending", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		pending, err := s.AdminPending(r.PathValue("nid"))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, pending)
+	}))
+	mux.HandleFunc("POST /admin/networks/{nid}/pending/{pid}/approve", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		status, err := s.AdminApprove(r.PathValue("nid"), r.PathValue("pid"))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	}))
+	mux.HandleFunc("POST /admin/networks/{nid}/pending/{pid}/deny", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.AdminDeny(r.PathValue("nid"), r.PathValue("pid")); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc("GET /admin/networks/{nid}/nodes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		nodes, err := s.AdminNodes(r.PathValue("nid"))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, nodes)
+	}))
+	mux.HandleFunc("DELETE /admin/networks/{nid}/nodes/{nodeID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.AdminRemoveNode(r.PathValue("nid"), r.PathValue("nodeID")); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc("POST /admin/networks/{nid}/code", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		code, err := s.AdminResetCode(r.PathValue("nid"))
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"code": code})
+	}))
+	mux.HandleFunc("POST /admin/networks/{nid}/external-node", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PublicKey string `json:"publicKey"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PublicKey == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("bad request"))
+			return
+		}
+		nodeID, ip, err := s.AdminAddExternalNode(r.PathValue("nid"), req.PublicKey)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"nodeId": nodeID, "ip": ip})
+	}))
+	mux.HandleFunc("DELETE /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.AdminDeleteNetwork(r.PathValue("nid")); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc("GET /admin/devices", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		reqPage, pageSize := adminPageParams(r)
+		items, total, page := s.AdminDevicesPage(r.URL.Query().Get("q"), reqPage, pageSize)
+		writeJSON(w, http.StatusOK, adminPageResp[protocol.Device]{Items: items, Total: total, Page: page, PageSize: pageSize})
+	}))
+	mux.HandleFunc("GET /admin/devices/{deviceID}/networks", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, protocol.NetworksResp{Networks: s.DeviceNetworks(r.PathValue("deviceID"))})
+	}))
+	mux.HandleFunc("POST /admin/devices/authcodes/generate", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.AdminGenerateAuthCodesReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if req.Count < 1 || req.Count > 100 {
+			writeErr(w, http.StatusBadRequest, errors.New("count must be between 1 and 100"))
+			return
+		}
+		if req.MaxBindings == 0 {
+			req.MaxBindings = 1 // default: one device per code
+		}
+		if req.MaxBindings < 1 || req.MaxBindings > 100 {
+			writeErr(w, http.StatusBadRequest, errors.New("maxBindings must be between 1 and 100"))
+			return
+		}
+		codes, ids, err := s.AdminGenerateAuthCodes(req.Count, req.MaxBindings)
+		if err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, protocol.AdminGenerateAuthCodesResp{Codes: codes, IDs: ids})
+	}))
+	mux.HandleFunc("GET /admin/devices/authcodes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		reqPage, pageSize := adminPageParams(r)
+		items, total, page := s.AdminAuthCodesPage(reqPage, pageSize)
+		writeJSON(w, http.StatusOK, adminPageResp[protocol.AuthCodeInfo]{Items: items, Total: total, Page: page, PageSize: pageSize})
+	}))
+	mux.HandleFunc("POST /admin/devices/authcodes/revoke", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("bad request"))
+			return
+		}
+		if err := s.AdminRevokeAuthCode(req.ID); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc("POST /admin/devices/authcodes/unbind", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			DeviceID string `json:"deviceId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DeviceID == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("bad request"))
+			return
+		}
+		if err := s.AdminUnbindDevice(req.DeviceID); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 
-		mux.HandleFunc("DELETE /admin/devices/{deviceID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			deviceID := r.PathValue("deviceID")
-			if err := s.AdminDeleteDevice(deviceID); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
+	mux.HandleFunc("DELETE /admin/devices/{deviceID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		deviceID := r.PathValue("deviceID")
+		if err := s.AdminDeleteDevice(deviceID); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 
-		mux.HandleFunc("PATCH /admin/devices/{deviceID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-			deviceID := r.PathValue("deviceID")
-			var req protocol.AdminRenameDeviceReq
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				writeErr(w, http.StatusBadRequest, errors.New("bad request"))
-				return
-			}
-			if err := s.AdminRenameDevice(deviceID, req.Name); err != nil {
-				handleStoreErr(w, err)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}))
-	}
+	mux.HandleFunc("PATCH /admin/devices/{deviceID}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		deviceID := r.PathValue("deviceID")
+		var req protocol.AdminRenameDeviceReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, errors.New("bad request"))
+			return
+		}
+		if err := s.AdminRenameDevice(deviceID, req.Name); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 
 	return logRequests(limitBody(mux))
 }
 
-func (h *handler) adminEnabled() bool {
-	return h.opts.AdminToken != "" || (h.opts.AdminUser != "" && h.opts.AdminPass != "")
+// adminUnlocked reports whether any admin authentication path is active:
+// a static token or a username/password account (configured via flags/env or
+// initialized through the web setup wizard).
+// adminPageResp is the uniform paged-listing envelope for the admin console.
+type adminPageResp[T any] struct {
+	Items    []T `json:"items"`
+	Total    int `json:"total"`
+	Page     int `json:"page"`
+	PageSize int `json:"pageSize"`
+}
+
+// adminPageParams reads the page/page_size query params with sane defaults
+// (1 and 20) and clamping handled by the store layer.
+func adminPageParams(r *http.Request) (page, pageSize int) {
+	page, _ = strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ = strconv.Atoi(r.URL.Query().Get("page_size"))
+	return clampPage(page, pageSize)
+}
+
+func (h *handler) adminUnlocked() bool {
+	return h.opts.AdminToken != "" || (h.adminUser != "" && h.adminPassHash != "")
+}
+
+// bootstrapAvailable reports whether the first-run web setup wizard may run:
+// no static token, no configured credentials and no stored admin account.
+func (h *handler) bootstrapAvailable() bool {
+	return h.opts.AdminToken == "" && h.opts.AdminUser == "" && h.adminPassHash == ""
 }
 
 func (h *handler) adminLogin(w http.ResponseWriter, r *http.Request) {
-	if h.opts.AdminUser == "" || h.opts.AdminPass == "" {
+	if h.adminUser == "" || h.adminPassHash == "" {
 		writeErr(w, http.StatusNotFound, ErrNotFound)
 		return
 	}
@@ -661,7 +710,7 @@ func (h *handler) adminLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(h.opts.AdminUser)) == 1
+	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(h.adminUser)) == 1
 	passOK := h.adminPassHash != "" && bcrypt.CompareHashAndPassword([]byte(h.adminPassHash), []byte(req.Password)) == nil
 	if !userOK || !passOK {
 		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
@@ -680,11 +729,78 @@ func (h *handler) adminLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.AdminLoginResp{Token: tok, Expires: expires.Unix()})
 }
 
+// adminBootstrapStatus tells the web setup wizard whether first-run
+// initialization is still possible.
+func (h *handler) adminBootstrapStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"available": h.bootstrapAvailable()})
+}
+
+// adminBootstrapCreate initializes the very first admin account from the web
+// setup wizard. It is only accepted while no account exists and no admin
+// token/credentials are configured; the created account is logged in
+// immediately.
+func (h *handler) adminBootstrapCreate(w http.ResponseWriter, r *http.Request) {
+	if !h.bootstrapAvailable() {
+		if h.adminUnlocked() {
+			writeErr(w, http.StatusConflict, ErrAdminExists)
+		} else {
+			writeErr(w, http.StatusNotFound, ErrNotFound)
+		}
+		return
+	}
+	if h.logins.blocked(h.clientIP(r)) {
+		writeErr(w, http.StatusTooManyRequests, errors.New("too many attempts"))
+		return
+	}
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	user := strings.TrimSpace(req.Username)
+	switch {
+	case user == "" || len(user) > 64:
+		writeErr(w, http.StatusBadRequest, errors.New("用户名需为 1-64 个字符"))
+		return
+	case strings.ContainsAny(user, " \t\r\n"):
+		writeErr(w, http.StatusBadRequest, errors.New("用户名不能包含空白字符"))
+		return
+	case len(req.Password) < 8:
+		writeErr(w, http.StatusBadRequest, errors.New("密码至少 8 位"))
+		return
+	}
+	hash, err := h.s.BootstrapAdmin(user, req.Password)
+	if err != nil {
+		if errors.Is(err, ErrAdminExists) {
+			writeErr(w, http.StatusConflict, err)
+		} else {
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	h.adminUser = user
+	h.adminPassHash = hash
+	log.Printf("admin: account %q initialized via web bootstrap", user)
+	tok, err := randomToken()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	expires := time.Now().Add(sessionTTL)
+	h.sessMu.Lock()
+	h.sessions[hashToken(tok)] = sessionEntry{expires: expires}
+	h.sessMu.Unlock()
+	writeJSON(w, http.StatusOK, protocol.AdminLoginResp{Token: tok, Expires: expires.Unix()})
+}
+
 // adminPasswordChange rotates the admin login password. It verifies the old
 // password, persists the new bcrypt hash and invalidates every existing admin
 // session so all clients must log in again.
 func (h *handler) adminPasswordChange(w http.ResponseWriter, r *http.Request) {
-	if h.opts.AdminUser == "" || h.adminPassHash == "" {
+	if h.adminUser == "" || h.adminPassHash == "" {
 		writeErr(w, http.StatusNotFound, ErrNotFound)
 		return
 	}
@@ -709,7 +825,7 @@ func (h *handler) adminPasswordChange(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, errors.New("旧密码不正确"))
 		return
 	}
-	newHash, err := h.s.SetAdminPassword(h.opts.AdminUser, req.NewPassword)
+	newHash, err := h.s.SetAdminPassword(h.adminUser, req.NewPassword)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -753,6 +869,11 @@ func (h *handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 		static := h.opts.AdminToken != "" && subtle.ConstantTimeCompare([]byte(got), []byte(h.opts.AdminToken)) == 1
 		if static || h.sessionValid(got) {
 			next(w, r)
+			return
+		}
+		if !h.adminUnlocked() {
+			// No admin configured at all: keep the surface invisible.
+			writeErr(w, http.StatusNotFound, ErrNotFound)
 			return
 		}
 		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)

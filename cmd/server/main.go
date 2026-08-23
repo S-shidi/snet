@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -84,6 +85,9 @@ func main() {
 	defer probe.Close()
 
 	adminEnabled := *adminToken != "" || (*adminUser != "" && *adminPass != "")
+	if !adminEnabled {
+		log.Printf("admin: no credentials configured yet; initialize via the web setup page (http://<host>:%s/admin)", strings.Split(*addr, ":")[len(strings.Split(*addr, ":"))-1])
+	}
 	httpSrv := &http.Server{
 		Addr: *addr,
 		Handler: server.NewHandler(store, server.Options{

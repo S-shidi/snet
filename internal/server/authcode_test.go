@@ -523,13 +523,18 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 	if _, err := s.BindDevice(gen.Codes[0], "dev-aaaa", "pub1"); err != nil {
 		t.Fatal(err)
 	}
-	var list protocol.AdminAuthCodesResp
-	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/devices/authcodes", "secret", nil, &list)
-	if resp.StatusCode != http.StatusOK || len(list.Codes) != 3 {
-		t.Fatalf("list = %d, %+v", resp.StatusCode, list.Codes)
+	var listPage struct {
+		protocol.AdminAuthCodesResp
+		Items []protocol.AuthCodeInfo `json:"items"`
+		Total int                     `json:"total"`
 	}
+	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/devices/authcodes", "secret", nil, &listPage)
+	if resp.StatusCode != http.StatusOK || len(listPage.Items) != 3 {
+		t.Fatalf("list = %d, %+v", resp.StatusCode, listPage.Items)
+	}
+	list := listPage.Items
 	found := false
-	for _, c := range list.Codes {
+	for _, c := range list {
 		if c.ID == gen2.IDs[0] {
 			if c.MaxBindings != 2 || c.BoundCount != 2 || len(c.BoundDevices) != 2 {
 				t.Fatalf("multi-bind info wrong: %+v", c)
@@ -541,7 +546,7 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("binding / capacity not visible in list: %+v", list.Codes)
+		t.Fatalf("binding / capacity not visible in list: %+v", list)
 	}
 
 	// revoke the unbound code (id[1]); the bound ones stay so the devices
@@ -551,9 +556,9 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke = %d, want 204", resp.StatusCode)
 	}
-	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/devices/authcodes", "secret", nil, &list)
-	if len(list.Codes) != 2 {
-		t.Fatalf("codes after revoke = %d", len(list.Codes))
+	resp = doJSON(t, http.MethodGet, ts.URL+"/admin/devices/authcodes", "secret", nil, &listPage)
+	if len(listPage.Items) != 2 {
+		t.Fatalf("codes after revoke = %d", len(listPage.Items))
 	}
 
 	// unbind releases the device's binding
