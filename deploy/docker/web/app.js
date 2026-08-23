@@ -1,990 +1,144 @@
-/* ── snetd Web GUI — app.js ────────────────────────────────────── */
-"use strict";
-
-/* ── constants ─────────────────────────────────────────────────── */
-const SPIN = '<span class="spinner"></span>';
-const NS = (window.__NS__ = "/ctl");
-const AUTH_NS = "/ctl/auth";
-
-/* ── state ─────────────────────────────────────────────────────── */
-let status = null;
-let authToken = localStorage.getItem("snet_token") || null;
-let $ = (s, p) => (p || document).querySelector(s);
-
-/* ── esc ───────────────────────────────────────────────────────── */
-function esc(s) {
-  const d = document.createElement("div");
-  d.textContent = s ?? "";
-  return d.innerHTML;
-}
-
-/* ── toast ─────────────────────────────────────────────────────── */
-function toast(msg, cls) {
-  const w = $("#toast-wrap");
-  const el = document.createElement("div");
-  el.className = "toast" + (cls ? " " + cls : "");
-  el.textContent = msg;
-  w.appendChild(el);
-  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 250); }, 2800);
-}
-
-/* ── confirm dialog ────────────────────────────────────────────── */
-function confirmDialog(title, message, danger) {
-  return new Promise((resolve) => {
-    const root = $("#modal-root");
-    root.hidden = false;
-    root.innerHTML = `<div class="modal-backdrop"><div class="modal confirm-modal">
-      <div class="modal-head"><h3>${esc(title)}</h3><button class="btn icon" data-close>&times;</button></div>
-      <div class="modal-body"><p class="msg">${esc(message)}</p></div>
-      <div class="modal-foot">
-        <button class="btn ghost" data-action="cancel">取消</button>
-        <button class="btn ${danger ? "danger" : ""}" data-action="ok">确定</button>
+"use strict";(()=>{var gt=Object.create;var Z=Object.defineProperty;var bt=Object.getOwnPropertyDescriptor;var vt=Object.getOwnPropertyNames;var ft=Object.getPrototypeOf,yt=Object.prototype.hasOwnProperty;var ht=(t=>typeof require<"u"?require:typeof Proxy<"u"?new Proxy(t,{get:(e,n)=>(typeof require<"u"?require:e)[n]}):t)(function(t){if(typeof require<"u")return require.apply(this,arguments);throw Error('Dynamic require of "'+t+'" is not supported')});var wt=(t,e,n,o)=>{if(e&&typeof e=="object"||typeof e=="function")for(let a of vt(e))!yt.call(t,a)&&a!==n&&Z(t,a,{get:()=>e[a],enumerable:!(o=bt(e,a))||o.enumerable});return t};var Et=(t,e,n)=>(n=t!=null?gt(ft(t)):{},wt(e||!t||!t.__esModule?Z(n,"default",{value:t,enumerable:!0}):n,t));var y=t=>document.querySelector(t);var m=t=>t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"),O='<span class="spinner"></span>',J=null;async function tt(){if(!J)try{J=(await import("qrcode-generator")).default}catch{}}function Q(t,e){if(t.innerHTML="",J){let n=J(0,"M");n.addData(e),n.make();let o=n.createSvgTag({cellSize:4,margin:1,scalable:!0});t.innerHTML=o,t.querySelector("svg")?.setAttribute("style","width:100%;height:auto;display:block")}else t.innerHTML=`<p style="color:var(--dim);font-size:12px;text-align:center">${m(e)}</p>`}function _(t){let e=Number(t)||0;if(e<1024)return`${e} B`;let n=["KB","MB","GB","TB"],o=e,a=-1;do o/=1024,a++;while(o>=1024&&a<n.length-1);return`${o>=100?Math.round(o):o.toFixed(1)} ${n[a]}`}var Lt=180;function kt(){return Math.floor(Date.now()/1e3)}function K(t){let e=t.peerStats??{},n=kt();return Object.values(e).filter(o=>o.LastHandshakeSec&&n-o.LastHandshakeSec<Lt).length}function w(t,e="ok"){let n=y("#toast-wrap"),o=document.createElement("div");o.className=`toast ${e}`,o.textContent=t,n.appendChild(o),setTimeout(()=>{o.classList.add("out"),setTimeout(()=>o.remove(),220)},2600)}async function W(t,e){try{await navigator.clipboard.writeText(t),w("\u5DF2\u590D\u5236\u5230\u526A\u8D34\u677F")}catch{let n=document.createElement("textarea");n.value=t,n.style.position="fixed",n.style.opacity="0",document.body.appendChild(n),n.select();try{document.execCommand("copy"),w("\u5DF2\u590D\u5236\u5230\u526A\u8D34\u677F")}catch{w("\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u590D\u5236","err")}n.remove()}if(e){let n=e.innerHTML;e.innerHTML='<span style="color:var(--ok)">\u5DF2\u590D\u5236</span>',setTimeout(()=>{e.innerHTML=n},1400)}}var M=y("#modal-root"),F=null;function T(t){M.innerHTML=`
+    <div class="modal-backdrop">
+      <div class="modal${t.wide?" wide":""}" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <h3>${m(t.title)}</h3>
+          <button data-close class="btn icon" title="\u5173\u95ED">\u2715</button>
+        </div>
+        <div class="modal-body">${t.body}</div>
+        <div class="modal-foot">
+          ${t.footer??""}
+          ${t.onSave?'<button id="m-save" class="btn">\u4FDD\u5B58</button>':""}
+        </div>
       </div>
-    </div></div>`;
-    const bk = root.querySelector(".modal-backdrop");
-    const close = (v) => { root.hidden = true; root.innerHTML = ""; resolve(v); };
-    bk.addEventListener("click", (e) => { if (e.target === bk) close(false); });
-    root.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => close(false)));
-    root.querySelector("[data-action='cancel']").addEventListener("click", () => close(false));
-    root.querySelector("[data-action='ok']").addEventListener("click", () => close(true));
-  });
-}
-
-/* ── modals ────────────────────────────────────────────────────── */
-function openModal({ title, body, footer, wide, onBody }) {
-  const root = $("#modal-root");
-  root.hidden = false;
-  root.innerHTML = `<div class="modal-backdrop"><div class="modal${wide ? " wide" : ""}">
-    <div class="modal-head"><h3>${esc(title)}</h3><button class="btn icon" data-close>&times;</button></div>
-    <div class="modal-body">${body}</div>
-    ${footer ? `<div class="modal-foot">${footer}</div>` : ""}
-  </div></div>`;
-  const bk = root.querySelector(".modal-backdrop");
-  bk.addEventListener("click", (e) => { if (e.target === bk) closeModal(); });
-  root.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", closeModal));
-  if (onBody) onBody(root.querySelector(".modal"));
-}
-function closeModal() {
-  const r = $("#modal-root");
-  r.hidden = true;
-  r.innerHTML = "";
-}
-
-/* ── QR ────────────────────────────────────────────────────────── */
-function renderQR(el, text) {
-  el.textContent = "";
-  const url = "https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=" + encodeURIComponent(text);
-  const img = document.createElement("img");
-  img.src = url;
-  img.alt = "QR";
-  img.style.width = "160px";
-  img.style.borderRadius = "8px";
-  el.appendChild(img);
-}
-
-/* ── helpers ───────────────────────────────────────────────────── */
-function fmtBytes(b) {
-  if (!b) return "0 B";
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let v = b;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return v.toFixed(i ? 1 : 0) + " " + u[i];
-}
-function onlineCount(n) {
-  return Object.values(n.peerStats ?? {}).filter((p) => p.Online).length;
-}
-function dt() {
-  return new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
-}
-
-/* ── CIDR validation ───────────────────────────────────────────── */
-function validateCIDR(cidr) {
-  if (!cidr || !cidr.trim()) return { ok: true, value: "", error: "" };
-  const m = cidr.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/);
-  if (!m) return { ok: false, value: cidr, error: "格式无效，应为 x.x.x.x/n" };
-  for (let i = 1; i <= 4; i++) { if (Number(m[i]) > 255) return { ok: false, value: cidr, error: "IP 地址超出范围" }; }
-  const prefix = Number(m[5]);
-  if (prefix < 1 || prefix > 32) return { ok: false, value: cidr, error: "前缀长度需在 1-32 之间" };
-  return { ok: true, value: cidr.trim(), error: "" };
-}
-
-/* ── clipboard helper ──────────────────────────────────────────── */
-async function copyText(text, btn) {
-  try {
-    await navigator.clipboard.writeText(text);
-    if (btn) {
-      const orig = btn.textContent;
-      btn.textContent = "已复制";
-      btn.disabled = true;
-      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
-    }
-    toast("已复制");
-  } catch { toast("复制失败", "err"); }
-}
-
-/* ── fetch API helper ──────────────────────────────────────────── */
-async function api(path, opts) {
-  const res = await fetch(NS + path, opts);
-  const text = await res.text();
-  if (!res.ok) {
-    let msg = "HTTP " + res.status;
-    try { const j = JSON.parse(text); if (j.error) msg = j.error; } catch {}
-    throw new Error(msg);
-  }
-  if (!text) return null;
-  return JSON.parse(text);
-}
-
-/* ── auth API helper ───────────────────────────────────────────── */
-async function authApi(path, opts) {
-  const headers = opts?.headers || {};
-  if (authToken) headers["Authorization"] = "Bearer " + authToken;
-  if (opts?.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-  const res = await fetch(AUTH_NS + path, { ...opts, headers });
-  const text = await res.text();
-  if (!res.ok) {
-    let msg = "HTTP " + res.status;
-    try { const j = JSON.parse(text); if (j.error) msg = j.error; } catch {}
-    throw new Error(msg);
-  }
-  if (!text) return null;
-  return JSON.parse(text);
-}
-
-/* ── auth flow ─────────────────────────────────────────────────── */
-async function checkAuth() {
-  try {
-    const resp = await authApi("/check");
-    if (!resp.hasPassword) return "no_password";
-    if (resp.authenticated) return "authenticated";
-    return "needs_login";
-  } catch {
-    return "authenticated"; // fallback: assume OK if auth endpoint unreachable
-  }
-}
-
-async function doLogin(password, remember) {
-  const resp = await authApi("/login", {
-    method: "POST",
-    body: JSON.stringify({ password, remember }),
-  });
-  authToken = resp.token;
-  localStorage.setItem("snet_token", authToken);
-  return true;
-}
-
-async function doLogout() {
-  try { await authApi("/logout", { method: "POST" }); } catch {}
-  authToken = null;
-  localStorage.removeItem("snet_token");
-}
-
-async function doSetPassword(current, newPass) {
-  await authApi("/password", {
-    method: "POST",
-    body: JSON.stringify({ current, new: newPass }),
-  });
-}
-
-/* ── standalone pages ──────────────────────────────────────────── */
-function showApp() {
-  $("#app").hidden = false;
-  $("#login-page").hidden = true;
-  $("#setup-page").hidden = true;
-  $("#onboarding-page").hidden = true;
-}
-
-function showLoginPage() {
-  $("#app").hidden = true;
-  $("#setup-page").hidden = true;
-  $("#onboarding-page").hidden = true;
-  const pg = $("#login-page");
-  pg.hidden = false;
-  const pw = pg.querySelector("#login-password");
-  if (pw) pw.focus();
-}
-
-function showSetupPage() {
-  $("#app").hidden = true;
-  $("#login-page").hidden = true;
-  $("#onboarding-page").hidden = true;
-  const pg = $("#setup-page");
-  pg.hidden = false;
-  const pw = pg.querySelector("#setup-password");
-  if (pw) pw.focus();
-}
-
-function showOnboardingPage() {
-  $("#app").hidden = true;
-  $("#login-page").hidden = true;
-  $("#setup-page").hidden = true;
-  const pg = $("#onboarding-page");
-  pg.hidden = false;
-  const srv = pg.querySelector("#onb-server");
-  if (srv) srv.focus();
-}
-
-/* ── refresh ───────────────────────────────────────────────────── */
-async function refresh() {
-  try {
-    status = await api("/status");
-    renderNetworks();
-    renderStatus();
-  } catch {
-    status = null;
-    renderNetworks();
-    renderStatus();
-  }
-  maybeShowOnboarding();
-  renderTabs();
-}
-
-/* ── tabs ──────────────────────────────────────────────────────── */
-function renderTabs() {
-  const nets = status?.networks ?? [];
-  const cntNet = nets.length;
-  const netCnt = $('[data-tab="networks"] .cnt');
-  if (netCnt) netCnt.textContent = cntNet ? "(" + cntNet + ")" : "";
-}
-
-function switchTab(id) {
-  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-  document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
-  const tabBtn = $('[data-tab="' + id + '"]');
-  if (tabBtn) tabBtn.classList.add("active");
-  const panel = $("#panel-" + id);
-  if (panel) panel.classList.add("active");
-}
-
-/* ── render networks ───────────────────────────────────────────── */
-function renderNetworks() {
-  const list = $("#net-list");
-  const nets = status?.networks ?? [];
-
-  if (!nets.length) {
-    list.innerHTML = `<div class="empty">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
-      <p class="t">未加入任何网络</p>
-      <p class="s">点击「创建」或「加入」开始</p>
-    </div>`;
-    return;
-  }
-
-  let html = `<div class="net-list">`;
-  for (const n of nets) {
-      const on = !!n.interface;
-      const stats = Object.values(n.peerStats ?? {});
-      const bytes = stats.reduce((a, p) => a + (p.RxBytes ?? 0) + (p.TxBytes ?? 0), 0);
-      const peers = stats.length;
-      const linked = on;
-      const owner = !!n.owner;
-      const online = onlineCount(n);
-
-      html += `<div class="net" data-nid="${esc(n.networkId)}">
+    </div>`,M.hidden=!1,F=t.onClose??null;let e=M.querySelector(".modal"),n=M.querySelector(".modal-backdrop");n.addEventListener("mousedown",r=>{r.target===n&&$()}),M.querySelectorAll("[data-close]").forEach(r=>r.addEventListener("click",$)),M.querySelector("#m-save")?.addEventListener("click",()=>{t.onSave?.(e),$()});try{t.onBody?.(e)}catch(r){console.error("modal onBody:",r)}let a=e.querySelector("input, select, textarea");a&&setTimeout(()=>a.focus(),30)}function $(){let t=F;F=null,M.hidden=!0,M.innerHTML="",t?.()}document.addEventListener("keydown",t=>{t.key==="Escape"&&$()});function I(t,e,n=!1){return new Promise(o=>{let a=!1,r=s=>{a||(a=!0,o(s),$())};T({title:t,body:`<p class="confirm-msg">${m(e)}</p>`,footer:`<button id="cd-no" class="btn ghost">\u53D6\u6D88</button><button id="cd-yes" class="${n?"btn danger":"btn"}">\u786E\u5B9A</button>`,onClose:()=>r(!1),onBody:s=>{s.querySelector("#cd-no").addEventListener("click",()=>r(!1)),s.querySelector("#cd-yes").addEventListener("click",()=>r(!0))}})})}function et(){document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>{document.querySelectorAll(".tab").forEach(n=>n.classList.toggle("active",n===t));let e=t.dataset.tab;document.querySelectorAll(".tab-panel").forEach(n=>n.classList.toggle("active",n.id===`tab-${e}`||n.id===`panel-${e}`))}))}var St=[24,23,22,20,16,12,8],xt=["10.88.0.0/24","10.0.0.0/8","172.16.0.0/12","192.168.1.0/24"];function Tt(t){return t>>>24===10||t>=2886729728&&t<=2887778303||t>=3232235520&&t<=3232301055}function $t(t,e){let n=-1<<32-e>>>0;return(t&n)>>>0}function Mt(t){return`${t>>>24}.${t>>>16&255}.${t>>>8&255}.${t&255}`}function N(t,e){let n=t.trim();if(!n)return{ok:!0,value:"",text:""};let o=n,a=e,r=n.indexOf("/");if(r>=0){o=n.slice(0,r);let u=Number(n.slice(r+1).trim());if(!Number.isInteger(u)||u<8||u>24)return{ok:!1,error:"\u524D\u7F00\u9700\u4E3A /8\u2013/24"};a=u}let s=o.split(".");if(s.length!==4)return{ok:!1,error:"\u683C\u5F0F\u65E0\u6548\uFF0C\u5982 10.88.0.0/24"};let i=s.map(u=>/^\d{1,3}$/.test(u)?Number(u):NaN);if(i.some(u=>Number.isNaN(u)||u<0||u>255))return{ok:!1,error:"IPv4 \u5730\u5740\u6BB5\u9700\u5728 0\u2013255"};let c=(i[0]<<24|i[1]<<16|i[2]<<8|i[3])>>>0,d=$t(c,a);if(!Tt(d))return{ok:!1,error:"\u4EC5\u652F\u6301\u79C1\u6709\u5185\u7F51\u6BB5\uFF1A10/8\u3001172.16/12\u3001192.168/16"};let l=`${Mt(d)}/${a}`;if(d!==c)return{ok:!0,value:l,fix:!0,text:`\u4E3B\u673A\u4F4D\u5E94\u4E3A 0\uFF0C\u5DF2\u4FEE\u6B63\u4E3A ${l}`};let v=Math.max(0,2**(32-a)-2).toLocaleString("en-US");return{ok:!0,value:l,text:`\u2713 ${l} \xB7 \u79C1\u6709\u7F51\u6BB5\uFF0C\u53EF\u5BB9\u7EB3 ${v} \u53F0`}}function Y(t){let e=t.id||"",n=t.value||"",o="",a=24;if(n){let c=n.indexOf("/");o=c>=0?n.slice(0,c):n;let d=Number(c>=0?n.slice(c+1):"");Number.isInteger(d)&&d>=8&&d<=24&&(a=d)}let r=St.map(c=>`<option value="${c}" ${c===a?"selected":""}>/${c}</option>`).join(""),s=xt.map(c=>`<button type="button" class="chip" data-subnet="${m(c)}">${m(c)}</button>`).join(""),i=t.emptyHint||t.placeholder||"";return`
+    <div class="subnet-wrap" data-empty="${m(i)}">
+      <div class="subnet-input">
+        <input id="${e}" class="subnet-base" type="text" value="${m(o)}" placeholder="${m(t.placeholder||"10.88.0.0/24\uFF08\u7559\u7A7A\u81EA\u52A8\u5206\u914D\uFF09")}" spellcheck="false" autocomplete="off" />
+        <select class="subnet-prefix" aria-label="\u524D\u7F00">${r}</select>
+      </div>
+      <div class="subnet-chips">${s}</div>
+      <p class="subnet-status"></p>
+    </div>`}function V(t){let e=t.querySelector(".subnet-base"),n=t.querySelector(".subnet-prefix"),o=t.querySelector(".subnet-status"),a=t.dataset.empty||"",r=()=>{let s=e.value.trim();if(!s){o.className="subnet-status",o.textContent=a;return}let i=N(s,Number(n.value));if(!i.ok){o.className="subnet-status err",o.textContent=i.error;return}o.className=i.fix?"subnet-status warn":"subnet-status ok",o.textContent=i.text};return e.addEventListener("input",()=>{let s=e.value.match(/\/(\d{1,2})\s*$/);if(s){let i=Number(s[1]);Array.from(n.options).some(c=>Number(c.value)===i)&&(n.value=String(i))}r()}),n.addEventListener("change",()=>{let s=e.value.trim(),i=s.indexOf("/"),c=i>=0?s.slice(0,i):s;c&&(e.value=c),r()}),t.querySelectorAll(".subnet-chips .chip").forEach(s=>{s.addEventListener("click",()=>{let i=s.dataset.subnet||"",c=i.indexOf("/"),d=c>=0?i.slice(0,c):i;e.value=d;let l=i.match(/\/(\d+)$/);l&&Array.from(n.options).some(v=>Number(v.value)===Number(l[1]))&&(n.value=l[1]),r()})}),e.addEventListener("blur",()=>{let s=e.value.trim();if(!s)return;let i=s.indexOf("/"),c=(i>=0?s.slice(0,i):s).trim();if(/^\d{1,3}(\.\d{1,3}){0,2}$/.test(c)){let l=c.split(".");for(;l.length<4;)l.push("0");s=l.join(".")}else s=c;e.value=s;let d=N(s,Number(n.value));if(d.ok){let l=d.value,v=l.indexOf("/")>=0?l.slice(0,l.indexOf("/")):l;v&&(e.value=v)}r()}),r(),{check:()=>N(e.value.trim(),Number(n.value)),get:()=>{let s=N(e.value.trim(),Number(n.value));return s.ok?s.value:""},render:r}}var h,E=null,nt=!1,it="snet.settings",It="/usr/local/snet/certs/server.pem",st={server:"https://snet.uizhi.eu.org:8090",ca:"",wgport:51820};function H(){let t;try{t={...st,...JSON.parse(localStorage.getItem(it)||"{}")}}catch{t={...st}}return navigator.platform.toLowerCase().includes("mac")&&t.ca===It&&(t.ca="",z(t)),t}function z(t){localStorage.setItem(it,JSON.stringify(t))}function U(){return E?.bound?E.serverAddr??"":""}async function L(){let t=y("#btn-refresh");t&&(t.disabled=!0);try{E=await h.status(),await ct()}catch{E=null}Ht(),Nt(),Gt(),Ut(),t&&setTimeout(()=>{t.disabled=!1},800)}var B={},at=0;async function ct(t=!1){let e=Date.now();if(!t&&e-at<1e4||(at=e,!E))return;let n=(E.networks??[]).filter(o=>o.owner);await Promise.all(n.map(async o=>{try{B[o.networkId]=await h.netinfo(o.networkId)}catch{delete B[o.networkId]}}))}function Ht(){let t=y("#daemon-state");if(t)if(h.hasDaemonControl){E?(t.className="live-dot ok",t.textContent="\u540E\u53F0\u670D\u52A1: \u8FD0\u884C\u4E2D"):(t.className="live-dot err",t.textContent="\u540E\u53F0\u670D\u52A1: \u672A\u8FD0\u884C");let e=y("#header-svc-btn");e&&(e.hidden=!!E,e.disabled=!1,E||(e.textContent="\u542F\u52A8\u540E\u53F0\u670D\u52A1",e.title="\u542F\u52A8\u7CFB\u7EDF\u540E\u53F0\u5B88\u62A4\u8FDB\u7A0B\uFF08\u53EF\u80FD\u5F39\u51FA\u7BA1\u7406\u5458\u5BC6\u7801\u6846\uFF09",e.onclick=()=>void ut()))}else t.className="live-dot ok",t.textContent="snetd"}function Ct(t){let e=!!t.interface,n=e?"\u5DF2\u94FE\u63A5":t.active?"\u672A\u5C31\u7EEA":"\u672A\u94FE\u63A5",o=e?"ok":t.active?"warn":"off",a=t.peerStats??{},r=Object.keys(a).length,s=t.owner?B[t.networkId]:void 0,i=s?s.nodes?.length??r+1:r+1,c=s?(s.nodes??[]).filter(g=>g.online).length:K(t)+(e?1:0),d=s?.pendingCount??s?.pending?.length??0,l=i<=1?'<span class="muted">\u6682\u65E0\u5176\u4ED6\u6210\u5458</span>':`<span>\u6210\u5458 <b>${c}/${i}</b> \u5728\u7EBF</span>`,v=Object.values(a).reduce((g,f)=>g+(f.TxBytes??0),0),u=Object.values(a).reduce((g,f)=>g+(f.RxBytes??0),0),b=[];t.owner?(b.push('<button data-act="info" class="btn ghost sm" title="\u67E5\u770B\u670D\u52A1\u5668\u4E0A\u8BE5\u7F51\u7EDC\u7684\u5B8C\u6574\u4FE1\u606F">\u8BE6\u60C5</button>'),b.push(`<button data-act="members" class="btn ghost sm" title="\u67E5\u770B\u6210\u5458\u5217\u8868\u4E0E\u5728\u7EBF\u72B6\u6001">\u6210\u5458 ${i}${d>0?` <span class="badge-dot" title="${d} \u4E2A\u5F85\u6279\u51C6\u8BF7\u6C42">${d}</span>`:""}</button>`),b.push('<button data-act="invite" class="btn ghost sm" title="\u5C55\u793A\u9080\u8BF7\u94FE\u63A5\u4E0E\u52A0\u5165\u4E8C\u7EF4\u7801">\u9080\u8BF7</button>'),b.push('<button data-act="settings" class="btn ghost sm" title="\u4FEE\u6539\u7F51\u7EDC\u540D\u79F0\u3001\u7F51\u6BB5\u6216\u52A0\u5165\u6279\u51C6\u8BBE\u7F6E">\u8BBE\u7F6E</button>'),b.push('<button data-act="subnets" class="btn ghost sm" title="\u5BA3\u544A\u672C\u8BBE\u5907\u7684\u5C40\u57DF\u7F51\u5B50\u7F51">\u5B50\u7F51\u8DEF\u7531</button>'),b.push('<button data-act="code" class="btn ghost sm" title="\u67E5\u770B\u5F53\u524D\u914D\u5BF9\u7801\u5E76\u590D\u5236">\u67E5\u770B\u914D\u5BF9\u7801</button>'),b.push('<button data-act="delete" class="btn danger ghost sm" title="\u5F7B\u5E95\u5220\u9664\u7F51\u7EDC">\u5220\u9664</button>')):(b.push('<button data-act="subnets" class="btn ghost sm" title="\u5BA3\u544A\u672C\u8BBE\u5907\u7684\u5C40\u57DF\u7F51\u5B50\u7F51">\u5B50\u7F51\u8DEF\u7531</button>'),b.push('<button data-act="remove" class="btn danger ghost sm" title="\u672C\u673A\u9000\u51FA\u8BE5\u7F51\u7EDC\u5E76\u9057\u5FD8\u914D\u7F6E">\u9000\u51FA\u7F51\u7EDC</button>'));let p=t.error?`<p class="msg">${m(t.error)}</p>`:"";return`
+  <div class="net" data-nid="${m(t.networkId)}">
+    <div class="net-row">
+      <div class="net-main">
+        <div class="net-name">${m(t.name||t.networkId)} ${t.owner?'<span class="pill owner">owner</span>':""}</div>
+        <div class="net-meta">
+          <span>IP <code>${m(t.ip??"-")}</code></span>
+          <span>\u7F51\u6BB5 <code>${m(t.subnet??"-")}</code></span>
+          <span>ID <code>${m(t.networkId)}</code></span>
+          ${(t.allowedSubnets?.length??0)>0?`<span class="pill subnet-route">\u8DEF\u7531 ${t.allowedSubnets.length} \u4E2A\u5B50\u7F51</span>`:""}
+        </div>
+        <div class="net-stats">${l}<span>\u6536 <b>${_(u)}</b></span><span>\u53D1 <b>${_(v)}</b></span></div>
+      </div>
+      <div class="net-side">
+        <span class="pill ${o}">${n}</span>
+        <label class="switch" title="${e?"\u65AD\u5F00\u8BE5\u7F51\u7EDC":"\u8FDE\u63A5\u8BE5\u7F51\u7EDC"}">
+          <input type="checkbox" data-act="toggle" ${e?"checked":""} />
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+    <div class="net-actions">${b.join("")}</div>
+    ${p}
+  </div>`}function Nt(){let t=y("#net-list");if(!t)return;let e=E?.networks??[],n=E?.pendingJoins??[];if(!E){t.innerHTML=`<div class="empty">
+      <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 4l18 26H6L24 4z"/><path d="M24 34v6"/><path d="M12 46h24"/></svg>
+      <div class="t">\u540E\u53F0\u670D\u52A1\u672A\u8FD0\u884C</div>
+      <div class="s">\u9700\u8981\u7CFB\u7EDF\u540E\u53F0\u5B88\u62A4\u8FDB\u7A0B snetd \u7EF4\u6301\u7F51\u7EDC\u96A7\u9053</div>
+      <div class="empty-actions">${h.hasDaemonControl?'<button id="empty-start" class="btn">\u542F\u52A8\u540E\u53F0\u670D\u52A1</button>':""}</div>
+    </div>`;let d=y("#empty-start");d&&d.addEventListener("click",ut);return}let o=e.some(d=>d.owner),a=y("#btn-create"),r=y("#create-limit");if(a&&(a.hidden=o),r&&(r.hidden=!o),!e.length&&!n.length){t.innerHTML=`<div class="empty">
+      <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="24" r="6"/><circle cx="36" cy="24" r="6"/><path d="M18 24h12"/></svg>
+      <div class="t">\u8FD8\u6CA1\u6709\u52A0\u5165\u4EFB\u4F55\u7F51\u7EDC</div>
+      <div class="s">\u521B\u5EFA\u4E00\u4E2A\u7F51\u7EDC\uFF0C\u6216\u4F7F\u7528\u9080\u8BF7\u94FE\u63A5/\u914D\u5BF9\u7801\u52A0\u5165\u5176\u4ED6\u8BBE\u5907</div>
+      <div class="empty-actions">
+        <button id="empty-create" class="btn">\u521B\u5EFA\u7F51\u7EDC</button>
+        <button id="empty-join" class="btn ghost">\u52A0\u5165\u7F51\u7EDC</button>
+      </div>
+    </div>`,y("#empty-create")?.addEventListener("click",lt),y("#empty-join")?.addEventListener("click",dt);return}let s=e.map(Ct).join(""),i=n.length?'<h4 class="pending-heading">\u5F85\u6279\u51C6 \xB7 \u52A0\u5165\u8BF7\u6C42</h4>'+n.map(d=>`<div class="net pending" data-pid="${m(d.pendingId)}" data-nid="${m(d.networkId)}">
         <div class="net-row">
           <div class="net-main">
-            <div class="net-name">
-              ${owner ? '<span class="pill owner">创建者</span>' : ""}
-              <span>${esc(n.name || n.networkId)}</span>
-            </div>
-            <div class="net-meta">
-              <span>网络 <code>${esc(n.networkId)}</code></span>
-              ${n.ip ? `<span>IP <code>${esc(n.ip)}</code></span>` : ""}
-              ${n.subnets?.length ? `<span>路由 ${n.subnets.map((s) => `<code>${esc(s)}</code>`).join(", ")}</span>` : ""}
-            </div>
-            <div class="net-stats">
-              <span>收/发 <b>${fmtBytes(bytes)}</b></span>
-              <span>成员 <b>${online}/${peers}</b> 在线</span>
-              <span>隧道 <code>${esc(n.interface || "无")}</code></span>
-              ${linked ? '<span class="pill ok">已链接</span>' : '<span class="pill off">未链接</span>'}
-            </div>
+            <div class="net-name">${m(d.networkId)} <span class="pill warn">\u5F85\u6279\u51C6</span></div>
+            <div class="net-meta">${d.error?`<span class="muted">${m(d.error)}</span>`:"\u7B49\u5F85\u7F51\u7EDC\u521B\u5EFA\u8005\u6279\u51C6\u52A0\u5165\u8BF7\u6C42"}</div>
           </div>
           <div class="net-side">
-            <label class="switch"><input type="checkbox" ${on ? "checked" : ""} data-toggle-link="${esc(n.networkId)}" /><span class="slider"></span></label>
+            <button data-act="cancel-pending" class="btn danger ghost sm">\u53D6\u6D88\u8BF7\u6C42</button>
           </div>
         </div>
-        <div class="net-actions">
-          ${owner ? `
-            <button class="btn sm ghost" data-detail="${esc(n.networkId)}">详情</button>
-            <button class="btn sm ghost" data-members="${esc(n.networkId)}">成员</button>
-            <button class="btn sm ghost" data-subnets="${esc(n.networkId)}">子网</button>
-            <button class="btn sm ghost" data-invite="${esc(n.networkId)}">邀请</button>
-            <button class="btn sm ghost" data-reset-code="${esc(n.networkId)}">查看配对码</button>
-            <button class="btn sm danger" data-delete="${esc(n.networkId)}">删除</button>
-          ` : `
-            <button class="btn sm ghost" data-rejoin="${esc(n.networkId)}">重新连接</button>
-            <button class="btn sm danger ghost" data-leave="${esc(n.networkId)}">退出网络</button>
-          `}
-        </div>
-      </div>`;
-    }
-    html += `</div>`;
-
-  list.innerHTML = html;
-
-  // bind events
-  list.querySelectorAll("[data-toggle-link]").forEach((sw) => {
-    sw.addEventListener("change", async (e) => {
-      const nid = e.currentTarget.dataset.toggleLink;
-      try {
-        if (e.currentTarget.checked) {
-          await api("/rejoin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid }) });
-        } else {
-          await api("/leave", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid }) });
-        }
-        await refresh();
-      } catch (err) { toast(String(err), "err"); await refresh(); }
-    });
-  });
-
-  list.querySelectorAll("[data-detail]").forEach((b) => b.addEventListener("click", (e) => openDetailModal(e.currentTarget.dataset.detail)));
-  list.querySelectorAll("[data-members]").forEach((b) => b.addEventListener("click", (e) => openMembersModal(e.currentTarget.dataset.members)));
-  list.querySelectorAll("[data-subnets]").forEach((b) => b.addEventListener("click", (e) => openSubnetsModal(e.currentTarget.dataset.subnets)));
-  list.querySelectorAll("[data-invite]").forEach((b) => b.addEventListener("click", (e) => openInviteModal(e.currentTarget.dataset.invite)));
-  list.querySelectorAll("[data-reset-code]").forEach((b) => b.addEventListener("click", (e) => resetCode(e.currentTarget.dataset.resetCode)));
-  list.querySelectorAll("[data-delete]").forEach((b) => b.addEventListener("click", (e) => deleteNetwork(e.currentTarget.dataset.delete)));
-  list.querySelectorAll("[data-rejoin]").forEach((b) => b.addEventListener("click", (e) => rejoinNetwork(e.currentTarget.dataset.rejoin)));
-  list.querySelectorAll("[data-leave]").forEach((b) => b.addEventListener("click", (e) => leaveNetwork(e.currentTarget.dataset.leave)));
-}
-
-/* ── render status ─────────────────────────────────────────────── */
-function renderStatus() {
-  if (!status) {
-    $("#device-id").textContent = "-";
-    $("#svc-server").textContent = "-";
-    $("#svc-wgport").textContent = "-";
-    $("#tunnel-detail").innerHTML = `<p class="muted">连接失败</p>`;
-    $("#status-json").textContent = "(未连接)";
-    return;
-  }
-  $("#device-id").textContent = status.deviceId ?? "-";
-  const addr = status.serverAddr ?? "";
-  $("#svc-server").textContent = status.bound && addr ? addr : "未连接服务器";
-  $("#svc-wgport").textContent = String(status.wgPort ?? "-");
-  const nets = status.networks ?? [];
-  $("#tunnel-detail").innerHTML = nets.length
-    ? nets.map((n) => {
-        const stats = Object.values(n.peerStats ?? {});
-        const bytes = stats.reduce((a, p) => a + (p.RxBytes ?? 0) + (p.TxBytes ?? 0), 0);
-        const peers = stats.length;
-        const linked = !!n.interface;
-        return `<div class="kv"><span>${esc(n.name || n.networkId)}</span>
-          <code>${esc(n.interface || "无隧道")}</code>
-          <span class="muted">收/发 ${fmtBytes(bytes)} · 成员 ${peers ? `${onlineCount(n)}/${peers} 在线` : "暂无其他成员"}</span>
-          ${linked ? '<span class="pill ok">已链接</span>' : '<span class="pill off">未链接</span>'}
-        </div>`;
-      }).join("")
-    : `<p class="muted">未加入任何网络</p>`;
-  $("#status-json").textContent = JSON.stringify(status, null, 2);
-}
-
-/* ── create modal ──────────────────────────────────────────────── */
-async function openCreateModal() {
-  const s = status;
-  const bound = !!s?.bound;
-  const serverAddr = s?.serverAddr ?? "";
-  const hasOwner = (s?.networks ?? []).some((n) => n.owner);
-  const serverHint = bound && serverAddr
-    ? `<p class="hint">将在已连接的服务器上创建：<code>${esc(serverAddr)}</code></p>`
-    : `<p class="msg">未连接服务器：请先在「设置」中绑定服务器。</p>`;
-
-  // fetch local subnets for suggestions
-  let localSubnets = [];
-  try { const resp = await api("/local-subnets"); localSubnets = resp?.subnets ?? (Array.isArray(resp) ? resp : []); } catch {}
-
-  openModal({
-    title: "创建网络",
-    body: `${hasOwner ? '<p class="msg warn">本设备已创建网络（每客户端仅能创建一个）。如需新网络，请先删除或退出当前网络。</p>' : ""}
-      <div class="row"><label>网络名称</label><input id="m-name" type="text" placeholder="例如：家庭网络" /></div>
-      <div class="row"><label>网段</label><input id="m-subnet" type="text" placeholder="留空自动分配（如 10.88.0.0/24）" /></div>
-      ${localSubnets.length ? '<div class="subnet-suggestions" id="m-subnet-suggestions"><span class="hint">本机已占用网段：</span>' + localSubnets.map(s => '<code class="chip" style="cursor:pointer" data-subnet="' + esc(s) + '">' + esc(s) + '</code>').join(" ") + '</div>' : ""}
-      <div class="row"><label>WireGuard 端口</label><input id="m-port" type="number" min="1024" max="65535" value="51820" /></div>
-      <div class="row"><label>CA 证书路径</label><input id="m-ca" type="text" placeholder="公共证书留空；自签名服务器填路径" /></div>
-      <div class="row"><label>需批准才能加入</label><input id="m-approval" type="checkbox" /></div>
-      ${serverHint}
-      <p class="msg" id="m-result"></p>`,
-    footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn" ${hasOwner || !bound ? "disabled" : ""}>创建</button>`,
-    onBody: (body) => {
-      const submit = body.querySelector("#m-submit");
-      const result = body.querySelector("#m-result");
-      // subnet suggestion click
-      body.querySelectorAll("[data-subnet]").forEach((chip) => {
-        chip.addEventListener("click", () => { body.querySelector("#m-subnet").value = chip.dataset.subnet; });
-      });
-      submit.addEventListener("click", async () => {
-        submit.disabled = true;
-        submit.innerHTML = SPIN + " 创建中…";
-        result.className = "msg";
-        result.textContent = "";
-        try {
-          const name = body.querySelector("#m-name").value.trim();
-          const subnetVal = body.querySelector("#m-subnet").value.trim();
-          const subnetChk = validateCIDR(subnetVal);
-          if (!subnetChk.ok) throw new Error("网段无效：" + subnetChk.error);
-          const subnet = subnetChk.value;
-          const port = Number(body.querySelector("#m-port").value);
-          const ca = body.querySelector("#m-ca").value.trim();
-          const approval = body.querySelector("#m-approval").checked;
-          if (!name) throw new Error("请输入网络名称");
-          if (!bound) throw new Error("未连接服务器：请先在「设置」中绑定服务器");
-          const r = await api("/create", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, subnet, port, ca, approvalRequired: approval }),
-          });
-          result.className = "msg ok";
-          result.textContent = "已创建: " + (r.networkId ?? "");
-          openInviteModal(r.networkId, r.pairingCode);
-          await refresh();
-        } catch (e) {
-          result.className = "msg";
-          result.textContent = "创建失败: " + e;
-          submit.disabled = false;
-          submit.innerHTML = "创建";
-        }
-      });
-    },
-  });
-}
-
-/* ── join modal ────────────────────────────────────────────────── */
-async function openJoinModal() {
-  const s = status;
-  const bound = !!s?.bound;
-  const serverAddr = s?.serverAddr ?? "";
-  const serverHint = bound && serverAddr
-    ? `<p class="hint">将加入已连接服务器上的网络：<code>${esc(serverAddr)}</code></p>`
-    : `<p class="msg">未连接服务器：请先在「设置」中绑定服务器；或粘贴带有服务器地址的邀请链接后加入。</p>`;
-
-  openModal({
-    title: "加入网络",
-    body: `<div class="row"><label>邀请链接</label><input id="m-link" type="text" placeholder="snet://join?nid=...&code=..." /></div>
-      <p class="hint" style="text-align:center">或手动输入</p>
-      <div class="row"><label>网络ID</label><input id="m-nid" type="text" placeholder="6 位网络ID" /></div>
-      <div class="row"><label>配对码</label><input id="m-code" type="text" placeholder="12 位配对码" /></div>
-      <div class="row"><label>WireGuard 端口</label><input id="m-port" type="number" min="1024" max="65535" value="51820" /></div>
-      <div class="row"><label>CA 证书路径</label><input id="m-ca" type="text" placeholder="公共证书留空；自签名服务器填路径" /></div>
-      ${serverHint}
+      </div>`).join(""):"";t.innerHTML=s+i;let c=y("#cnt-net");c&&(c.textContent=String(e.length),c.className="cnt"+(n.length?" hot":""),c.title=n.length?`${n.length} \u4E2A\u5F85\u6279\u51C6\u8BF7\u6C42`:"")}function Bt(){let t=y("#net-list");t&&(t.addEventListener("click",async e=>{let n=e.target.closest("button[data-act]");if(!n)return;let o=n.closest(".net");if(o){if(n.dataset.act==="cancel-pending"){if(!await I("\u53D6\u6D88\u52A0\u5165\u8BF7\u6C42","\u53D6\u6D88\u7B49\u5F85\u6279\u51C6\uFF1F",!0))return;try{await h.cancelPending(o.dataset.pid),w("\u5DF2\u53D6\u6D88\u52A0\u5165\u8BF7\u6C42")}catch(a){w(String(a),"err")}await L();return}await Pt(n.dataset.act,o.dataset.nid,n)}}),t.addEventListener("change",async e=>{let n=e.target;if(n.dataset.act!=="toggle")return;let o=n.closest(".net");o&&await qt(o,n.checked)}))}async function qt(t,e){let n=t.dataset.nid,o=t.querySelector('input[data-act="toggle"]');o.disabled=!0,t.classList.add("busy");try{e?await h.rejoin(n):await h.leave(n),w(e?`\u5DF2\u8FDE\u63A5 ${n}`:`\u5DF2\u65AD\u5F00 ${n}`)}catch(a){o.checked=!e,w(String(a),"err")}finally{o.disabled=!1,t.classList.remove("busy"),await L()}}var X=!1;async function Pt(t,e,n){if(X)return;X=!0;let o=n.textContent;n.disabled=!0;let a=r=>{n.innerHTML=`${O} ${r}`};try{switch(t){case"info":{a("\u67E5\u8BE2\u4E2D\u2026");let r=await h.netinfo(e);T({title:`\u7F51\u7EDC\u8BE6\u60C5 \xB7 ${e}`,body:`<pre class="json">${m(JSON.stringify(r,null,2))}</pre>`,wide:!0});break}case"members":{a("\u67E5\u8BE2\u4E2D\u2026"),await At(e);break}case"settings":{await Rt(e);break}case"subnets":{await Ot(e);break}case"invite":{a("\u751F\u6210\u4E2D\u2026"),await Dt(e);break}case"code":{a("\u67E5\u8BE2\u4E2D\u2026"),await jt(e);break}case"delete":{if(!await I("\u5220\u9664\u7F51\u7EDC","\u5220\u9664\u5C06\u65AD\u5F00\u6240\u6709\u6210\u5458\u5E76\u91CA\u653E\u7F51\u6BB5\uFF0C\u4E0D\u53EF\u6062\u590D\u3002\u786E\u5B9A\uFF1F",!0))return;if(a("\u5220\u9664\u4E2D\u2026"),await C(e,"\u5220\u9664\u7F51\u7EDC",()=>h.deleteNet(e))===null)break;w("\u7F51\u7EDC\u5DF2\u5220\u9664");break}case"remove":{if(!await I("\u9000\u51FA\u7F51\u7EDC","\u9000\u51FA\u540E\u9700\u91CD\u65B0\u626B\u7801\u52A0\u5165\u3002\u7EE7\u7EED\uFF1F",!0))return;a("\u9000\u51FA\u4E2D\u2026"),await h.remove(e),w("\u5DF2\u9000\u51FA\u7F51\u7EDC");break}}}catch(r){w(String(r),"err")}finally{X=!1,n.disabled=!1,n.textContent=o,await L()}}async function C(t,e,n){try{return await n()}catch(o){if(String(o).includes("\u8BE5\u7F51\u7EDC\u5728\u670D\u52A1\u7AEF\u5DF2\u4E0D\u5B58\u5728"))return await I(`${e}\u5931\u8D25`,"\u8BE5\u7F51\u7EDC\u5728\u670D\u52A1\u7AEF\u5DF2\u4E0D\u5B58\u5728\uFF0C\u662F\u5426\u6E05\u7406\u672C\u5730\u914D\u7F6E\uFF1F",!0)&&(await h.remove(t),w("\u672C\u5730\u7F51\u7EDC\u914D\u7F6E\u5DF2\u6E05\u7406"),await L()),null;throw o}}async function Rt(t){let e=B[t];if(!e)try{e=await h.netinfo(t),B[t]=e}catch(a){w(`\u83B7\u53D6\u7F51\u7EDC\u4FE1\u606F\u5931\u8D25: ${a}`,"err");return}let n=e.name||"",o=e.subnet||"";T({title:`\u7F51\u7EDC\u8BBE\u7F6E \xB7 ${t}`,body:`
+      <div class="row"><label>\u7F51\u7EDC\u540D\u79F0</label><input id="s-name" type="text" value="${m(n)}" placeholder="\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8" /></div>
+      <div class="row"><label>\u7F51\u6BB5</label>${Y({id:"s-subnet",value:o,placeholder:"\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8",emptyHint:"\u7559\u7A7A\u4FDD\u6301\u4E0D\u53D8"})}</div>
+      <div class="row"><label class="inline"><input id="s-approval" type="checkbox" ${e.approvalRequired?"checked":""} /> \u65B0\u6210\u5458\u52A0\u5165\u9700\u521B\u5EFA\u8005\u6279\u51C6</label></div>
+      <p class="msg" id="s-warn" hidden>\u4FEE\u6539\u7F51\u6BB5\u4F1A\u91CD\u65B0\u5206\u914D\u6240\u6709\u6210\u5458 IP\uFF0C\u5DF2\u52A0\u5165\u7684 SNET \u5BA2\u6237\u7AEF\u4F1A\u81EA\u52A8\u91CD\u8FDE\uFF1B\u4F46\u624B\u673A\u7B49\u5916\u90E8 WireGuard \u8BBE\u5907\u9700\u624B\u52A8\u91CD\u65B0\u5BFC\u5165\u65B0\u914D\u7F6E\u3002</p>
+      <p class="msg" id="s-result"></p>`,footer:'<button data-close class="btn ghost">\u53D6\u6D88</button><button id="m-submit" class="btn">\u4FDD\u5B58</button>',onBody:a=>{let r=V(a.querySelector(".subnet-wrap")),s=a.querySelector("#s-warn");a.querySelector("#s-subnet").addEventListener("input",()=>{s.hidden=r.get()===""||r.get()===o}),a.querySelector("#m-submit").addEventListener("click",async()=>{let c=a.querySelector("#s-name").value.trim(),d=r.check();if(!d.ok){a.querySelector("#s-result").className="msg",a.querySelector("#s-result").textContent=`\u7F51\u6BB5\u65E0\u6548\uFF1A${d.error}`;return}let l=d.value,v=a.querySelector("#s-approval").checked,u=a.querySelector("#s-result"),b=a.querySelector("#m-submit"),p=b.textContent;b.disabled=!0,u.className="msg",u.textContent="\u4FDD\u5B58\u4E2D\u2026";try{if(await C(t,"\u4FDD\u5B58\u8BBE\u7F6E",async()=>(await h.updateSettings({nid:t,name:c,subnet:l!==o?l:"",approvalRequired:v!==!!e.approvalRequired?v:null}),!0))===null)return;u.className="msg ok",u.textContent="\u5DF2\u4FDD\u5B58",await ct(!0),w("\u7F51\u7EDC\u8BBE\u7F6E\u5DF2\u4FDD\u5B58"),$()}catch(g){u.className="msg",u.textContent=`\u4FDD\u5B58\u5931\u8D25: ${g}`,b.disabled=!1,b.textContent=p}})}})}async function Ot(t){let o=((await h.status())?.networks??[]).find(r=>r.networkId===t)?.allowedSubnets??[],a=r=>r.length?r.map(s=>`<span class="chip">${m(s)}<button data-del="${m(s)}" class="chip-del" title="\u79FB\u9664">&times;</button></span>`).join(""):'<span class="muted">\u672A\u5BA3\u544A\u4EFB\u4F55\u5B50\u7F51</span>';T({title:`\u5B50\u7F51\u8DEF\u7531 \xB7 ${t}`,body:`
+      <p class="hint">\u5BA3\u544A\u672C\u8BBE\u5907\u7684\u5C40\u57DF\u7F51\u5B50\u7F51\uFF0C\u5176\u4ED6\u6210\u5458\u53EF\u901A\u8FC7 VPN \u8BBF\u95EE\u3002</p>
+      <div id="sr-suggest" class="subnet-tags" style="margin-bottom:2px"></div>
+      <div id="sr-tags" class="subnet-tags">${a(o)}</div>
+      <div class="subnet-add-row">
+        <input type="text" id="sr-input" placeholder="\u5982 192.168.3.0/24" />
+        <button id="sr-add" class="btn ghost sm">\u6DFB\u52A0</button>
+      </div>
+      <p class="msg" style="margin-top:8px">IP \u8F6C\u53D1\u5C06\u7531\u540E\u53F0\u670D\u52A1\u81EA\u52A8\u5F00\u542F\uFF0C\u65E0\u9700\u624B\u52A8\u914D\u7F6E\u3002</p>
+      <p class="msg" id="sr-result"></p>`,footer:'<button data-close class="btn ghost">\u53D6\u6D88</button><button id="sr-save" class="btn">\u4FDD\u5B58</button>',onBody:r=>{let s=[...o],i=r.querySelector("#sr-tags"),c=r.querySelector("#sr-suggest"),d=r.querySelector("#sr-input"),l=r.querySelector("#sr-result"),v=()=>{i.innerHTML=a(s)},u=p=>{let g=p.filter(f=>!s.includes(f));if(!g.length){c.innerHTML="";return}c.innerHTML='<span class="muted" style="width:100%;margin-bottom:2px">\u68C0\u6D4B\u5230\u7684\u672C\u5730\u5B50\u7F51</span>'+g.map(f=>`<span class="chip" data-add="${m(f)}" style="cursor:pointer">${m(f)} <span style="opacity:0.5">+</span></span>`).join("")},b=[];h.detectLocalSubnets().then(p=>{b=p,u(p)}).catch(()=>{}),c.addEventListener("click",p=>{let g=p.target.closest("[data-add]");if(!g)return;let f=g.dataset.add;s.includes(f)||(s.push(f),v(),u(b))}),r.querySelector("#sr-add").addEventListener("click",()=>{let p=d.value.trim();if(!p)return;if(s.includes(p)){l.textContent="\u8BE5\u5B50\u7F51\u5DF2\u6DFB\u52A0";return}let g=N(p,24);if(!g.ok){l.className="msg",l.textContent=`\u65E0\u6548: ${g.error}`;return}let f=g.value;if(s.includes(f)){l.textContent="\u8BE5\u5B50\u7F51\u5DF2\u6DFB\u52A0";return}s.push(f),d.value="",l.textContent="",v(),u(b)}),d.addEventListener("keydown",p=>{p.key==="Enter"&&(p.preventDefault(),r.querySelector("#sr-add").click())}),i.addEventListener("click",p=>{let g=p.target.closest("[data-del]");if(!g)return;let f=g.dataset.del,S=s.indexOf(f);S>=0&&s.splice(S,1),v(),u(b)}),r.querySelector("#sr-save").addEventListener("click",async()=>{let p=r.querySelector("#sr-save"),g=p.textContent;p.disabled=!0,l.className="msg",l.textContent="\u4FDD\u5B58\u4E2D\u2026";try{if(await C(t,"\u5B50\u7F51\u8DEF\u7531",async()=>(await h.updateSubnets({nid:t,subnets:s}),!0))===null)return;l.className="msg ok",l.textContent="\u5DF2\u4FDD\u5B58",w("\u5B50\u7F51\u8DEF\u7531\u5DF2\u66F4\u65B0"),$()}catch(f){l.className="msg",l.textContent=`\u4FDD\u5B58\u5931\u8D25: ${f}`,p.disabled=!1,p.textContent=g}})}})}async function jt(t){let e="";try{e=(await h.netinfo(t)).pairingCode||""}catch(n){w(`\u83B7\u53D6\u914D\u5BF9\u7801\u5931\u8D25: ${n}`,"err");return}if(!e){let n=await C(t,"\u67E5\u770B\u914D\u5BF9\u7801",()=>h.resetCode(t));if(n===null)return;e=n.pairingCode,w("\u539F\u914D\u5BF9\u7801\u4E0D\u53EF\u7528\uFF0C\u5DF2\u751F\u6210\u65B0\u7801\uFF08\u65E7\u7801\u4F5C\u5E9F\uFF09","warn")}T({title:`\u67E5\u770B\u914D\u5BF9\u7801 \xB7 ${t}`,body:`
+      <div class="kv"><span>\u914D\u5BF9\u7801</span><code id="pc-code" style="letter-spacing:1.5px">${m(e)}</code></div>
+      <p class="hint" id="pc-note">\u914D\u5BF9\u7801\u542B\u6709\u6548\u6B21\u6570\u4E0E\u65F6\u9650\uFF1B\u590D\u5236\u540E\u5206\u4EAB\u7ED9\u5176\u4ED6\u8BBE\u5907\u5373\u53EF\u52A0\u5165\u3002</p>
+      <p class="msg" id="pc-result"></p>`,footer:'<button data-close class="btn ghost">\u5173\u95ED</button><button id="pc-copy" class="btn">\u590D\u5236\u914D\u5BF9\u7801</button><button id="pc-reset" class="btn danger">\u91CD\u7F6E\u914D\u5BF9\u7801</button>',onBody:n=>{let o=n.querySelector("#pc-code"),a=n.querySelector("#pc-result"),r=n.querySelector("#pc-note"),s=n.querySelector("#pc-copy"),i=n.querySelector("#pc-reset");s.addEventListener("click",()=>void W(e,s)),i.addEventListener("click",async()=>{if(await I("\u91CD\u7F6E\u914D\u5BF9\u7801","\u4F5C\u5E9F\u65E7\u914D\u5BF9\u7801\u5E76\u751F\u6210\u65B0\u7801\uFF1F\u65E7\u7801\u7ACB\u5373\u5931\u6548\uFF0C\u5DF2\u52A0\u5165\u6210\u5458\u4E0D\u53D7\u5F71\u54CD\u3002",!0)){i.disabled=!0,i.innerHTML=`${O} \u751F\u6210\u4E2D\u2026`;try{let c=await C(t,"\u91CD\u7F6E\u914D\u5BF9\u7801",()=>h.resetCode(t));if(c===null){i.disabled=!1,i.textContent="\u91CD\u7F6E\u914D\u5BF9\u7801";return}e=c.pairingCode,o.textContent=e,a.className="msg ok",a.textContent="\u65E7\u7801\u5DF2\u5931\u6548\uFF0C\u5DF2\u52A0\u5165\u6210\u5458\u4E0D\u53D7\u5F71\u54CD\u3002",r.textContent="",w("\u5DF2\u751F\u6210\u65B0\u914D\u5BF9\u7801")}catch(c){a.className="msg",a.textContent=`\u91CD\u7F6E\u5931\u8D25: ${c}`}finally{i.disabled=!1,i.textContent="\u91CD\u7F6E\u914D\u5BF9\u7801"}await L()}})}})}async function Dt(t){let e;try{e=await h.netinfo(t)}catch(s){w(`\u83B7\u53D6\u9080\u8BF7\u4FE1\u606F\u5931\u8D25: ${s}`,"err");return}let n=e.pairingCode;if(!n){let s=await C(t,"\u9080\u8BF7\u52A0\u5165",()=>h.resetCode(t));if(s===null)return;n=s.pairingCode,w("\u539F\u914D\u5BF9\u7801\u4E0D\u53EF\u7528\uFF0C\u5DF2\u751F\u6210\u65B0\u7801\uFF08\u65E7\u7801\u4F5C\u5E9F\uFF09","warn")}let o=e.id||e.networkId;if(!o){w("\u83B7\u53D6\u7F51\u7EDCID\u5931\u8D25","err");return}let a=`snet://join?nid=${encodeURIComponent(o)}&code=${encodeURIComponent(n)}`,r=e.name||o;T({title:`\u9080\u8BF7\u52A0\u5165 \xB7 ${r}`,wide:!0,body:`
+      <p class="hint">\u88AB\u9080\u8BF7\u8BBE\u5907\u626B\u63CF\u4E0B\u65B9\u4E8C\u7EF4\u7801\uFF0C\u6216\u5728 App \u4E2D\u9009\u62E9\u300C\u52A0\u5165\u7F51\u7EDC\u300D\u7C98\u8D34\u9080\u8BF7\u94FE\u63A5\u5373\u53EF\u52A0\u5165\u3002</p>
+      <div class="qr" id="qr"></div>
+      <div class="kv"><span>\u9080\u8BF7\u94FE\u63A5</span><code>${m(a)}</code></div>
+      <div class="kv"><span>\u7F51\u7EDCID</span><code>${m(o)}</code></div>
+      <div class="kv"><span>\u914D\u5BF9\u7801</span><code>${m(n)}</code></div>
+      <p class="hint">\u914D\u5BF9\u7801\u542B\u6709\u6548\u6B21\u6570\u4E0E\u65F6\u9650\uFF0C\u53EF\u5728\u5361\u7247\u4E0A\u300C\u67E5\u770B\u914D\u5BF9\u7801\u300D\u968F\u65F6\u67E5\u770B\u6216\u4F5C\u5E9F\u91CD\u53D1\u3002</p>`,footer:'<button data-close class="btn ghost">\u5173\u95ED</button><button id="m-copy" class="btn">\u590D\u5236\u9080\u8BF7\u94FE\u63A5</button>',onBody:s=>{Q(s.querySelector("#qr"),a),s.querySelector("#m-copy")?.addEventListener("click",async i=>{await W(a,i.currentTarget)})}})}async function At(t){let e=(E?.networks??[]).find(s=>s.networkId===t),n=e?.ip;if(e?.owner){let s=await h.netinfo(t);B[t]=s;let i=(s.nodes??[]).map(l=>{let v=l.online?'<span class="pill ok">\u5728\u7EBF</span>':'<span class="pill off">\u79BB\u7EBF</span>',u=l.ip===n?'<span class="muted">\u81EA\u5DF1</span>':`<button data-node="${m(l.id)}" class="btn danger ghost sm">\u8E22\u51FA</button>`,b=(l.allowedSubnets?.length??0)>0?`<span class="pill subnet-route">${m(l.allowedSubnets.join(", "))}</span>`:'<span class="muted">-</span>';return`<tr><td class="mono">${m(l.ip)}</td><td>${l.deviceId?`<span class="muted mono">${m(l.deviceId.slice(0,8))}</span>`:"-"}</td><td>${v}</td><td>${b}</td><td>${u}</td></tr>`}).join(""),c=(s.pending??[]).map(l=>`<tr><td colspan="2"><span class="muted">\u8BBE\u5907</span> <code>${l.deviceId?m(l.deviceId.slice(0,8))+"\u2026":"-"}</code><span class="muted"> \u516C\u94A5</span> <code>${m(l.publicKey.slice(0,12))}\u2026</code></td><td><span class="pill warn">\u5F85\u6279\u51C6</span></td><td>-</td><td><button data-pend="${m(l.id)}" class="btn sm" style="background:var(--ok)">\u6279\u51C6</button> <button data-pend="${m(l.id)}" class="btn danger sm">\u62D2\u7EDD</button></td></tr>`).join(""),d=c?`<div class="pending-block"><h4>\u5F85\u6279\u51C6\u52A0\u5165\u8BF7\u6C42</h4><div class="tbl-wrap"><table class="members"><tbody>${c}</tbody></table></div></div>`:"";T({title:`\u6210\u5458 \xB7 ${t}`,wide:!0,body:`<div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>\u8BBE\u5907</th><th>\u72B6\u6001</th><th>\u5B50\u7F51\u8DEF\u7531</th><th></th></tr></thead><tbody>${i}</tbody></table></div>${d}`,onBody:l=>{l.querySelectorAll("[data-node]").forEach(v=>v.addEventListener("click",async()=>{if(!await I("\u8E22\u51FA\u6210\u5458","\u8E22\u51FA\u8BE5\u6210\u5458\uFF1F\u8BE5\u8BBE\u5907\u5C06\u7ACB\u5373\u65AD\u5F00\u3002",!0))return;let u=v,b=u.textContent;u.disabled=!0,u.textContent="\u8E22\u51FA\u4E2D\u2026";try{if(await C(t,"\u8E22\u51FA\u6210\u5458",()=>h.kick({nid:t,nodeId:v.dataset.node}))===null)return;w("\u5DF2\u8E22\u51FA"),$()}catch(p){w(String(p),"err"),u.disabled=!1,u.textContent=b}await L()})),l.querySelectorAll("[data-pend]").forEach(v=>{let u=v.classList.contains("danger");v.addEventListener("click",async()=>{let b=v.dataset.pend;if(!await I(u?"\u62D2\u7EDD\u52A0\u5165\u8BF7\u6C42":"\u6279\u51C6\u52A0\u5165\u8BF7\u6C42",u?"\u62D2\u7EDD\u540E\u8BE5\u8BBE\u5907\u65E0\u6CD5\u52A0\u5165\u3002\u7EE7\u7EED\uFF1F":"\u6279\u51C6\u540E\u8BE5\u8BBE\u5907\u7ACB\u5373\u52A0\u5165\u7F51\u7EDC\u3002\u7EE7\u7EED\uFF1F",u))return;let p=v,g=p.textContent;p.disabled=!0,p.textContent=u?"\u62D2\u7EDD\u4E2D\u2026":"\u6279\u51C6\u4E2D\u2026";try{u?await h.deny({nid:t,pendingId:b}):await h.approve({nid:t,pendingId:b}),w(u?"\u5DF2\u62D2\u7EDD":"\u5DF2\u6279\u51C6"),$()}catch(f){w(String(f),"err"),p.disabled=!1,p.textContent=g}await L()})})}});return}let o=await h.peers(t),r=(o.self?[o.self,...o.peers??[]]:o.peers??[]).map(s=>{let i=s.ip===n,c=s.online?'<span class="pill ok">\u5728\u7EBF</span>':'<span class="pill off">\u79BB\u7EBF</span>',d=(s.allowedSubnets?.length??0)>0?`<span class="pill subnet-route">${m(s.allowedSubnets.join(", "))}</span>`:'<span class="muted">-</span>';return`<tr><td class="mono">${m(s.ip)}</td><td>${s.deviceId?`<span class="muted mono">${m(s.deviceId.slice(0,8))}</span>`:"-"}</td><td>${c}</td><td>${d}</td><td>${i?'<span class="muted">\u81EA\u5DF1</span>':""}</td></tr>`}).join("");T({title:`\u6210\u5458 \xB7 ${t}`,wide:!0,body:`<p class="hint">\u6210\u5458\u5217\u8868\uFF08\u53EA\u8BFB\uFF0C\u672C\u673A\u975E\u521B\u5EFA\u8005\uFF09</p><div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>\u8BBE\u5907</th><th>\u72B6\u6001</th><th>\u5B50\u7F51\u8DEF\u7531</th><th></th></tr></thead><tbody>${r}</tbody></table></div>`})}function lt(){let t=H(),e=(E?.networks??[]).some(r=>r.owner),n=U(),o=e?'<p class="msg">\u672C\u8BBE\u5907\u5DF2\u521B\u5EFA\u7F51\u7EDC\uFF08\u6BCF\u5BA2\u6237\u7AEF\u4EC5\u80FD\u521B\u5EFA\u4E00\u4E2A\uFF09\u3002\u5982\u9700\u65B0\u7F51\u7EDC\uFF0C\u8BF7\u5148\u5220\u9664\u6216\u9000\u51FA\u5F53\u524D\u7F51\u7EDC\u3002</p>':"",a=n?`<p class="hint">\u5C06\u5728\u5DF2\u8FDE\u63A5\u7684\u670D\u52A1\u5668\u4E0A\u521B\u5EFA\uFF1A<code>${m(n)}</code></p>`:'<p class="msg">\u672A\u8FDE\u63A5\u670D\u52A1\u5668\uFF1A\u8BF7\u5148\u5728\u300C\u8BBE\u7F6E\u300D\u4E2D\u94FE\u63A5\u670D\u52A1\u5668\u3002</p>';T({title:"\u521B\u5EFA\u7F51\u7EDC",body:`${o}
+      <div class="row"><label>\u7F51\u7EDC\u540D\u79F0</label><input id="m-name" type="text" placeholder="\u4F8B\u5982\uFF1A\u5BB6\u5EAD\u7F51\u7EDC" /></div>
+      <div class="row"><label>\u7F51\u6BB5</label>${Y({id:"m-subnet",placeholder:"\u7559\u7A7A\u81EA\u52A8\u5206\u914D\uFF08\u5982 10.88.0.0/24\uFF09",emptyHint:"\u7559\u7A7A\u81EA\u52A8\u5206\u914D\uFF0C\u901A\u5E38\u4E3A 10.88.N.0/24"})}</div>
+      ${a}
+      <div class="row"><label>WireGuard \u7AEF\u53E3</label><input id="m-port" type="number" min="1024" max="65535" value="${t.wgport}" /></div>
+      <div class="row"><label>CA \u8BC1\u4E66\u8DEF\u5F84</label><input id="m-ca" type="text" value="${m(t.ca)}" placeholder="\u516C\u5171\u8BC1\u4E66(\u5982 Let's Encrypt)\u7559\u7A7A\uFF1B\u81EA\u7B7E\u540D\u670D\u52A1\u5668\u586B\u8BC1\u4E66\u8DEF\u5F84" /></div>
+      <p class="msg" id="m-result"></p>`,footer:`<button data-close class="btn ghost">\u53D6\u6D88</button><button id="m-submit" class="btn" ${e||!n?"disabled":""}>\u521B\u5EFA</button>`,onBody:r=>{let s=r.querySelector("#m-submit"),i=r.querySelector("#m-result"),c=V(r.querySelector(".subnet-wrap"));s.addEventListener("click",async()=>{s.disabled=!0,s.innerHTML=`${O} \u521B\u5EFA\u4E2D\u2026`,i.className="msg",i.textContent="";try{let d=r.querySelector("#m-name").value.trim(),l=c.check();if(!l.ok)throw new Error(`\u7F51\u6BB5\u65E0\u6548\uFF1A${l.error}`);let v=l.value,u=U(),b=Number(r.querySelector("#m-port").value),p=r.querySelector("#m-ca").value.trim();if(!d)throw new Error("\u8BF7\u8F93\u5165\u7F51\u7EDC\u540D\u79F0");if(!u)throw new Error("\u672A\u8FDE\u63A5\u670D\u52A1\u5668\uFF1A\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u94FE\u63A5\u670D\u52A1\u5668");let g=await h.create({server:u,port:b,ca:p,name:d,subnet:v,approvalRequired:!1}),f=r,S=f.querySelector(".modal-body"),R=f.querySelector(".modal-foot");S.innerHTML=`
+            <div class="create-ok">
+              <p class="msg ok">\u7F51\u7EDC\u521B\u5EFA\u6210\u529F\uFF0C\u9080\u8BF7\u5176\u4ED6\u8BBE\u5907\u52A0\u5165\uFF1A</p>
+              <div class="qr" id="qr"></div>
+              <div class="kv"><span>\u7F51\u7EDCID</span><code>${m(g.networkId)}</code></div>
+              <div class="kv"><span>\u914D\u5BF9\u7801</span><code>${m(g.pairingCode)}</code></div>
+              <div class="kv"><span>\u9080\u8BF7\u94FE\u63A5</span><code>${m(g.link)}</code></div>
+            </div>`,Q(S.querySelector("#qr"),g.link),R.innerHTML='<button id="m-copy" class="btn">\u590D\u5236\u9080\u8BF7\u94FE\u63A5</button><button id="m-close" class="btn ghost">\u5173\u95ED</button>',R.querySelector("#m-copy").addEventListener("click",async A=>{await W(g.link,A.currentTarget)}),R.querySelector("#m-close").addEventListener("click",$),await L()}catch(d){i.className="msg",i.textContent=`\u521B\u5EFA\u5931\u8D25: ${d}`,s.disabled=!1,s.innerHTML="\u521B\u5EFA"}})}})}function ot(t){return t.replace(/\/+$/,"")}function Jt(t){try{let e=new URL(t);if(e.protocol==="snet:"||e.protocol==="http:"||e.protocol==="https:")return e.searchParams.get("server")||void 0}catch{}}function dt(){let t=H(),e=U(),n=e?`<p class="hint">\u5C06\u52A0\u5165\u5DF2\u8FDE\u63A5\u670D\u52A1\u5668\u4E0A\u7684\u7F51\u7EDC\uFF1A<code>${m(e)}</code></p>`:'<p class="msg">\u672A\u8FDE\u63A5\u670D\u52A1\u5668\uFF1A\u8BF7\u5148\u5728\u300C\u8BBE\u7F6E\u300D\u4E2D\u94FE\u63A5\u670D\u52A1\u5668\uFF1B\u6216\u7C98\u8D34\u5E26\u6709\u670D\u52A1\u5668\u5730\u5740\u7684\u9080\u8BF7\u94FE\u63A5\u540E\u52A0\u5165\u3002</p>';T({title:"\u52A0\u5165\u7F51\u7EDC",body:`<div class="row"><label>\u9080\u8BF7\u94FE\u63A5</label><input id="m-link" type="text" placeholder="snet://join?nid=...&code=..." /></div>
+      <p class="hint" style="text-align:center">\u6216\u624B\u52A8\u8F93\u5165</p>
+      <div class="row"><label>\u7F51\u7EDCID</label><input id="m-nid" type="text" placeholder="6 \u4F4D\u7F51\u7EDCID" /></div>
+      <div class="row"><label>\u914D\u5BF9\u7801</label><input id="m-code" type="text" placeholder="12 \u4F4D\u914D\u5BF9\u7801" /></div>
+      ${n}
+      <div class="row"><label>WireGuard \u7AEF\u53E3</label><input id="m-port" type="number" min="1024" max="65535" value="${t.wgport}" /></div>
+      <div class="row"><label>CA \u8BC1\u4E66\u8DEF\u5F84</label><input id="m-ca" type="text" value="${m(t.ca)}" placeholder="\u516C\u5171\u8BC1\u4E66(\u5982 Let's Encrypt)\u7559\u7A7A\uFF1B\u81EA\u7B7E\u540D\u670D\u52A1\u5668\u586B\u8BC1\u4E66\u8DEF\u5F84" /></div>
       <div id="m-bind-auth" hidden></div>
-      <p class="msg" id="m-result"></p>`,
-    footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">加入</button>`,
-    onBody: (body) => {
-      const submit = body.querySelector("#m-submit");
-      const result = body.querySelector("#m-result");
-      const authWrap = body.querySelector("#m-bind-auth");
-      const caInput = body.querySelector("#m-ca");
-
-      // bind-then-join flow
-      const bindAndThen = (server, then) => {
-        authWrap.hidden = false;
-        authWrap.innerHTML = `
+      <p class="msg" id="m-result"></p>`,footer:'<button data-close class="btn ghost">\u53D6\u6D88</button><button id="m-submit" class="btn">\u52A0\u5165</button>',onBody:o=>{let a=o.querySelector("#m-submit"),r=o.querySelector("#m-result"),s=o.querySelector("#m-bind-auth"),i=o.querySelector("#m-ca"),c=(d,l)=>{s.hidden=!1,s.innerHTML=`
           <div class="settings-block">
-            <p class="msg">该邀请属于服务器 <code>${esc(server)}</code>，本机尚未绑定该服务器。请输入设备授权码以绑定后加入：</p>
-            <div class="row"><label>设备授权码</label><input id="m-bind-code" type="text" placeholder="管理端生成的授权码" autocomplete="off" /></div>
-            <div class="settings-actions"><button id="m-bind-go" class="btn">绑定并加入</button></div>
+            <p class="msg">\u8BE5\u9080\u8BF7\u5C5E\u4E8E\u670D\u52A1\u5668 <code>${m(d)}</code>\uFF0C\u672C\u673A\u5C1A\u672A\u7ED1\u5B9A\u8BE5\u670D\u52A1\u5668\u3002\u8BF7\u8F93\u5165\u8BBE\u5907\u6388\u6743\u7801\u4EE5\u7ED1\u5B9A\u540E\u52A0\u5165\uFF1A</p>
+            <div class="row"><label>\u8BBE\u5907\u6388\u6743\u7801</label><input id="m-bind-code" type="text" placeholder="\u7BA1\u7406\u7AEF\u751F\u6210\u7684\u6388\u6743\u7801" autocomplete="off" /></div>
+            <div class="settings-actions"><button id="m-bind-go" class="btn">\u7ED1\u5B9A\u5E76\u52A0\u5165</button></div>
             <p class="msg" id="m-bind-result"></p>
-          </div>`;
-        const codeInput = authWrap.querySelector("#m-bind-code");
-        const bindResult = authWrap.querySelector("#m-bind-result");
-        const bindBtn = authWrap.querySelector("#m-bind-go");
-        codeInput.focus();
-        const go = async () => {
-          const code = codeInput.value.trim();
-          if (!code) { bindResult.className = "msg"; bindResult.textContent = "请输入设备授权码"; return; }
-          bindBtn.disabled = true;
-          bindResult.className = "msg"; bindResult.textContent = "正在绑定…";
-          try {
-            const ca = caInput.value.trim();
-            await api("/bind", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ server, ca, code }) });
-            bindResult.className = "msg ok"; bindResult.textContent = "已绑定 " + server + "，正在加入…";
-            await then();
-          } catch (e) {
-            bindResult.className = "msg"; bindResult.textContent = "绑定失败: " + e;
-            bindBtn.disabled = false;
-          }
-        };
-        bindBtn.addEventListener("click", go);
-        codeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
-      };
-
-      submit.addEventListener("click", async () => {
-        submit.disabled = true;
-        submit.innerHTML = SPIN + " 加入中…";
-        result.className = "msg";
-        result.textContent = "";
-        try {
-          const port = Number(body.querySelector("#m-port").value);
-          const ca = caInput.value.trim();
-          let link = body.querySelector("#m-link").value.trim();
-          if (!link) {
-            const nid = body.querySelector("#m-nid").value.trim();
-            const code = body.querySelector("#m-code").value.trim();
-            if (!nid || !code) throw new Error("请输入邀请链接，或网络ID + 配对码");
-            link = "snet://join?nid=" + nid + "&code=" + code;
-          }
-          // parse link server
-          let linkServer = "";
-          try { const u = new URL(link); linkServer = u.searchParams.get("server") || ""; } catch {}
-          const srv = status?.serverAddr ?? "";
-          const normalizeSrv = (s) => s.replace(/\/+$/, "");
-
-          class NeedBind extends Error {}
-          const doJoin = async () => {
-            const server = linkServer || srv;
-            if (!server) throw new Error("未连接服务器：请先在「设置」中绑定服务器");
-            try {
-              const r = await api("/join", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ link, port, ca }),
-              });
-              result.className = "msg ok";
-              if (r.status === "pending") {
-                result.innerHTML = '<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在「成员」模态框中取消。</p>';
-              } else {
-                result.textContent = "已加入: IP " + (r.ip ?? "-") + "，网络 " + (r.networkId ?? "-");
-              }
-              await refresh();
-              setTimeout(closeModal, 600);
-            } catch (e) {
-              if (String(e).includes("设备未授权")) throw new NeedBind();
-              throw e;
-            }
-          };
-
-          if (linkServer && srv && normalizeSrv(linkServer) === normalizeSrv(srv)) {
-            await doJoin();
-          } else if (linkServer) {
-            try { await doJoin(); }
-            catch (e) {
-              if (e instanceof NeedBind) {
-                await new Promise((resolve, reject) => {
-                  bindAndThen(linkServer, async () => {
-                    try { await doJoin(); resolve(); }
-                    catch (e2) { result.className = "msg"; result.textContent = "加入失败: " + e2; reject(e2); }
-                  });
-                });
-              } else { throw e; }
-            }
-          } else {
-            await doJoin();
-          }
-        } catch (e) {
-          result.className = "msg";
-          result.textContent = "加入失败: " + e;
-          submit.disabled = false;
-          submit.innerHTML = "加入";
-        }
-      });
-    },
-  });
-}
-
-/* ── invite modal ──────────────────────────────────────────────── */
-function openInviteModal(nid, pairingCode) {
-  const n = (status?.networks ?? []).find((x) => x.networkId === nid);
-  const code = n?.pairingCode ?? pairingCode ?? "";
-  const link = n?.inviteLink || ("snet://join?nid=" + nid + "&code=" + code);
-  openModal({
-    title: "邀请链接",
-    body: `<div id="m-qr" class="qr" style="text-align:center"></div>
-      <div class="row"><label>邀请链接</label><input id="m-inv-link" type="text" value="${esc(link)}" readonly /></div>
-      <p class="hint">成员扫描二维码或粘贴链接即可加入</p>
-      <p class="hint">加入者IP将由服务器在网段内自动分配。</p>`,
-    footer: `<button id="m-copy" class="btn">复制邀请链接</button><button data-close class="btn ghost">关闭</button>`,
-    onBody: (body) => {
-      renderQR(body.querySelector("#m-qr"), link);
-      body.querySelector("#m-copy").addEventListener("click", (e) => {
-        copyText(link, e.currentTarget);
-      });
-    },
-  });
-}
-
-/* ── detail modal ──────────────────────────────────────────────── */
-async function openDetailModal(nid) {
-  let detail;
-  try { detail = await api("/netinfo?nid=" + encodeURIComponent(nid)); } catch (e) { toast("加载失败: " + e, "err"); return; }
-  openModal({
-    title: "网络详情",
-    wide: true,
-    body: `<div style="font-size:12px;color:var(--dim)"><pre class="json">${esc(JSON.stringify(detail, null, 2))}</pre></div>`,
-    footer: `<button data-close class="btn ghost">关闭</button>`,
-  });
-}
-
-/* ── members modal ─────────────────────────────────────────────── */
-async function openMembersModal(nid) {
-  let peersResp;
-  try { peersResp = await api("/peers?nid=" + encodeURIComponent(nid)); } catch (e) { toast("加载失败: " + e, "err"); return; }
-  const selfNode = peersResp.self;
-  const peers = peersResp.peers ?? [];
-  const all = selfNode ? [selfNode, ...peers] : peers;
-  const n = (status?.networks ?? []).find((x) => x.networkId === nid);
-  const isOwner = !!n?.owner;
-  const pending = (status?.pendingJoins ?? []).filter((p) => (p.targetNid ?? p.networkId) === nid);
-  let rows = "";
-  for (const nd of all) {
-    const isSelf = selfNode && nd.ip === selfNode.ip;
-    const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
-    const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-      ? '<span class="pill subnet-route">' + esc(nd.allowedSubnets.join(", ")) + "</span>"
-      : '<span class="muted">-</span>';
-    rows += `<tr>
-      <td class="mono">${esc(nd.ip)}</td>
-      <td>${nd.deviceId ? '<span class="muted mono">' + esc(nd.deviceId.slice(0, 8)) + "</span>" : "-"}</td>
-      <td>${online}</td>
-      <td>${subnets}</td>
-      <td>${isSelf ? '<span class="muted">自己</span>' : isOwner ? '<button class="btn sm danger ghost" data-kick="' + esc(nd.ip) + '">踢出</button>' : ""}</td>
-    </tr>`;
-  }
-  let pendingRows = "";
-  if (isOwner && pending.length) {
-    for (const p of pending) {
-      const pid = esc(p.pendingId || p.targetNid);
-      const tid = esc(p.targetNid ?? "");
-      pendingRows += `<tr>
-        <td colspan="2"><span class="pill warn">待批准</span> <code>${esc(p.name || tid)}</code></td>
-        <td colspan="3">
-          <button class="btn sm" data-approve="${pid}">批准</button>
-          <button class="btn sm danger ghost" data-deny="${pid}">拒绝</button>
-        </td>
-      </tr>`;
-    }
-  }
-  openModal({
-    title: "成员 · " + nid,
-    wide: true,
-    body: (isOwner ? "" : '<p class="hint">成员列表（只读，本机非创建者）</p>') +
-      (pendingRows ? '<div class="tbl-wrap"><table class="members"><thead><tr><th colspan="2">待批准</th><th colspan="3">操作</th></tr></thead><tbody>' + pendingRows + '</tbody></table></div><div style="height:12px"></div>' : '') +
-      '<div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>设备</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="5" style="text-align:center;color:var(--dim)">暂无成员</td></tr>') +
-      "</tbody></table></div>",
-    footer: `<button data-close class="btn ghost">关闭</button>`,
-    onBody: (body) => {
-      if (!isOwner) return;
-      body.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", async (e) => {
-        const pendingId = e.currentTarget.dataset.approve;
-        try {
-          await api("/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid, pendingId }) });
-          toast("已批准");
-          closeModal();
-          await refresh();
-        } catch (err) { toast("操作失败: " + err, "err"); }
-      }));
-      body.querySelectorAll("[data-deny]").forEach((b) => b.addEventListener("click", async (e) => {
-        const pendingId = e.currentTarget.dataset.deny;
-        if (!(await confirmDialog("拒绝加入", "确定拒绝该加入请求？", true))) return;
-        try {
-          await api("/deny", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid, pendingId }) });
-          toast("已拒绝");
-          closeModal();
-          await refresh();
-        } catch (err) { toast("操作失败: " + err, "err"); }
-      }));
-      body.querySelectorAll("[data-kick]").forEach((b) => b.addEventListener("click", async (e) => {
-        const ip = e.currentTarget.dataset.kick;
-        if (!(await confirmDialog("踢出成员", "踢出该成员？该设备将立即断开。", true))) return;
-        try {
-          await api("/kick", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid, nodeId: ip }) });
-          toast("已踢出");
-          closeModal();
-          await refresh();
-        } catch (err) { toast("操作失败: " + err, "err"); }
-      }));
-    },
-  });
-}
-
-/* ── subnets modal ─────────────────────────────────────────────── */
-async function openSubnetsModal(nid) {
-  let detail;
-  try { detail = await api("/netinfo?nid=" + encodeURIComponent(nid)); } catch (e) { toast("加载失败: " + e, "err"); return; }
-  const subnets = detail.subnets ?? [];
-  let tagsHtml = subnets.map((s) => `<span class="chip" data-del-subnet="${esc(s)}">${esc(s)} <button class="chip-del">&times;</button></span>`).join("");
-  openModal({
-    title: "子网路由",
-    body: `<p class="hint">为该网络添加子网路由，其他成员可通过你的隧道访问这些网段。</p>
-      <div class="subnet-add-row" style="margin-top:10px"><input id="m-add-subnet" type="text" placeholder="如 192.168.1.0/24" /><button id="m-add-subnet-btn" class="btn sm">添加</button></div>
-      <div class="subnet-tags" id="m-subnet-tags">${tagsHtml || '<span class="hint">暂无子网</span>'}</div>
-      <p class="msg" id="m-subnet-result"></p>`,
-    footer: `<button data-close class="btn ghost">关闭</button>`,
-    onBody: (body) => {
-      const tagsWrap = body.querySelector("#m-subnet-tags");
-      const resultEl = body.querySelector("#m-subnet-result");
-
-      async function saveSubnets(newList) {
-        try {
-          await api("/subnets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid, subnets: newList }) });
-          subnets.length = 0;
-          for (const s of newList) subnets.push(s);
-          resultEl.className = "msg ok"; resultEl.textContent = "已保存";
-          tagsWrap.innerHTML = newList.map((s) => `<span class="chip" data-del-subnet="${esc(s)}">${esc(s)} <button class="chip-del">&times;</button></span>`).join("") || '<span class="hint">暂无子网</span>';
-          bindDel();
-          await refresh();
-        } catch (err) { resultEl.className = "msg"; resultEl.textContent = "保存失败: " + err; }
-      }
-
-      body.querySelector("#m-add-subnet-btn").addEventListener("click", () => {
-        const val = body.querySelector("#m-add-subnet").value.trim();
-        if (!val) return;
-        const chk = validateCIDR(val);
-        if (!chk.ok) { resultEl.className = "msg"; resultEl.textContent = "网段无效：" + chk.error; return; }
-        const cur = [...subnets];
-        if (cur.includes(chk.value)) { resultEl.className = "msg"; resultEl.textContent = "已存在"; return; }
-        cur.push(chk.value);
-        saveSubnets(cur);
-        body.querySelector("#m-add-subnet").value = "";
-      });
-
-      function bindDel() {
-        tagsWrap.querySelectorAll("[data-del-subnet]").forEach((ch) => {
-          ch.querySelector(".chip-del").addEventListener("click", () => {
-            const val = ch.dataset.delSubnet;
-            saveSubnets(subnets.filter((s) => s !== val));
-          });
-        });
-      }
-      bindDel();
-    },
-  });
-}
-
-/* ── action helpers ────────────────────────────────────────────── */
-async function deleteNetwork(nid) {
-  if (!(await confirmDialog("删除网络", "确定删除该网络？所有成员将断开，此操作不可恢复。", true))) return;
-  try { await api("/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid }) }); toast("已删除"); await refresh(); }
-  catch (e) { toast("删除失败: " + e, "err"); }
-}
-async function rejoinNetwork(nid) {
-  try { await api("/rejoin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid }) }); toast("已重新连接"); await refresh(); }
-  catch (e) { toast("操作失败: " + e, "err"); }
-}
-async function leaveNetwork(nid) {
-  if (!(await confirmDialog("退出网络", "确定退出该网络？配置将被移除，需重新扫码加入。", true))) return;
-  try { await api("/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid }) }); toast("已退出"); await refresh(); }
-  catch (e) { toast("操作失败: " + e, "err"); }
-}
-async function cancelPending(pendingId) {
-  try { await api("/cancel-pending", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pendingId }) }); toast("已取消"); }
-  catch (e) { toast("取消失败: " + e, "err"); }
-}
-async function resetCode(nid) {
-  if (!(await confirmDialog("重置配对码", "作废旧码并生成新码？旧码立即失效，已加入成员不受影响。", true))) return;
-  try {
-    const r = await api("/reset-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nid }) });
-    toast("新配对码: " + (r.code ?? ""));
-  } catch (e) { toast("操作失败: " + e, "err"); }
-}
-
-/* ── settings modal ────────────────────────────────────────────── */
-const HELP_ROWS = [
-  ["链接开关", "全部", "开启＝连接该网络隧道；关闭＝断开本机该网络，保留配置与服务器节点，可随时再开"],
-  ["详情", "创建者", "查看服务器上该网络的完整信息（成员、中继端口、在线状态、创建时间等）"],
-  ["成员", "创建者", "查看成员列表与在线状态；批准/拒绝待批准加入请求、踢出成员"],
-  ["子网", "创建者", "管理本节点向该网络宣告的子网路由"],
-  ["邀请", "创建者", "查看邀请链接与二维码，复制后分享给其他设备"],
-  ["查看配对码", "创建者", "查看当前配对码并复制；可作废旧码并生成新码，旧码立即失效、已加入成员不受影响"],
-  ["删除", "创建者", "彻底删除该网络：所有成员断开、网段释放，不可恢复"],
-  ["退出网络", "成员", "本机移出该网络并遗忘配置，需重新扫码加入；创建者无此按钮"],
-  ["批准/拒绝", "创建者", "在「成员」模态框中批准或拒绝待批准的加入请求"],
-];
-
-function openSettingsModal() {
-  const s = status;
-  const bound = !!s?.bound;
-  const serverAddr = s?.serverAddr ?? "";
-  const helpRows = HELP_ROWS.map(([op, who, desc]) => `<tr><td>${op}</td><td>${who}</td><td>${desc}</td></tr>`).join("");
-
-  openModal({
-    title: "设置",
-    body: `<div class="settings-block">
-        <div class="row"><label>设备ID</label><input type="text" value="${esc(s?.deviceId ?? "-")}" readonly /></div>
-        <div class="row"><label>服务器地址</label><input id="s-server" type="text" value="${esc(serverAddr)}" placeholder="https://example.com:8090" /></div>
-        <div class="row"><label>设备授权码</label><input id="s-code" type="text" placeholder="管理端生成的设备授权码（仅用于绑定，不保存）" autocomplete="off" /></div>
-        <div class="row"><label>CA 证书路径</label><input id="s-ca" type="text" placeholder="公共证书留空；自签名服务器填路径" /></div>
+          </div>`;let v=s.querySelector("#m-bind-code"),u=s.querySelector("#m-bind-result"),b=s.querySelector("#m-bind-go");v.focus();let p=async()=>{let g=v.value.trim();if(!g){u.className="msg",u.textContent="\u8BF7\u8F93\u5165\u8BBE\u5907\u6388\u6743\u7801";return}b.disabled=!0,u.className="msg",u.textContent="\u6B63\u5728\u7ED1\u5B9A\u2026";try{let f=i.value.trim();await h.bind({server:d,ca:f,code:g}),z({...H(),server:d,ca:f}),u.className="msg ok",u.textContent=`\u5DF2\u7ED1\u5B9A ${d}\uFF0C\u6B63\u5728\u52A0\u5165\u2026`,await l()}catch(f){u.className="msg",u.textContent=`\u7ED1\u5B9A\u5931\u8D25: ${f}`,b.disabled=!1}};b.addEventListener("click",p),v.addEventListener("keydown",g=>{g.key==="Enter"&&p()})};a.addEventListener("click",async()=>{a.disabled=!0,a.innerHTML=`${O} \u52A0\u5165\u4E2D\u2026`,r.className="msg",r.textContent="";try{let d=Number(o.querySelector("#m-port").value),l=i.value.trim(),v=o.querySelector("#m-link").value.trim();if(!v){let f=o.querySelector("#m-nid").value.trim(),S=o.querySelector("#m-code").value.trim();if(!f||!S)throw new Error("\u8BF7\u8F93\u5165\u9080\u8BF7\u94FE\u63A5\uFF0C\u6216\u7F51\u7EDCID + \u914D\u5BF9\u7801");v=`snet://join?nid=${f}&code=${S}`}let u=Jt(v),b=U();class p extends Error{}let g=async()=>{let f=u&&u.trim()?u:b;if(!f)throw new Error("\u672A\u8FDE\u63A5\u670D\u52A1\u5668\uFF1A\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u94FE\u63A5\u670D\u52A1\u5668");try{let S=await h.join({server:f,port:d,ca:l,link:v});r.className="msg ok",S.status==="pending"?r.innerHTML='<p>\u5DF2\u63D0\u4EA4\u52A0\u5165\u8BF7\u6C42\uFF0C\u7B49\u5F85\u7F51\u7EDC\u521B\u5EFA\u8005\u6279\u51C6\u3002</p><p class="hint">\u6279\u51C6\u540E\u672C\u673A\u4F1A\u81EA\u52A8\u52A0\u5165\u5E76\u8FDE\u63A5\uFF1B\u4E5F\u53EF\u5728\u4E0A\u65B9\u300C\u5F85\u6279\u51C6 \xB7 \u52A0\u5165\u8BF7\u6C42\u300D\u5361\u7247\u4E2D\u53D6\u6D88\u3002</p>':r.textContent=`\u5DF2\u52A0\u5165: IP ${S.ip??"-"}\uFF0C\u7F51\u7EDC ${S.networkId??"-"}`,await L()}catch(S){throw String(S).includes("\u8BBE\u5907\u672A\u6388\u6743")?new p:S}};if(u&&b&&ot(u)===ot(b))await g();else if(u)try{await g()}catch(f){if(f instanceof p)await new Promise((S,R)=>{c(u,async()=>{try{await g(),S()}catch(A){r.className="msg",r.textContent=`\u52A0\u5165\u5931\u8D25: ${A}`,a.disabled=!1,R(A)}})});else throw f}else await g()}catch(d){r.className="msg",r.textContent=`\u52A0\u5165\u5931\u8D25: ${d}`,a.disabled=!1,a.innerHTML="\u52A0\u5165"}})}})}var _t=[["\u94FE\u63A5\u5F00\u5173","\u5168\u90E8","\u5F00\u542F\uFF1D\u8FDE\u63A5\u8BE5\u7F51\u7EDC\u96A7\u9053\uFF1B\u5173\u95ED\uFF1D\u65AD\u5F00\u672C\u673A\u8BE5\u7F51\u7EDC\uFF0C\u4FDD\u7559\u914D\u7F6E\u4E0E\u670D\u52A1\u5668\u8282\u70B9\uFF0C\u53EF\u968F\u65F6\u518D\u5F00"],["\u8BE6\u60C5","\u521B\u5EFA\u8005","\u67E5\u770B\u670D\u52A1\u5668\u4E0A\u8BE5\u7F51\u7EDC\u7684\u5B8C\u6574\u4FE1\u606F\uFF08\u6210\u5458\u3001\u4E2D\u7EE7\u7AEF\u53E3\u3001\u5728\u7EBF\u72B6\u6001\u3001\u521B\u5EFA\u65F6\u95F4\u7B49\uFF09"],["\u6210\u5458","\u521B\u5EFA\u8005","\u67E5\u770B\u6210\u5458\u5217\u8868\u4E0E\u5728\u7EBF\u72B6\u6001\uFF1B\u6279\u51C6/\u62D2\u7EDD\u5F85\u6279\u51C6\u52A0\u5165\u8BF7\u6C42\u3001\u8E22\u51FA\u6210\u5458"],["\u8BBE\u7F6E","\u521B\u5EFA\u8005","\u4FEE\u6539\u7F51\u7EDC\u540D\u79F0\u3001\u7F51\u6BB5\uFF0C\u6216\u5F00\u542F\u300C\u65B0\u6210\u5458\u9700\u6279\u51C6\u300D"],["\u67E5\u770B\u914D\u5BF9\u7801","\u521B\u5EFA\u8005","\u67E5\u770B\u5F53\u524D\u914D\u5BF9\u7801\u5E76\u590D\u5236\uFF1B\u53EF\u4F5C\u5E9F\u65E7\u7801\u5E76\u751F\u6210\u65B0\u7801\uFF0C\u65E7\u7801\u7ACB\u5373\u5931\u6548\u3001\u5DF2\u52A0\u5165\u6210\u5458\u4E0D\u53D7\u5F71\u54CD"],["\u5220\u9664","\u521B\u5EFA\u8005","\u5F7B\u5E95\u5220\u9664\u8BE5\u7F51\u7EDC\uFF1A\u6240\u6709\u6210\u5458\u65AD\u5F00\u3001\u7F51\u6BB5\u91CA\u653E\uFF0C\u4E0D\u53EF\u6062\u590D"],["\u9000\u51FA\u7F51\u7EDC","\u6210\u5458","\u672C\u673A\u79FB\u51FA\u8BE5\u7F51\u7EDC\u5E76\u9057\u5FD8\u914D\u7F6E\uFF0C\u9700\u91CD\u65B0\u626B\u7801\u52A0\u5165\uFF1B\u521B\u5EFA\u8005\u65E0\u6B64\u6309\u94AE"]];function Wt(){let t=H(),e=_t.map(([n,o,a])=>`<tr><td>${n}</td><td>${o}</td><td>${a}</td></tr>`).join("");T({title:"\u8BBE\u7F6E",body:`<div class="settings-block">
+        <div class="row"><label>\u670D\u52A1\u5668\u5730\u5740</label><input id="s-server" type="text" value="${m(t.server)}" placeholder="https://example.com:8090" /></div>
+        <div class="row"><label>\u8BBE\u5907\u6388\u6743\u7801</label><input id="s-code" type="text" placeholder="\u7BA1\u7406\u7AEF\u751F\u6210\u7684\u8BBE\u5907\u6388\u6743\u7801\uFF08\u4EC5\u7528\u4E8E\u94FE\u63A5\uFF0C\u4E0D\u4FDD\u5B58\uFF09" autocomplete="off" /></div>
+        <div class="row"><label>CA \u8BC1\u4E66\u8DEF\u5F84</label><input id="s-ca" type="text" value="${m(t.ca)}" placeholder="\u516C\u5171\u8BC1\u4E66(\u5982 Let's Encrypt)\u7559\u7A7A\uFF1B\u81EA\u7B7E\u540D\u670D\u52A1\u5668\u586B\u8BC1\u4E66\u8DEF\u5F84" /></div>
         <div class="settings-actions">
-          <button id="s-bind" class="btn">${bound ? "重新绑定" : "绑定服务器"}</button>
+          <button id="s-bind" class="btn">\u94FE\u63A5\u670D\u52A1\u5668</button>
         </div>
         <p class="msg" id="s-bind-result"></p>
       </div>
-      <div class="settings-block">
-        <h3>修改密码</h3>
-        <div class="row"><label>当前密码</label><input id="s-cur-pw" type="password" placeholder="当前管理密码" autocomplete="current-password" /></div>
-        <div class="row"><label>新密码</label><input id="s-new-pw" type="password" placeholder="至少 8 个字符" autocomplete="new-password" /></div>
-        <div class="row"><label>确认新密码</label><input id="s-new-pw2" type="password" placeholder="再次输入" autocomplete="new-password" /></div>
-        <div class="settings-actions">
-          <button id="s-pw-submit" class="btn">修改密码</button>
-        </div>
-        <p class="msg" id="s-pw-result"></p>
+      <div class="row"><label>WireGuard \u7AEF\u53E3</label><input id="s-wgport" type="number" min="1024" max="65535" value="${t.wgport}" /></div>
+      <div class="settings-actions" id="s-daemon-row">
+        ${h.hasDaemonControl?E?'<span class="live-dot ok">\u540E\u53F0\u670D\u52A1: \u8FD0\u884C\u4E2D</span>':'<button id="s-start-daemon" class="btn ghost">\u542F\u52A8\u540E\u53F0\u670D\u52A1</button>':""}
       </div>
-      <div class="row"><label>WireGuard 端口</label><input id="s-wgport" type="number" min="1024" max="65535" value="${s?.wgPort ?? 51820}" /></div>
       <p class="msg" id="s-msg"></p>
       <details class="help">
-        <summary>操作说明</summary>
-        <div class="tbl-wrap"><table class="help">
-          <thead><tr><th>操作</th><th>适用</th><th>作用</th></tr></thead>
-          <tbody>${helpRows}</tbody>
-        </table></div>
-      </details>`,
-    wide: true,
-    footer: `<button data-close class="btn ghost">关闭</button>`,
-    onBody: (body) => {
-      const bindResult = body.querySelector("#s-bind-result");
-      body.querySelector("#s-bind")?.addEventListener("click", async () => {
-        const server = body.querySelector("#s-server").value.trim();
-        const code = body.querySelector("#s-code").value.trim();
-        const ca = body.querySelector("#s-ca").value.trim();
-        if (!server) { bindResult.className = "msg"; bindResult.textContent = "请输入服务器地址"; return; }
-        if (!code) { bindResult.className = "msg"; bindResult.textContent = "请输入设备授权码"; return; }
-        bindResult.className = "msg"; bindResult.textContent = "正在绑定…";
-        try {
-          await api("/bind", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ server, code, ca }) });
-          bindResult.className = "msg ok"; bindResult.textContent = "已绑定 " + server;
-          toast("已绑定服务器");
-          await refresh();
-        } catch (e) { bindResult.className = "msg"; bindResult.textContent = "绑定失败: " + e; }
-      });
-
-      // password change
-      const pwResult = body.querySelector("#s-pw-result");
-      body.querySelector("#s-pw-submit")?.addEventListener("click", async () => {
-        const cur = body.querySelector("#s-cur-pw").value;
-        const newPw = body.querySelector("#s-new-pw").value;
-        const newPw2 = body.querySelector("#s-new-pw2").value;
-        if (newPw.length < 8) { pwResult.className = "msg"; pwResult.textContent = "新密码至少需要 8 个字符"; return; }
-        if (newPw !== newPw2) { pwResult.className = "msg"; pwResult.textContent = "两次输入不一致"; return; }
-        try {
-          await doSetPassword(cur, newPw);
-          pwResult.className = "msg ok"; pwResult.textContent = "密码已修改，请重新登录";
-          toast("密码已修改");
-          setTimeout(() => {
-            closeModal();
-            doLogout().then(() => showLoginPage());
-          }, 1500);
-        } catch (e) { pwResult.className = "msg"; pwResult.textContent = "修改失败: " + e; }
-      });
-    },
-  });
-}
-
-/* ── onboarding ────────────────────────────────────────────────── */
-let onboardingShown = false;
-function maybeShowOnboarding() {
-  if (onboardingShown) return;
-  if (status && status.bound) return;
-  if (status && status.networks?.length) return;
-  onboardingShown = true;
-  showOnboardingPage();
-}
-async function finishOnboarding() {
-  showApp();
-  await refresh();
-}
-
-/* ── event bindings ────────────────────────────────────────────── */
-document.addEventListener("DOMContentLoaded", () => {
-  // tabs
-  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", (e) => switchTab(e.currentTarget.dataset.tab)));
-
-  // header buttons
-  $("#btn-settings").addEventListener("click", openSettingsModal);
-  $("#btn-create").addEventListener("click", openCreateModal);
-  $("#btn-join").addEventListener("click", openJoinModal);
-  $("#btn-refresh").addEventListener("click", () => void refresh());
-  $("#btn-logout")?.addEventListener("click", async () => {
-    if (!(await confirmDialog("退出登录", "确定退出当前会话？", true))) return;
-    await doLogout();
-    showLoginPage();
-  });
-
-  // login form
-  const loginSubmit = $("#login-submit");
-  if (loginSubmit) loginSubmit.addEventListener("click", async () => {
-    const pw = $("#login-password").value;
-    const remember = $("#login-remember").checked;
-    const result = $("#login-result");
-    if (!pw) { result.className = "msg"; result.textContent = "请输入密码"; return; }
-    loginSubmit.disabled = true;
-    result.className = "msg"; result.textContent = "正在登录…";
-    try {
-      await doLogin(pw, remember);
-      showApp();
-      await refresh();
-    } catch (e) {
-      result.className = "msg"; result.textContent = "登录失败: " + e;
-      loginSubmit.disabled = false;
-    }
-  });
-  $("#login-password")?.addEventListener("keydown", (e) => { if (e.key === "Enter") loginSubmit?.click(); });
-
-  // setup password form
-  const setupSubmit = $("#setup-submit");
-  if (setupSubmit) setupSubmit.addEventListener("click", async () => {
-    const pw = $("#setup-password").value;
-    const pw2 = $("#setup-password2").value;
-    const result = $("#setup-result");
-    if (pw.length < 8) { result.className = "msg"; result.textContent = "密码至少需要 8 个字符"; return; }
-    if (pw !== pw2) { result.className = "msg"; result.textContent = "两次输入不一致"; return; }
-    setupSubmit.disabled = true;
-    result.className = "msg"; result.textContent = "正在设置…";
-    try {
-      await doSetPassword("", pw);
-      await doLogin(pw, true);
-      showApp();
-      await refresh();
-    } catch (e) {
-      result.className = "msg"; result.textContent = "设置失败: " + e;
-      setupSubmit.disabled = false;
-    }
-  });
-  $("#setup-password2")?.addEventListener("keydown", (e) => { if (e.key === "Enter") setupSubmit?.click(); });
-
-  // onboarding bind
-  const onbBind = $("#onb-bind");
-  if (onbBind) onbBind.addEventListener("click", async () => {
-    const server = $("#onb-server").value.trim();
-    const code = $("#onb-code").value.trim();
-    const result = $("#onb-bind-result");
-    if (!server || !code) { result.className = "msg"; result.textContent = "请填写服务器地址和授权码"; return; }
-    result.className = "msg"; result.textContent = "正在绑定…";
-    try {
-      await api("/bind", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ server, code }) });
-      result.className = "msg ok"; result.textContent = "已绑定 " + server;
-      await finishOnboarding();
-    } catch (e) { result.className = "msg"; result.textContent = "绑定失败: " + e; }
-  });
-
-  const onbSkip = $("#onb-skip");
-  if (onbSkip) onbSkip.addEventListener("click", (e) => { e.preventDefault(); finishOnboarding(); });
-
-  // password visibility toggle
-  document.querySelectorAll(".toggle-pw").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const input = document.getElementById(btn.dataset.target);
-      if (!input) return;
-      const show = input.type === "password";
-      input.type = show ? "text" : "password";
-      btn.innerHTML = show
-        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
-        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
-    });
-  });
-
-  // initial load with auth check
-  (async () => {
-    const authState = await checkAuth();
-    if (authState === "needs_login") {
-      showLoginPage();
-      return;
-    }
-    if (authState === "no_password") {
-      showSetupPage();
-      return;
-    }
-    showApp();
-    await refresh();
-    setInterval(() => { if (!document.hidden) refresh(); }, 3000);
-  })();
-});
+        <summary>\u64CD\u4F5C\u8BF4\u660E</summary>
+        <div class="tbl-wrap">
+        <table class="help">
+          <thead><tr><th>\u64CD\u4F5C</th><th>\u9002\u7528</th><th>\u4F5C\u7528</th></tr></thead>
+          <tbody>${e}</tbody>
+        </table>
+        </div>
+      </details>`,wide:!0,footer:'<button data-close class="btn ghost">\u5173\u95ED</button>',onBody:n=>{let o=n.querySelector("#s-msg"),a=n.querySelector("#s-bind-result");n.querySelector("#s-bind")?.addEventListener("click",async()=>{let r=n.querySelector("#s-server").value.trim(),s=n.querySelector("#s-ca").value.trim(),i=n.querySelector("#s-code").value.trim();if(!r){a.className="msg",a.textContent="\u8BF7\u8F93\u5165\u670D\u52A1\u5668\u5730\u5740";return}if(!i){a.className="msg",a.textContent="\u8BF7\u8F93\u5165\u8BBE\u5907\u6388\u6743\u7801";return}a.className="msg",a.textContent="\u6B63\u5728\u94FE\u63A5\u2026";try{await h.bind({server:r,ca:s,code:i}),z({...H(),server:r,ca:s}),a.className="msg ok",a.textContent=`\u5DF2\u7ED1\u5B9A ${r}`,w("\u5DF2\u7ED1\u5B9A\u670D\u52A1\u5668"),await L()}catch(c){a.className="msg",a.textContent=`\u94FE\u63A5\u5931\u8D25: ${c}`}}),n.querySelector("#s-start-daemon")?.addEventListener("click",async()=>{o.className="msg",o.textContent="\u6B63\u5728\u542F\u52A8\u540E\u53F0\u670D\u52A1\uFF08\u53EF\u80FD\u5F39\u51FA\u7BA1\u7406\u5458\u5BC6\u7801\u6846\uFF09\u2026";try{await h.ensureDaemon(),o.className="msg ok",o.textContent="\u540E\u53F0\u670D\u52A1\u5DF2\u5C31\u7EEA",await L();let r=n.querySelector("#s-daemon-row");r&&(r.innerHTML='<span class="live-dot ok">\u540E\u53F0\u670D\u52A1: \u8FD0\u884C\u4E2D</span>')}catch(r){o.className="msg",o.textContent=String(r)}})}})}function Ut(){nt||E&&E.bound||E&&(E.networks?.length||E.pendingJoins?.length)||(nt=!0,zt())}function zt(){let t=y("#onboarding");if(!t)return;let e=H(),n=y("#onb-server"),o=y("#onb-ca");n&&(n.value=e.server),o&&(o.value=e.ca);let a=y("#onb-daemon");a&&(a.hidden=!!E);let r=y("#onb-start-daemon");r&&(r.onclick=async()=>{r.disabled=!0,r.textContent="\u542F\u52A8\u4E2D\u2026";let i=y("#onb-daemon-result");i.className="msg",i.textContent="\u6B63\u5728\u542F\u52A8\u540E\u53F0\u670D\u52A1\uFF08\u53EF\u80FD\u5F39\u51FA\u7BA1\u7406\u5458\u5BC6\u7801\u6846\uFF09\u2026";try{await h.ensureDaemon(),i.className="msg ok",i.textContent="\u540E\u53F0\u670D\u52A1\u5DF2\u5C31\u7EEA",await L(),a&&(a.hidden=!0)}catch(c){i.className="msg",i.textContent=`\u542F\u52A8\u5931\u8D25: ${c}`}finally{r.disabled=!1,r.textContent="\u542F\u52A8\u540E\u53F0\u670D\u52A1"}});let s=y("#onb-bind-result");y("#onb-bind").onclick=async()=>{let i=y("#onb-server").value.trim(),c=y("#onb-ca").value.trim(),d=y("#onb-code").value.trim();if(!i){s.className="msg",s.textContent="\u8BF7\u8F93\u5165\u670D\u52A1\u5668\u5730\u5740";return}if(!d){s.className="msg",s.textContent="\u8BF7\u8F93\u5165\u8BBE\u5907\u6388\u6743\u7801";return}s.className="msg",s.textContent="\u6B63\u5728\u7ED1\u5B9A\u2026";try{await h.bind({server:i,ca:c,code:d}),z({...H(),server:i,ca:c}),s.className="msg ok",s.textContent=`\u5DF2\u7ED1\u5B9A ${i}`,w("\u5DF2\u7ED1\u5B9A\u670D\u52A1\u5668"),await rt()}catch(l){s.className="msg",s.textContent=`\u7ED1\u5B9A\u5931\u8D25: ${l}`}},y("#onb-skip").onclick=i=>{i.preventDefault(),rt()},t.hidden=!1}async function rt(){let t=y("#onboarding");t&&(t.hidden=!0),await L()}function Gt(){let t=y("#device-id"),e=y("#svc-server"),n=y("#svc-wgport"),o=y("#tunnel-detail"),a=y("#status-json");if(!E){t&&(t.textContent="-"),e&&(e.textContent="-"),n&&(n.textContent="-"),o&&(o.innerHTML='<p class="muted">\u540E\u53F0\u670D\u52A1\u672A\u8FD0\u884C</p>'),a&&(a.textContent="(\u672A\u8FDE\u63A5\u540E\u53F0\u670D\u52A1)");return}t&&(t.textContent=E.deviceId??"-");let r=E.serverAddr??"";e&&(e.textContent=E.bound&&r?r:"\u672A\u8FDE\u63A5\u670D\u52A1\u5668"),n&&(n.textContent=String(E.wgPort??"-"));let s=E.networks??[];o&&(o.innerHTML=s.length?s.map(i=>{let c=Object.values(i.peerStats??{}),d=c.reduce((u,b)=>u+(b.RxBytes??0)+(b.TxBytes??0),0),l=c.length,v=!!i.interface;return`<div class="kv"><span>${m(i.name||i.networkId)}</span>
+            <code>${m(i.interface||"\u65E0\u96A7\u9053")}</code>
+            <span class="muted">\u6536/\u53D1 ${_(d)} \xB7 \u6210\u5458 ${l?`${K(i)}/${l} \u5728\u7EBF`:"\u6682\u65E0\u5176\u4ED6\u6210\u5458"}</span>
+            ${v?'<span class="pill ok">\u5DF2\u94FE\u63A5</span>':'<span class="pill off">\u672A\u94FE\u63A5</span>'}
+          </div>`}).join(""):'<p class="muted">\u672A\u52A0\u5165\u4EFB\u4F55\u7F51\u7EDC</p>'),a&&(a.textContent=JSON.stringify(E,null,2))}async function ut(){let t=y("#header-svc-btn");t&&(t.disabled=!0,t.textContent="\u542F\u52A8\u4E2D\u2026");try{await h.ensureDaemon(),w("\u540E\u53F0\u670D\u52A1\u5DF2\u5C31\u7EEA")}catch(e){w(String(e),"err")}finally{t&&(t.disabled=!1),await L()}}function Ft(){y("#btn-settings")?.addEventListener("click",Wt),y("#btn-create")?.addEventListener("click",lt),y("#btn-join")?.addEventListener("click",dt),y("#btn-refresh")?.addEventListener("click",()=>void L()),y("#btn-leave-all")?.addEventListener("click",async()=>{try{await h.leave(""),w("\u5DF2\u505C\u6B62\u5168\u90E8\u7F51\u7EDC")}catch(t){w(String(t),"err")}await L()})}async function q(t){h=t,await tt(),et(),Bt(),Ft(),L(),setInterval(()=>{document.hidden||L()},3e3)}var Qt="/ctl",Kt="/ctl/auth",D=localStorage.getItem("snet_token")||null;async function k(t,e){let n=await fetch(Qt+t,e),o=await n.text();if(!n.ok){let a="HTTP "+n.status;try{let r=JSON.parse(o);r.error&&(a=r.error)}catch{}throw new Error(a)}return o?JSON.parse(o):null}async function G(t,e){let n=e?.headers||{};D&&(n.Authorization="Bearer "+D),e?.body&&!n["Content-Type"]&&(n["Content-Type"]="application/json");let o=await fetch(Kt+t,{...e,headers:n}),a=await o.text();if(!o.ok){let r="HTTP "+o.status;try{let s=JSON.parse(a);s.error&&(r=s.error)}catch{}throw new Error(r)}return a?JSON.parse(a):null}function x(t,e){return{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(e)}}async function Yt(){try{let t=await G("/check");return t.hasPassword?t.authenticated?"authenticated":"needs_login":"no_password"}catch{return"authenticated"}}async function mt(t,e){return D=(await G("/login",{method:"POST",body:JSON.stringify({password:t,remember:e})})).token,localStorage.setItem("snet_token",D),!0}async function Vt(){try{await G("/logout",{method:"POST"})}catch{}D=null,localStorage.removeItem("snet_token")}async function Xt(t,e){await G("/password",{method:"POST",body:JSON.stringify({current:t,new:e})})}function j(){let t=document.getElementById("app"),e=document.getElementById("login-page"),n=document.getElementById("setup-page"),o=document.getElementById("onboarding-page");t&&(t.hidden=!1),e&&(e.hidden=!0),n&&(n.hidden=!0),o&&(o.hidden=!0)}function pt(){let t=document.getElementById("app"),e=document.getElementById("login-page"),n=document.getElementById("setup-page"),o=document.getElementById("onboarding-page");t&&(t.hidden=!0),n&&(n.hidden=!0),o&&(o.hidden=!0),e&&(e.hidden=!1,e.querySelector("#login-password")?.focus())}function Zt(){let t=document.getElementById("app"),e=document.getElementById("login-page"),n=document.getElementById("setup-page"),o=document.getElementById("onboarding-page");t&&(t.hidden=!0),e&&(e.hidden=!0),o&&(o.hidden=!0),n&&(n.hidden=!1,n.querySelector("#setup-password")?.focus())}function ce(){let t=document.getElementById("app"),e=document.getElementById("login-page"),n=document.getElementById("setup-page"),o=document.getElementById("onboarding-page");t&&(t.hidden=!0),e&&(e.hidden=!0),n&&(n.hidden=!0),o&&(o.hidden=!1,o.querySelector("#onb-server")?.focus())}var P={hasDaemonControl:!1,async status(){try{return await k("/status")}catch{return null}},async create(t){return k("/create",x("/create",{name:t.name,subnet:t.subnet,port:t.port,ca:t.ca,approvalRequired:t.approvalRequired}))},async join(t){return k("/join",x("/join",{link:t.link,port:t.port,ca:t.ca}))},async bind(t){await k("/bind",x("/bind",{server:t.server,ca:t.ca,code:t.code}))},async rejoin(t){await k("/rejoin",x("/rejoin",{nid:t}))},async leave(t){await k("/leave",x("/leave",{nid:t}))},async remove(t){await k("/remove",x("/remove",{nid:t}))},async deleteNet(t){await k("/delete",x("/delete",{nid:t}))},async netinfo(t){return k("/netinfo?nid="+encodeURIComponent(t))},async peers(t){return k("/peers?nid="+encodeURIComponent(t))},async updateSettings(t){await k("/settings",x("/settings",{nid:t.nid,name:t.name,subnet:t.subnet,approvalRequired:t.approvalRequired}))},async updateSubnets(t){await k("/subnets",x("/subnets",{nid:t.nid,subnets:t.subnets}))},async kick(t){await k("/kick",x("/kick",{nid:t.nid,nodeId:t.nodeId}))},async approve(t){await k("/approve",x("/approve",{nid:t.nid,pendingId:t.pendingId}))},async deny(t){await k("/deny",x("/deny",{nid:t.nid,pendingId:t.pendingId}))},async cancelPending(t){await k("/cancel-pending",x("/cancel-pending",{pendingId:t}))},async resetCode(t){return k("/reset-code",x("/reset-code",{nid:t}))},async detectLocalSubnets(){let t=await k("/local-subnets");return t?.subnets??(Array.isArray(t)?t:[])},async ensureDaemon(){throw new Error("Web \u7248\u65E0\u6CD5\u7BA1\u7406\u540E\u53F0\u670D\u52A1\uFF0C\u8BF7\u624B\u52A8\u542F\u52A8 snetd")}};document.addEventListener("DOMContentLoaded",()=>{document.querySelectorAll(".tab").forEach(a=>a.addEventListener("click",r=>{let s=r.currentTarget.dataset.tab;document.querySelectorAll(".tab").forEach(d=>d.classList.remove("active")),document.querySelectorAll(".tab-panel").forEach(d=>d.classList.remove("active"));let i=document.querySelector(`[data-tab="${s}"]`);i&&i.classList.add("active");let c=document.getElementById("panel-"+s);c&&c.classList.add("active")}));let t=document.getElementById("login-submit");t&&t.addEventListener("click",async()=>{let a=document.getElementById("login-password")?.value,r=document.getElementById("login-remember")?.checked??!0,s=document.getElementById("login-result");if(!a){s.className="msg",s.textContent="\u8BF7\u8F93\u5165\u5BC6\u7801";return}t.disabled=!0,s.className="msg",s.textContent="\u6B63\u5728\u767B\u5F55\u2026";try{await mt(a,r),j(),q(P)}catch(i){s.className="msg",s.textContent="\u767B\u5F55\u5931\u8D25: "+i,t.disabled=!1}}),document.getElementById("login-password")?.addEventListener("keydown",a=>{a.key==="Enter"&&t?.click()});let e=document.getElementById("setup-submit");e&&e.addEventListener("click",async()=>{let a=document.getElementById("setup-password")?.value,r=document.getElementById("setup-password2")?.value,s=document.getElementById("setup-result");if(!a||a.length<8){s.className="msg",s.textContent="\u5BC6\u7801\u81F3\u5C11\u9700\u8981 8 \u4E2A\u5B57\u7B26";return}if(a!==r){s.className="msg",s.textContent="\u4E24\u6B21\u8F93\u5165\u4E0D\u4E00\u81F4";return}e.disabled=!0,s.className="msg",s.textContent="\u6B63\u5728\u8BBE\u7F6E\u2026";try{await Xt("",a),await mt(a,!0),j(),q(P)}catch(i){s.className="msg",s.textContent="\u8BBE\u7F6E\u5931\u8D25: "+i,e.disabled=!1}}),document.getElementById("setup-password2")?.addEventListener("keydown",a=>{a.key==="Enter"&&e?.click()});let n=document.getElementById("onb-bind");n&&n.addEventListener("click",async()=>{let a=document.getElementById("onb-server")?.value.trim(),r=document.getElementById("onb-code")?.value.trim(),s=document.getElementById("onb-bind-result");if(!a||!r){s.className="msg",s.textContent="\u8BF7\u586B\u5199\u670D\u52A1\u5668\u5730\u5740\u548C\u6388\u6743\u7801";return}s.className="msg",s.textContent="\u6B63\u5728\u7ED1\u5B9A\u2026";try{await P.bind({server:a,ca:"",code:r}),s.className="msg ok",s.textContent="\u5DF2\u7ED1\u5B9A "+a,j(),q(P)}catch(i){s.className="msg",s.textContent="\u7ED1\u5B9A\u5931\u8D25: "+i}});let o=document.getElementById("onb-skip");o&&o.addEventListener("click",a=>{a.preventDefault(),j(),q(P)}),document.querySelectorAll(".toggle-pw").forEach(a=>{a.addEventListener("click",()=>{let r=document.getElementById(a.dataset.target);if(!r)return;let s=r.type==="password";r.type=s?"text":"password",a.innerHTML=s?'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>':'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'})}),document.getElementById("btn-logout")?.addEventListener("click",async()=>{confirm("\u786E\u5B9A\u9000\u51FA\u5F53\u524D\u4F1A\u8BDD\uFF1F")&&(await Vt(),pt())}),(async()=>{let a=await Yt();if(a==="needs_login"){pt();return}if(a==="no_password"){Zt();return}j(),q(P)})()});})();
