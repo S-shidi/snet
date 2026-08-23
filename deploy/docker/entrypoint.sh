@@ -82,8 +82,21 @@ fi
 
 echo "[entrypoint] snetd ready on $CTL_ADDR"
 
+# Copy TLS certs from host if available (for nginx HTTPS)
+# Host certs may be symlinks to Let's Encrypt — use -L to test, -e to copy dereferenced
+CERT_DIR="$DATA_DIR/certs"
+mkdir -p "$CERT_DIR"
+if [ ! -f "$CERT_DIR/server.pem" ] && [ -L /host-certs/server.pem -o -f /host-certs/server.pem ]; then
+    cp -L /host-certs/server.pem "$CERT_DIR/server.pem"
+    cp -L /host-certs/server-key.pem "$CERT_DIR/server-key.pem"
+    chmod 600 "$CERT_DIR/server-key.pem"
+    echo "[entrypoint] Copied TLS certs from host (dereferenced)"
+elif [ -f "$CERT_DIR/server.pem" ]; then
+    echo "[entrypoint] TLS certs already in data volume"
+fi
+
 # Start nginx in foreground (keeps container alive)
-echo "[entrypoint] Starting nginx on port 8080..."
+echo "[entrypoint] Starting nginx on port 8080 (HTTP) + 8443 (HTTPS)..."
 nginx -g "daemon off;" &
 NGINX_PID=$!
 

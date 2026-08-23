@@ -62,7 +62,9 @@ VOLUME /data
 
 # Web UI (nginx)
 EXPOSE 8080
-# WireGuard data面 (每个网络一个端口，从51820起)
+# Web UI HTTPS
+EXPOSE 8443
+# WireGuard 数据面 (每个网络一个端口，从51820起)
 EXPOSE 51900-51963/udp
 
 ENTRYPOINT ["/entrypoint.sh"]
