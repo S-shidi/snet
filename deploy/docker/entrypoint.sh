@@ -64,7 +64,7 @@ if [ -n "$SNET_SERVER" ] && [ -n "$SNET_BIND_CODE" ]; then
 
     # Stop snetd — it will be restarted below with nginx
     kill $SNETD_PID 2>/dev/null
-    wait $SNETD_PID 2>/dev/null
+    wait $SNETD_PID 2>/dev/null || true
 fi
 
 # ---- Start snetd + nginx ----
@@ -105,11 +105,11 @@ cleanup() {
     echo "[entrypoint] Shutting down..."
     kill $NGINX_PID 2>/dev/null
     kill $SNETD_PID 2>/dev/null
-    wait $NGINX_PID 2>/dev/null
-    wait $SNETD_PID 2>/dev/null
+    wait $NGINX_PID 2>/dev/null || true
+    wait $SNETD_PID 2>/dev/null || true
 }
 trap cleanup TERM INT
 
 # Wait for either process to exit
-wait -n $SNETD_PID $NGINX_PID 2>/dev/null
+wait -n $SNETD_PID $NGINX_PID 2>/dev/null || true
 cleanup

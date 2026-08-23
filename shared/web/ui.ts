@@ -880,6 +880,7 @@ function openJoinModal() {
                 result.textContent = `已加入: IP ${r.ip ?? "-"}，网络 ${r.networkId ?? "-"}`;
               }
               await refresh();
+              closeModal();
             } catch (e) {
               if (String(e).includes("设备未授权")) throw new NeedBind();
               throw e;
