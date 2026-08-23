@@ -198,7 +198,15 @@ function renderNetworks() {
     $("#empty-join")?.addEventListener("click", openJoinModal);
     return;
   }
-  const netHTML = nets.map(netCard).join("");
+  const sortedNets = [...nets].sort((a, b) => {
+    const ta = a.joinedAt || "";
+    const tb = b.joinedAt || "";
+    if (ta && tb) return ta.localeCompare(tb);
+    if (ta) return -1;
+    if (tb) return 1;
+    return (a.networkId || "").localeCompare(b.networkId || "");
+  });
+  const netHTML = sortedNets.map(netCard).join("");
   const pendingHTML = pending.length
     ? `<h4 class="pending-heading">待批准 · 加入请求</h4>` +
       pending.map(

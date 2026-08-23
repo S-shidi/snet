@@ -600,6 +600,7 @@ func (d *Daemon) attach(nid, name, nodeID, ip, token, pairingCode, subnet string
 		Port:        0,
 		Active:      true,
 		Owner:       owner,
+		JoinedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 	if existing, ok := d.cfg.Networks[nid]; ok && existing.Name != "" && name == "" {
 		nc.Name = existing.Name
@@ -706,6 +707,7 @@ func (d *Daemon) SyncNetworks(deviceToken string) error {
 			Port:     0,
 			Active:   active,
 			Owner:    detail.Owner,
+			JoinedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 		d.cfg.Networks[nid] = nc
 
@@ -1512,6 +1514,7 @@ func (d *Daemon) Status() (map[string]any, error) {
 			"interface":      "",
 			"peerStats":      map[string]PeerStats{},
 			"allowedSubnets": nc.AllowedSubnets,
+			"joinedAt":       nc.JoinedAt,
 		}
 		if rt := d.nets[nid]; rt != nil {
 			entry["error"] = rt.err

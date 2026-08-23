@@ -13,6 +13,7 @@ export type NetInfo = {
   interface?: string;
   peerStats?: Record<string, PeerStats>;
   allowedSubnets?: string[];
+  joinedAt?: string;
 };
 export type PendingJoin = {
   pendingId: string;

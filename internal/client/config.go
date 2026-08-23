@@ -38,6 +38,7 @@ type NetworkCfg struct {
 	Active         bool     `json:"active"`
 	Owner          bool     `json:"owner,omitempty"`
 	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
+	JoinedAt       string   `json:"joinedAt,omitempty"`
 }
 
 // Config is the daemon configuration (v2, multi-network). PrivateKey is the
