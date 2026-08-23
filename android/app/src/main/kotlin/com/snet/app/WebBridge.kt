@@ -47,13 +47,27 @@ class WebBridge(private val activity: MainActivity) {
     fun join(params: String): String {
         return try {
             val p = org.json.JSONObject(params)
-            val link = p.optString("link", "")
+            var link = p.optString("link", "")
             val server = p.optString("server", "")
             val port = p.optInt("port", 51820)
             val ca = p.optString("ca", "")
-            // Extract nid and code from link
-            val nid = p.optString("nid", "")
-            val code = p.optString("code", "")
+            // Extract nid and code from link or from direct params
+            var nid = p.optString("nid", "")
+            var code = p.optString("code", "")
+            if (link.isNotEmpty() && (nid.isEmpty() || code.isEmpty())) {
+                // Parse snet://join?nid=...&code=... URL
+                val query = if (link.contains("?")) link.substringAfter("?") else link
+                for (param in query.split("&")) {
+                    val kv = param.split("=", limit = 2)
+                    if (kv.size == 2) {
+                        when (kv[0]) {
+                            "nid" -> if (nid.isEmpty()) nid = kv[1]
+                            "code" -> if (code.isEmpty()) code = kv[1]
+                        }
+                    }
+                }
+            }
+            Log.d(TAG, "join nid=$nid server=$server port=$port")
             SnetBridge.joinNetwork(nid, code, server, port)
         } catch (e: Exception) {
             Log.e(TAG, "join failed", e)
@@ -78,6 +92,15 @@ class WebBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun rejoin(nid: String): String {
         return try {
+            // Ensure VPN service (and daemon) is running before rejoin
+            if (!SnetVpnService.isRunning) {
+                Log.d(TAG, "VPN not running, starting before rejoin")
+                val intent = android.content.Intent(activity, SnetVpnService::class.java)
+                intent.action = "START"
+                activity.startForegroundService(intent)
+                // Wait for VPN service to establish TUN and init daemon
+                Thread.sleep(1500)
+            }
             SnetBridge.rejoin(nid)
             """{"ok":true}"""
         } catch (e: Exception) {

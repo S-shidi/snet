@@ -10,6 +10,7 @@ import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 let backend: Backend;
 let status: DaemonStatus | null = null;
 let onboardingShown = false;
+let skipOnboarding = false;
 
 /* ── Settings (localStorage) ──────────────────────────────────── */
 const SETTINGS_KEY = "snet.settings";
@@ -887,7 +888,9 @@ function openJoinModal() {
               } else {
                 result.textContent = `已加入: IP ${r.ip ?? "-"}，网络 ${r.networkId ?? "-"}`;
               }
+              skipOnboarding = true;
               await refresh();
+              skipOnboarding = false;
               closeModal();
             } catch (e) {
               if (String(e).includes("设备未授权")) throw new NeedBind();
@@ -983,7 +986,10 @@ function openSettingsModal() {
           saveSettings({ ...loadSettings(), server, ca });
           bindResult.className = "msg ok"; bindResult.textContent = `已绑定 ${server}`;
           toast("已绑定服务器");
+          skipOnboarding = true;
           await refresh();
+          skipOnboarding = false;
+          closeModal();
         } catch (e) {
           bindResult.className = "msg"; bindResult.textContent = `链接失败: ${e}`;
         }
@@ -1009,6 +1015,7 @@ function openSettingsModal() {
 
 /* ── Onboarding ───────────────────────────────────────────────── */
 function maybeShowOnboarding() {
+  if (skipOnboarding) return;
   if (onboardingShown) return;
   if (status && status.bound) return;
   if (status && (status.networks?.length || status.pendingJoins?.length)) return;
