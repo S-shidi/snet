@@ -7,7 +7,7 @@ export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/23.1.7779620
 export GOPROXY=https://goproxy.cn,direct
 export PATH="$HOME/go/bin:$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 echo "=== Building snet.aar (gomobile) ==="
 gomobile bind -target=android -o /tmp/snet.aar ./snetbind/

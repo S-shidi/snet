@@ -1,5 +1,3 @@
-//go:build android
-
 // Package snetbind provides a gomobile-friendly binding layer for the SNET
 // daemon. All complex data is exchanged as JSON strings to work around
 // gomobile's type restrictions.

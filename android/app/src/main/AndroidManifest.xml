@@ -22,14 +22,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".NetworkDetailActivity"
-            android:parentActivityName=".MainActivity" />
-
-        <activity
-            android:name=".DeviceActivity"
-            android:parentActivityName=".MainActivity" />
-
         <service
             android:name=".SnetVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
