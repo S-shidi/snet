@@ -190,15 +190,34 @@ export function confirmDialog(title: string, message: string, danger = false): P
   });
 }
 
-/* ── Tab switching ────────────────────────────────────────────── */
+/* ── Tab switching + sliding pill ──────────────────────────────── */
 export function initTabs() {
-  document.querySelectorAll(".tab").forEach((t) =>
+  const tabs = Array.from(document.querySelectorAll<HTMLElement>(".tab"));
+  const slider = document.getElementById("tabs-slider") as HTMLElement | null;
+
+  function updateSlider() {
+    const active = document.querySelector<HTMLElement>(".tab.active");
+    if (!active || !slider) return;
+    const bar = active.parentElement as HTMLElement;
+    const barRect = bar.getBoundingClientRect();
+    const tabRect = active.getBoundingClientRect();
+    const left = tabRect.left - barRect.left;
+    slider.style.left = `${left}px`;
+    slider.style.width = `${tabRect.width}px`;
+  }
+
+  tabs.forEach((t) =>
     t.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
-      const name = (t as HTMLElement).dataset.tab!;
+      tabs.forEach((x) => x.classList.toggle("active", x === t));
+      const name = t.dataset.tab!;
       document.querySelectorAll(".tab-panel").forEach((p) =>
         p.classList.toggle("active", p.id === `tab-${name}` || p.id === `panel-${name}`),
       );
+      updateSlider();
     }),
   );
+
+  // Initial slider position
+  requestAnimationFrame(updateSlider);
+  window.addEventListener("resize", updateSlider);
 }

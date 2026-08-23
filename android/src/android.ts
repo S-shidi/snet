@@ -143,9 +143,33 @@ const backend: Backend = {
   },
 };
 
-// Wait for bridge to be ready
-if (window.__ANDROID_BRIDGE__) {
+function showApp(): void {
+  const app = document.getElementById("app");
+  const login = document.getElementById("login-page");
+  const setup = document.getElementById("setup-page");
+  const onb = document.getElementById("onboarding-page");
+  if (app) app.hidden = false;
+  if (login) login.hidden = true;
+  if (setup) setup.hidden = true;
+  if (onb) onb.hidden = true;
+}
+
+// Wait for DOM ready, then show app and init
+function boot() {
+  showApp();
   init(backend);
+
+  // Logout: reload to re-trigger device check
+  document.getElementById("btn-logout")?.addEventListener("click", () => {
+    if (confirm("确定退出当前设备绑定？")) window.location.reload();
+  });
+  window.addEventListener("snet-logout", () => {
+    if (confirm("确定退出当前设备绑定？")) window.location.reload();
+  });
+}
+
+if (document.readyState === "loading") {
+  window.addEventListener("DOMContentLoaded", boot);
 } else {
-  window.addEventListener("DOMContentLoaded", () => init(backend));
+  boot();
 }

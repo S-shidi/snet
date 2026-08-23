@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Snet · Web 控制台</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -134,15 +134,29 @@
         </div>
       </div>
       <div class="header-right">
-        <span class="live-dot ok">snetd</span>
-        <button class="btn sm" id="btn-refresh">刷新</button>
-        <button class="btn sm" id="btn-settings">设置</button>
-        <button class="btn sm ghost" id="btn-logout">退出</button>
+        <span class="live-dot ok" id="daemon-state">snetd</span>
+        <button class="btn sm" id="header-svc-btn" hidden>启动后台服务</button>
+        <div class="header-actions" id="header-actions">
+          <button class="btn sm" id="btn-refresh">刷新</button>
+          <button class="btn sm" id="btn-settings">设置</button>
+          <button class="btn sm ghost" id="btn-logout">退出</button>
+        </div>
+        <div class="header-more" id="header-more" hidden>
+          <button class="btn icon" id="btn-more" title="更多">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+          </button>
+          <div class="header-dropdown" id="header-dropdown" hidden>
+            <button class="dropdown-item" data-action="refresh">刷新</button>
+            <button class="dropdown-item" data-action="settings">设置</button>
+            <button class="dropdown-item" data-action="logout">退出</button>
+          </div>
+        </div>
       </div>
     </div>
   </header>
 
-  <div class="tabs">
+  <div class="tabs" id="tabs-bar">
+    <div class="tabs-slider" id="tabs-slider"></div>
     <button class="tab active" data-tab="networks">网络 <span class="cnt"></span></button>
     <button class="tab" data-tab="status">状态</button>
   </div>

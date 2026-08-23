@@ -1152,6 +1152,26 @@ function bindEvents() {
     }
     await refresh();
   });
+
+  // Mobile header dropdown
+  const btnMore = $("#btn-more") as HTMLButtonElement | null;
+  const dropdown = $("#header-dropdown") as HTMLElement | null;
+  if (btnMore && dropdown) {
+    btnMore.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dropdown.hidden = !dropdown.hidden;
+    });
+    document.addEventListener("click", () => { dropdown.hidden = true; });
+    dropdown.querySelectorAll<HTMLElement>("[data-action]").forEach((item) => {
+      item.addEventListener("click", () => {
+        dropdown.hidden = true;
+        const action = item.dataset.action;
+        if (action === "refresh") void refresh();
+        else if (action === "settings") openSettingsModal();
+        else if (action === "logout") { /* logout handled in adapter */ window.dispatchEvent(new Event("snet-logout")); }
+      });
+    });
+  }
 }
 
 /* ── Init ─────────────────────────────────────────────────────── */

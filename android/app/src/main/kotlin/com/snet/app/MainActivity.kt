@@ -45,23 +45,22 @@ class MainActivity : AppCompatActivity() {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(cm: ConsoleMessage?): Boolean {
-                cm?.let { Log.d(TAG, "JS: ${it.message()} [${it.sourceId()}:${it.lineNumber()}]") }
+                cm?.let { Log.d(TAG, "JS: [${it.messageLevel()}] ${it.message()} [${it.sourceId()}:${it.lineNumber()}]") }
                 return true
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                Log.d(TAG, "onPageStarted: $url")
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                // Inject bridge and init after page loads
-                view?.evaluateJavascript("""
-                    (function() {
-                        // WebBridge is already registered via addJavascriptInterface
-                        // Just signal that the bridge is ready
-                        window.__ANDROID_BRIDGE__ = true;
-                        console.log('[Android] Bridge ready');
-                    })();
-                """, null)
+                Log.d(TAG, "onPageFinished: $url")
+            }
+
+            override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
+                Log.d(TAG, "onReceivedError: $errorCode $description $failingUrl")
             }
         }
 

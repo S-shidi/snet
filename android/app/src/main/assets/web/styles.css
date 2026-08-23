@@ -53,6 +53,24 @@ header {
 .brand .sub { font-size: 11px; color: var(--faint); }
 .header-right { display: flex; align-items: center; gap: 10px; }
 
+/* ── header dropdown (mobile) ───────────── */
+.header-more { position: relative; }
+.header-dropdown {
+  position: absolute; top: 100%; right: 0; margin-top: 4px;
+  background: var(--card2); border: 1px solid var(--border2); border-radius: var(--radius-s);
+  box-shadow: 0 8px 28px rgba(0,0,0,.45); min-width: 120px;
+  z-index: 30; overflow: hidden; animation: dropIn .12s ease-out;
+}
+.header-dropdown[hidden] { display: none; }
+.dropdown-item {
+  display: block; width: 100%; padding: 8px 14px; font-size: 13px; font-family: inherit;
+  background: none; border: none; color: var(--text); text-align: left; cursor: pointer;
+  transition: background .1s;
+}
+.dropdown-item:hover { background: rgba(255,255,255,.06); }
+.dropdown-item:last-child { color: var(--err); }
+@keyframes dropIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
 /* ── live-dot ───────────────────────────── */
 .live-dot { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); white-space: nowrap; }
 .live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px transparent; }
@@ -83,15 +101,25 @@ header {
 .btn.icon:hover { background: var(--card2); color: var(--text); border-color: var(--border); }
 .btn .spin { margin-left: 2px; }
 
-/* ── tabs ───────────────────────────────── */
-.tabs { display: flex; gap: 6px; margin: 14px auto 16px; max-width: 1040px; padding: 0 18px; border-bottom: 1px solid var(--border); }
+/* ── tabs (center-aligned + sliding pill) ─ */
+.tabs {
+  display: flex; align-items: center; justify-content: center; position: relative;
+  margin: 14px auto 16px; max-width: 1040px; padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+}
+.tabs-slider {
+  position: absolute; bottom: 0; left: 0; height: 2px;
+  background: var(--accent); border-radius: 2px;
+  transition: left .28s cubic-bezier(.4,0,.2,1), width .28s cubic-bezier(.4,0,.2,1);
+  pointer-events: none;
+}
 .tab {
   background: transparent; border: 1px solid transparent; border-bottom: 2px solid transparent;
   color: var(--dim); padding: 9px 16px; font-size: 13.5px; cursor: pointer; border-radius: 8px 8px 0 0; font-family: inherit;
-  transition: color .12s, background .12s;
+  transition: color .12s, background .12s; position: relative;
 }
 .tab:hover { color: var(--text); background: rgba(255,255,255,.03); }
-.tab.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.tab.active { color: var(--text); font-weight: 600; border-bottom-color: transparent; }
 .tab .cnt { font-size: 11px; color: var(--faint); margin-left: 4px; }
 .tab .cnt.hot { color: var(--warn); font-weight: 700; }
 .tab-panel { display: none; }
@@ -274,6 +302,11 @@ input[type=number] { width: 120px; }
 .subnet-add-row { display: flex; gap: 8px; align-items: stretch; }
 .subnet-add-row input { flex: 1; }
 
+/* ── subnet suggestions ─────────────────── */
+.subnet-suggestions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 8px; }
+.subnet-suggestions .chip { cursor: pointer; transition: background .15s; }
+.subnet-suggestions .chip:hover { background: var(--accent-soft); color: var(--accent2); }
+
 /* ── help table ─────────────────────────── */
 details.help { margin-top: 12px; }
 details.help summary { cursor: pointer; color: var(--accent2); font-size: 13px; margin-bottom: 8px; }
@@ -322,24 +355,11 @@ pre.code { user-select: all; }
 /* ── warn message ───────────────────────── */
 .msg.warn { color: var(--warn); }
 
-/* ── subnet suggestions ─────────────────── */
-.subnet-suggestions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 8px; }
-.subnet-suggestions .chip { cursor: pointer; transition: background .15s; }
-.subnet-suggestions .chip:hover { background: var(--accent-soft); color: var(--accent2); }
-
 /* ── confirm modal ──────────────────────── */
 .confirm-modal { max-width: 400px; }
 
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pop { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
-
-/* ── responsive ─────────────────────────── */
-@media (max-width: 640px) {
-  .brand .sub { display: none; }
-  .tabs { padding: 0 14px; }
-  #app-main { padding: 0 14px 50px; }
-  .header-inner { padding: 12px 14px; }
-}
 
 /* ══════════════════════════════════════════════════════════════════════════
    Standalone pages — login / setup / onboarding
@@ -463,3 +483,38 @@ pre.code { user-select: all; }
 }
 .btn.primary:hover { box-shadow: 0 6px 20px rgba(79,140,255,.5); }
 .btn.primary:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Mobile adaptations (≤480px)
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 480px) {
+  /* ── header: collapse action buttons ──── */
+  .header-actions { display: none; }
+  .header-more { display: block !important; }
+
+  .brand .sub { display: none; }
+  .header-inner { padding: 12px 14px; }
+  .tabs { padding: 0 14px; }
+  #app-main { padding: 0 14px 50px; }
+
+  /* ── modal → bottom-sheet ─────────────── */
+  .modal-backdrop { align-items: flex-end; padding: 0; }
+  .modal {
+    width: 100%; max-width: 100vw; max-height: 92vh;
+    border-radius: 16px 16px 0 0; border-bottom: none;
+    animation: sheetUp .22s cubic-bezier(.4,0,.2,1);
+  }
+  .modal.wide { width: 100%; max-width: 100vw; }
+  .modal-head { border-radius: 16px 16px 0 0; }
+  .modal-foot { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+
+  /* ── stats grid: 2-col ────────────────── */
+  .stats { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+}
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+/* ── show more-button only on narrow ─── */
+@media (min-width: 481px) {
+  .header-more { display: none; }
+  .header-actions { display: flex; gap: 10px; }
+}
