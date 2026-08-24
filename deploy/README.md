@@ -1,9 +1,9 @@
 # Snet 服务器部署
 
 已部署：Hostodo VPS `us-tpa01-8304f360`（66.187.6.46，Debian 13 x86_64，root + systemd）。
-对外服务：`https://Snet.uizhi.eu.org:8090`（HTTPS 协调）+ `udp://Snet.uizhi.eu.org:51820..51883`（对称 NAT 中继）。
+对外服务：`https://snet.uizhi.eu.org:8090`（HTTPS 协调）+ `udp://snet.uizhi.eu.org:51820..51883`（对称 NAT 中继）。
 
-> 原目标 45.202.246.18 因 IP 被墙弃用。域名 `Snet.uizhi.eu.org` A 记录指向 66.187.6.46。
+> 原目标 45.202.246.18 因 IP 被墙弃用。域名 `snet.uizhi.eu.org` A 记录指向 66.187.6.46。
 > 协调端口 8090/tcp（HTTPS）、探测 8091/udp、中继 51820..51883/udp 均已放行并验证。
 
 ## 1. 上传二进制
@@ -13,21 +13,22 @@
 
 ```bash
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o build/linux-amd64/... ./cmd/server ./cmd/client/snetd ./cmd/client/snetctl
-scp build/linux-amd64/server build/linux-amd64/snetd build/linux-amd64/snetctl root@66.187.6.46:/usr/local/Snet/bin/
+scp build/linux-amd64/server root@66.187.6.46:/usr/local/snet/bin/
 ```
 
 ## 2. 目录、权限、环境文件、TLS 证书
 
 ```bash
 ssh root@66.187.6.46
-install -d -m 700 /var/lib/Snet
-install -d -m 755 /usr/local/Snet/bin
-install -d -m 700 /usr/local/Snet/certs
-chmod 755 /usr/local/Snet/bin/*
+install -d -m 700 /var/lib/snet
+install -d -m 755 /usr/local/snet/bin
+install -d -m 700 /usr/local/snet/certs
+chmod 755 /usr/local/snet/bin/*
 
 # admin 登录：管理页账号（admin 数据 API 同时兼容 session token 与 VNET_ADMIN_TOKEN）
+# 全部留空也可以：首次访问 /admin 会进入 Web 引导初始化向导创建管理员（见第 6 节）
 umask 077
-cat > /etc/Snet-server.env <<'EOF'
+cat > /etc/snet-server.env <<'EOF'
 VNET_ADMIN_USER=admin
 VNET_ADMIN_PASSWORD=CHANGE_ME_strong_password
 # 可选：静态 token（历史兼容，与登录会话并存）
@@ -36,33 +37,33 @@ EOF
 
 # 自签名服务器证书（客户端用 CA 固定校验，见"客户端接入"）
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-  -keyout /usr/local/Snet/certs/server-key.pem \
-  -out /usr/local/Snet/certs/server.pem \
-  -subj "/CN=Snet.uizhi.eu.org" \
-  -addext "subjectAltName=DNS:Snet.uizhi.eu.org,IP:66.187.6.46,DNS:localhost"
-chmod 600 /usr/local/Snet/certs/server-key.pem
+  -keyout /usr/local/snet/certs/server-key.pem \
+  -out /usr/local/snet/certs/server.pem \
+  -subj "/CN=snet.uizhi.eu.org" \
+  -addext "subjectAltName=DNS:snet.uizhi.eu.org,IP:66.187.6.46,DNS:localhost"
+chmod 600 /usr/local/snet/certs/server-key.pem
 ```
 
 ## 3. systemd 服务
 
 ```bash
-install -m 644 deploy/Snet-server.service /etc/systemd/system/Snet-server.service
+install -m 644 deploy/snet-server.service /etc/systemd/system/snet-server.service
 systemctl daemon-reload
-systemctl enable --now Snet-server
-systemctl status Snet-server
+systemctl enable --now snet-server
+systemctl status snet-server
 curl -sk https://127.0.0.1:8090/healthz   # 应返回 200 OK
 ```
 
-注意 `deploy/Snet-server.service` 中 `ExecStart` 需按实际环境填 `-relay-host`
+注意 `deploy/snet-server.service` 中 `ExecStart` 需按实际环境填 `-relay-host`
 （中继对外公布的域名/IP）、证书路径与 relay 端口范围：
 
 ```
-ExecStart=/usr/local/Snet/bin/server -addr 0.0.0.0:8090 \
+ExecStart=/usr/local/snet/bin/server -addr 0.0.0.0:8090 \
   -probe-addr 0.0.0.0:8091 \
-  -db /var/lib/Snet/Snet.db \
-  -tls-cert /usr/local/Snet/certs/server.pem \
-  -tls-key /usr/local/Snet/certs/server-key.pem \
-  -relay-host Snet.uizhi.eu.org -relay-base 51820 -relay-count 64 \
+  -db /var/lib/snet/snet.db \
+  -tls-cert /usr/local/snet/certs/server.pem \
+  -tls-key /usr/local/snet/certs/server-key.pem \
+  -relay-host snet.uizhi.eu.org -relay-base 51820 -relay-count 64 \
   -zombie-ttl 72h
 ```
 
@@ -81,7 +82,7 @@ ExecStart=/usr/local/Snet/bin/server -addr 0.0.0.0:8090 \
 ```bash
 # 开启方式一：命令行标志
 ExecStart=.../server -require-device-auth ...
-# 开启方式二：环境文件（/etc/Snet-server.env）
+# 开启方式二：环境文件（/etc/snet-server.env）
 VNET_REQUIRE_DEVICE_AUTH=1
 ```
 
@@ -105,11 +106,11 @@ iptables -A INPUT -p udp --dport 51820:51883 -j ACCEPT  # UDP 中继池
 
 ## 5. 客户端接入
 
-- 桌面端「设置」里服务器填 `https://Snet.uizhi.eu.org:8090`，并指定 CA 固定证书
+- 桌面端「设置」里服务器填 `https://snet.uizhi.eu.org:8090`，并指定 CA 固定证书
   （服务器公钥证书 `server.pem`，客户端 `snetd --ca-path` / `snetctl --ca-path`）。
 - 客户端为多网络模式：一台机器可加入多个网络并存（每个网络独立 utun + WG 端口，
   端口从 `--port` 起自动探测空闲）；单协调服务器（多服务器请另跑一个 daemon）。
-- 创建设备身份：`snetd` 首次启动生成 16 位设备 ID（macOS 取 IOPlatformUUID、Linux 取 DMI product_uuid 派生，虚拟机等取不到时回退随机）存于 `/usr/local/Snet/device.id`（卸载重装不丢失；硬件 ID 派生，重装系统也不变）；新创建的网络自动认领为 owner（迁移旧网络：`snetctl claim --nid`）。
+- 创建设备身份：`snetd` 首次启动生成 16 位设备 ID（macOS 取 IOPlatformUUID、Linux 取 DMI product_uuid 派生，虚拟机等取不到时回退随机）存于 `/usr/local/snet/device.id`（卸载重装不丢失；硬件 ID 派生，重装系统也不变）；新创建的网络自动认领为 owner（迁移旧网络：`snetctl claim --nid`）。
 - 创建网络 → 生成邀请链接/配对码 → 另一端复制链接加入（加入方同样需 `--ca-path`）。
 - 客户端创建的网络 72h 无任何设备在线会被服务端清理；owner 可在管理页/客户端看到僵尸状态。
   服务端在管理页创建的网络无此限制，配对码长期有效、可反复加入（管理页重置即作废旧码）。
@@ -118,33 +119,62 @@ iptables -A INPUT -p udp --dport 51820:51883 -j ACCEPT  # UDP 中继池
 
 ## 6. 管理页
 
-设置 `VNET_ADMIN_USER`/`VNET_ADMIN_PASSWORD`（或保留 `-admin-token`）后：
-- 页面：`https://Snet.uizhi.eu.org:8090/admin`（登录后使用）
+### 首次初始化（Web 引导向导）
+
+服务器未配置任何管理员（无 `-admin-token`、无环境变量账号、库内无账号）时，
+访问 `/admin` 会显示初始化向导：设置管理员用户名和密码后即可登录使用，
+无需提前在服务器上准备凭据。`cmd/server` 启动时若无凭据会打印对应提示。
+一旦完成初始化（或配置了环境变量/静态 token），向导自动隐藏，接口返回 `{"available":false}`。
+
+### 登录与权限
+
+- 页面：`https://snet.uizhi.eu.org:8090/admin`
 - 登录：用户名/密码 → 内存 session token（24h 过期，登录限频 5/min）。
-  首次部署时 `VNET_ADMIN_PASSWORD` 作为引导密码，登录成功即写入数据库（bcrypt 哈希）；
+  通过 `VNET_ADMIN_PASSWORD` 引导的密码在首次登录时写入数据库（bcrypt 哈希）；
   之后改密走页面右上角「修改密码」，`VNET_ADMIN_PASSWORD` 不再生效（改密后所有会话失效需重登）。
 - 支持（admin 对所有网络拥有绝对管理权，含客户端 owner 网络）：
   - 创建网络：无网主、豁免 72h 清理、配对码长期有效可反复加入、客户端无法认领
     （需要手机等外部设备时用「添加外部节点」生成节点配置）
-  - 列网络（含在线/僵尸状态）/ 列设备 / 查看网络成员 / 踢节点 /
-    重置配对码 / 编辑网络设置（名称、网段、待批准开关）/ 审批或拒绝待加入请求 /
-    删除网络
-  - 设备授权码：「设备」页批量生成（1..100）/ 查看明文与绑定状态 / 吊销 / 解绑设备
+  - 网络卡片操作收在名称右侧「⋯ 更多操作」菜单：查看/收起成员 / 编辑设置 /
+    添加节点 / 邀请 / 查看配对码 / 删除网络；有待批准请求时名称行保留
+    「待批准 (N)」快捷按钮
+  - 三个列表（网络/设备/授权码）均为服务端分页（每页 20 条），网络支持按名称/ID/
+    网段搜索与 在线/离线/服务端管理/僵尸/待批准 状态筛选
 - 数据 API 兼容 `Authorization: Bearer <VNET_ADMIN_TOKEN>`（静态 token 双通道，不支持改密）
+
+### 数据 API 形状
+
+分页列表统一返回信封 `{items, total, page, pageSize}`；查询参数
+`page`（≥1）、`page_size`（默认 20，上限 100）。越界页码自动收敛到最后一页；
+排序固定创建时间倒序（最新在前）。
+
+```bash
+# 网络列表：q=关键词(名称/ID/网段) status=online|offline|managed|zombie|pending
+curl -sk 'https://snet.uizhi.eu.org:8090/admin/networks?page=1&page_size=20&status=pending' \
+  -H "Authorization: Bearer $VNET_ADMIN_TOKEN"
+# 设备列表：q=关键词(ID/名称/公钥)
+curl -sk 'https://snet.uizhi.eu.org:8090/admin/devices?q=dev-abc' -H "Authorization: Bearer $VNET_ADMIN_TOKEN"
+# 授权码列表
+curl -sk 'https://snet.uizhi.eu.org:8090/admin/devices/authcodes?page=2' -H "Authorization: Bearer $VNET_ADMIN_TOKEN"
+# 总览统计（徽标/汇总用，免拉全量列表）
+curl -sk https://snet.uizhi.eu.org:8090/admin/stats -H "Authorization: Bearer $VNET_ADMIN_TOKEN"
+# → {"networksTotal":..,"networksOnline":..,"nodesTotal":..,"pendingTotal":..,
+#     "devicesTotal":..,"codesTotal":..,"codesBound":..,"codesFree":..,"recentNetworks":[..]}
+```
 
 ### 设备授权码（开启强制授权后的准入流程）
 
 ```bash
 # 1) 管理员生成授权码（管理页「设备」页，或数据 API）
-curl -sk -X POST https://Snet.uizhi.eu.org:8090/admin/devices/authcodes/generate \
+curl -sk -X POST https://snet.uizhi.eu.org:8090/admin/devices/authcodes/generate \
   -H "Authorization: Bearer $VNET_ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"count":5}'          # 返回 codes（明文）与 ids（吊销用）
 
 # 2) 客户端绑定（桌面端「设置」→「链接服务器」，或命令行）
-snetctl bind --server https://Snet.uizhi.eu.org:8090 --code XXXX...   # 需 -ca-path（如适用）
+snetctl bind --server https://snet.uizhi.eu.org:8090 --code XXXX...   # 需 -ca-path（如适用）
 
 # 3) 运维
-curl -sk https://Snet.uizhi.eu.org:8090/admin/devices/authcodes \
+curl -sk https://snet.uizhi.eu.org:8090/admin/devices/authcodes \
   -H "Authorization: Bearer $VNET_ADMIN_TOKEN"                        # 列表（明文+绑定状态）
 curl -sk -X POST .../admin/devices/authcodes/revoke  -d '{"id":"..."}'     # 吊销某码（204）
 curl -sk -X POST .../admin/devices/authcodes/unbind -d '{"deviceId":"..."}' # 解绑设备（204）
@@ -153,10 +183,10 @@ curl -sk -X POST .../admin/devices/authcodes/unbind -d '{"deviceId":"..."}' # �
 ## 7. 运维
 
 ```bash
-journalctl -u Snet-server -f
-# 数据落盘于 /var/lib/Snet/Snet.db（bbolt），重启不丢
+journalctl -u snet-server -f
+# 数据落盘于 /var/lib/snet/snet.db（bbolt），重启不丢
 # 备份：停止服务后 cp 该文件（或定期拷出）
-# 已部署环境的 admin token 记录于 /etc/Snet-server.env（VNET_ADMIN_TOKEN）
+# 已部署环境的 admin token 记录于 /etc/snet-server.env（VNET_ADMIN_TOKEN）
 # 证书 10 年有效；到期前需重新生成 server.pem/server-key.pem 并同步到所有客户端
 ```
 
@@ -219,7 +249,7 @@ curl.exe http://127.0.0.1:19432/ctl/status   # daemon 状态
 
 
 服务器创建网络后，用手机导入对端配置（QR 或文件，见 `deploy/phone-android.conf`）：
-- `Endpoint` 填服务器中继地址 `Snet.uizhi.eu.org:51820`（域名，App 会自行解析）；
+- `Endpoint` 填服务器中继地址 `snet.uizhi.eu.org:51820`（域名，App 会自行解析）；
 - `PersistentKeepalive` 建议 **10**（运营商 CGNAT 会话超时短，保活过慢会周期性丢包）；
 - 重要：在系统设置中把 WireGuard 的电池/后台限制设为「无限制」，
   否则手机 Doze 会挂起隧道、导致入向流量丢失。
@@ -245,7 +275,7 @@ docker compose -f deploy/docker/docker-compose.yml build
 ### 首次运行（自动绑定）
 
 ```bash
-SNET_SERVER=https://Snet.uizhi.eu.org:8090 \
+SNET_SERVER=https://snet.uizhi.eu.org:8090 \
 SNET_BIND_CODE=你的授权码 \
 docker compose -f deploy/docker/docker-compose.yml up -d
 ```
@@ -259,7 +289,7 @@ docker compose -f deploy/docker/docker-compose.yml up -d
 ### 首次运行（自动绑定）
 
 ```bash
-SNET_SERVER=https://Snet.uizhi.eu.org:8090 \
+SNET_SERVER=https://snet.uizhi.eu.org:8090 \
 SNET_BIND_CODE=你的授权码 \
 docker compose -f deploy/docker/docker-compose.yml up -d
 ```
@@ -285,7 +315,7 @@ docker compose -f deploy/docker/docker-compose.yml up -d
 
 # 2. 进入容器手动绑定
 docker exec -it snetd sh
-snetctl -ctl 127.0.0.1:19432 bind --server https://Snet.uizhi.eu.org:8090 --code 你的授权码
+snetctl -ctl 127.0.0.1:19432 bind --server https://snet.uizhi.eu.org:8090 --code 你的授权码
 ```
 
 ### 管理操作
