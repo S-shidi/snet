@@ -1,5 +1,6 @@
 package com.snet.app
 
+import android.content.Context
 import android.util.Log
 import snetbind.SnetCore
 import java.util.concurrent.atomic.AtomicBoolean
@@ -7,15 +8,26 @@ import java.util.concurrent.atomic.AtomicBoolean
 object SnetBridge {
     private const val TAG = "SnetBridge"
     private var core: SnetCore? = null
+    private var appContext: Context? = null
     private var configDir: String = ""
     private val started = AtomicBoolean(false)
+    @Volatile private var pendingStart = false
+    @Volatile private var lastServerAddr = ""
+    @Volatile private var lastServerCA = ""
 
-    fun init(dir: String) {
+    fun init(ctx: Context, dir: String) {
+        appContext = ctx.applicationContext
         configDir = dir
         try {
-            core = SnetCore("$dir/daemon.json")
+            core = SnetCore("$dir")
             core?.setDeviceIDFile("$dir/device.key")
-            Log.e(TAG, "SnetCore initialized OK, configDir=$dir")
+            // Compute hardware-bound device ID and pass to Go layer
+            val hwID = HardwareID.compute(ctx)
+            core?.setHardwareID(hwID)
+            // Report a human-friendly device name (hostname is generic on Android)
+            val model = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
+            core?.setDeviceName(model)
+            Log.d(TAG, "SnetCore OK, hwID=$hwID")
         } catch (e: UnsatisfiedLinkError) {
             Log.e(TAG, "FATAL: Native library not loaded", e)
         } catch (e: Exception) {
@@ -25,8 +37,22 @@ object SnetBridge {
 
     fun start(serverAddr: String, serverCA: String) {
         val c = core ?: run { Log.e(TAG, "Core not initialized"); return }
-        if (started.get()) return
-        val fd = SnetVpnService.tunFd?.fd ?: run { Log.e(TAG, "TUN fd not ready"); return }
+        val fd = SnetVpnService.tunFd?.fd
+        if (fd == null) {
+            Log.d(TAG, "TUN fd not ready — requesting VPN service start")
+            lastServerAddr = serverAddr
+            lastServerCA = serverCA
+            pendingStart = true
+            try {
+                val ctx = appContext ?: return
+                val i = android.content.Intent(ctx, SnetVpnService::class.java)
+                i.action = "START"
+                ctx.startForegroundService(i)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start VPN service", e)
+            }
+            return
+        }
         try {
             c.start(fd.toLong(), "$configDir/device.key", serverAddr, serverCA)
             started.set(true)
@@ -39,11 +65,17 @@ object SnetBridge {
         if (!started.get()) {
             val c = core ?: return
             try {
-                c.start(fd.toLong(), "$configDir/device.key", "", "")
+                val sa = if (pendingStart) lastServerAddr else ""
+                val sc = if (pendingStart) lastServerCA else ""
+                pendingStart = false
+                c.start(fd.toLong(), "$configDir/device.key", sa, sc)
                 started.set(true)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start SnetCore on TUN ready", e)
             }
+        } else {
+            // Daemon already exists — reuse Start() which detects existing daemon
+            core?.start(fd.toLong(), "$configDir/device.key", "", "")
         }
     }
 

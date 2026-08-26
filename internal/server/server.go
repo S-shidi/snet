@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -44,10 +45,12 @@ type Options struct {
 }
 
 const (
-	defaultCreatePerHour = 50
-	defaultJoinPerMinute = 60
-	defaultBindPerMinute = 20
-	sessionTTL           = 24 * time.Hour
+	defaultCreatePerHour  = 50
+	defaultJoinPerMinute  = 60
+	defaultBindPerMinute  = 20
+	defaultRegisterPerMin = 30
+	sessionTTL            = 24 * time.Hour
+	limiterPruneInterval  = time.Minute
 )
 
 type sessionEntry struct {
@@ -55,22 +58,23 @@ type sessionEntry struct {
 }
 
 type handler struct {
-	s       *Store
-	opts    Options
-	creates *rateLimiter
-	joins   *rateLimiter
-	binds   *rateLimiter
-	logins  *rateLimiter
+	s         *Store
+	opts      Options
+	creates   *rateLimiter
+	joins     *rateLimiter
+	binds     *rateLimiter
+	logins    *rateLimiter
+	registers *rateLimiter
 
-	// adminUser is the active session-login username: seeded from
-	// opts.AdminUser on first start, loaded from the store on later starts,
-	// or created through the web setup wizard (POST /admin/bootstrap).
-	adminUser string
+	// adminMu guards adminUser and adminPassHash, which are rotated while
+	// the server is serving (bootstrap wizard, password change).
+	adminMu       sync.RWMutex
+	adminUser     string // active session-login username (see field docs below)
+	adminPassHash string // active bcrypt hash of the admin login password
 
-	// adminPassHash is the active bcrypt hash of the admin login password. It
-	// is seeded from opts.AdminPass on first start and can be rotated via
-	// POST /admin/password.
-	adminPassHash string
+	// bootstrapMu serializes first-run account creation so two simultaneous
+	// wizard submissions cannot both pass the availability check.
+	bootstrapMu sync.Mutex
 
 	sessMu   sync.Mutex
 	sessions map[string]sessionEntry // key = SHA-256 hex of session token
@@ -89,13 +93,14 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		joinPerMinute = defaultJoinPerMinute
 	}
 	h := &handler{
-		s:        s,
-		opts:     opts,
-		creates:  newRateLimiter(createPerHour, time.Hour),
-		joins:    newRateLimiter(joinPerMinute, time.Minute),
-		binds:    newRateLimiter(defaultBindPerMinute, time.Minute),
-		logins:   newRateLimiter(5, time.Minute),
-		sessions: make(map[string]sessionEntry),
+		s:         s,
+		opts:      opts,
+		creates:   newRateLimiter(createPerHour, time.Hour),
+		joins:     newRateLimiter(joinPerMinute, time.Minute),
+		binds:     newRateLimiter(defaultBindPerMinute, time.Minute),
+		logins:    newRateLimiter(5, time.Minute),
+		registers: newRateLimiter(defaultRegisterPerMin, time.Minute),
+		sessions:  make(map[string]sessionEntry),
 	}
 	if opts.RequireDeviceAuth {
 		s.SetRequireDeviceAuth(true)
@@ -104,15 +109,30 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		if hash, err := s.EnsureAdminPassword(opts.AdminUser, opts.AdminPass); err != nil {
 			log.Printf("admin: seed password: %v", err)
 		} else {
+			h.adminMu.Lock()
 			h.adminUser = opts.AdminUser
 			h.adminPassHash = hash
+			h.adminMu.Unlock()
 		}
 	} else if users := s.AdminUsernames(); len(users) > 0 {
 		// Restart without flags: reload the previously bootstrapped/configured
 		// account so login keeps working.
+		h.adminMu.Lock()
 		h.adminUser = users[0]
 		h.adminPassHash = s.adminPasswordHash(users[0])
+		h.adminMu.Unlock()
 	}
+	// Periodically drop expired limiter windows so per-IP maps cannot grow
+	// without bound from scanning sources.
+	go func() {
+		t := time.NewTicker(limiterPruneInterval)
+		defer t.Stop()
+		for range t.C {
+			for _, rl := range []*rateLimiter{h.creates, h.joins, h.binds, h.logins, h.registers} {
+				rl.prune()
+			}
+		}
+	}()
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +146,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		var req protocol.CreateNetworkReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		resp, err := s.CreateNetwork(req.PublicKey, req.DeviceID, req.Name, req.Subnet, req.ApprovalRequired)
@@ -148,7 +168,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		nid := r.PathValue("nid")
 		var req protocol.JoinReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		resp, err := s.Join(nid, req.Code, req.PublicKey, req.DeviceID)
@@ -163,16 +183,22 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		case errors.Is(err, ErrNetworkFull):
 			writeErr(w, http.StatusConflict, err)
 		case err != nil:
-			writeErr(w, http.StatusInternalServerError, err)
+			writeInternalErr(w, err)
 		default:
 			writeJSON(w, http.StatusOK, resp)
 		}
 	})
 
 	mux.HandleFunc("POST /api/v1/devices", func(w http.ResponseWriter, r *http.Request) {
+		// Unauthenticated endpoint that persists a record per unique deviceId:
+		// rate limit per IP to deter store-growth abuse.
+		if h.registers.blocked(h.clientIP(r)) {
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
+			return
+		}
 		var req protocol.RegisterDeviceReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if err := s.RegisterDevice(req.DeviceID, req.PublicKey, req.Name); err != nil {
@@ -199,14 +225,14 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		var req protocol.BindDeviceReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if req.Code == "" {
 			writeErr(w, http.StatusBadRequest, errors.New("缺少设备授权码"))
 			return
 		}
-		deviceToken, err := s.BindDevice(req.Code, req.DeviceID, req.PublicKey)
+		deviceToken, err := s.BindDevice(req.Code, req.DeviceID, req.PublicKey, req.Name)
 		if err != nil {
 			handleStoreErr(w, err)
 			return
@@ -248,7 +274,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		var req protocol.UpdateNodePublicKeyReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if req.DeviceID == "" || req.PublicKey == "" {
@@ -269,7 +295,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux.HandleFunc("PUT /api/v1/networks/{nid}/nodes/{nodeID}/endpoint", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.SetEndpointReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if err := s.SetEndpoint(tokenOf(r), req.Endpoint); err != nil {
@@ -291,7 +317,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux.HandleFunc("PATCH /api/v1/networks/{nid}/subnets", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.UpdateSubnetsReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		token := tokenOf(r)
@@ -313,7 +339,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/v1/networks/{nid}/nodes/{nodeID}/device", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.SetNodeDeviceReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if err := s.SetNodeDevice(tokenOf(r), r.PathValue("nodeID"), req.DeviceID); err != nil {
@@ -352,7 +378,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		}
 		var req protocol.NetworkSettingsReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if err := s.UpdateNetworkSettings(tokenOf(r), req.Name, req.Subnet, req.ApprovalRequired); err != nil {
@@ -437,7 +463,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux.HandleFunc("POST /api/v1/networks/{nid}/claim", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.ClaimReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if err := s.ClaimNetwork(r.PathValue("nid"), tokenOf(r), req.DeviceID); err != nil {
@@ -452,11 +478,17 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	// deployment can initialize the admin account from the web UI; every
 	// other admin route is gated by requireAdmin (404 while locked).
 	mux.HandleFunc("POST /admin/login", h.adminLogin)
+	mux.HandleFunc("POST /admin/logout", h.requireAdmin(h.adminLogout))
 	mux.HandleFunc("GET /admin/bootstrap", h.adminBootstrapStatus)
 	mux.HandleFunc("POST /admin/bootstrap", h.adminBootstrapCreate)
 	mux.HandleFunc("POST /admin/password", h.requireAdmin(h.adminPasswordChange))
 	mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// The page is a single self-contained HTML file: inline script/style,
+		// QR codes as data/blob images, same-origin API calls, nothing else.
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "+
+				"img-src data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		data, _ := adminPage.ReadFile("admin.html")
 		_, _ = w.Write(data)
 	})
@@ -469,7 +501,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux.HandleFunc("POST /admin/networks", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.AdminCreateNetworkReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		resp, err := s.AdminCreateNetwork(req.Name, req.Subnet, req.ApprovalRequired)
@@ -498,7 +530,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux.HandleFunc("PATCH /admin/networks/{nid}", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.NetworkSettingsReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if err := s.AdminUpdateNetwork(r.PathValue("nid"), req.Name, req.Subnet, req.ApprovalRequired); err != nil {
@@ -586,7 +618,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux.HandleFunc("POST /admin/devices/authcodes/generate", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.AdminGenerateAuthCodesReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
 		if req.Count < 1 || req.Count > 100 {
@@ -664,7 +696,26 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	return logRequests(limitBody(mux))
+	return secureHeaders(logRequests(limitBody(mux)))
+}
+
+// secureHeaders sets baseline protective response headers. API and admin
+// responses are marked no-store so bearer tokens, pairing codes and plaintext
+// authorization codes never land in shared caches or browser disk cache.
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Frame-Options", "DENY")
+		if strings.HasPrefix(r.URL.Path, "/admin") || strings.HasPrefix(r.URL.Path, "/api/") {
+			h.Set("Cache-Control", "no-store")
+		}
+		if r.TLS != nil {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // adminUnlocked reports whether any admin authentication path is active:
@@ -687,17 +738,36 @@ func adminPageParams(r *http.Request) (page, pageSize int) {
 }
 
 func (h *handler) adminUnlocked() bool {
-	return h.opts.AdminToken != "" || (h.adminUser != "" && h.adminPassHash != "")
+	user, hash := h.creds()
+	return h.opts.AdminToken != "" || (user != "" && hash != "")
+}
+
+// creds returns the active session-login username and password hash under a
+// read lock.
+func (h *handler) creds() (user, hash string) {
+	h.adminMu.RLock()
+	defer h.adminMu.RUnlock()
+	return h.adminUser, h.adminPassHash
+}
+
+// setCreds rotates the active credentials under the write lock.
+func (h *handler) setCreds(user, hash string) {
+	h.adminMu.Lock()
+	defer h.adminMu.Unlock()
+	h.adminUser = user
+	h.adminPassHash = hash
 }
 
 // bootstrapAvailable reports whether the first-run web setup wizard may run:
 // no static token, no configured credentials and no stored admin account.
 func (h *handler) bootstrapAvailable() bool {
-	return h.opts.AdminToken == "" && h.opts.AdminUser == "" && h.adminPassHash == ""
+	_, hash := h.creds()
+	return h.opts.AdminToken == "" && h.opts.AdminUser == "" && hash == ""
 }
 
 func (h *handler) adminLogin(w http.ResponseWriter, r *http.Request) {
-	if h.adminUser == "" || h.adminPassHash == "" {
+	user, hash := h.creds()
+	if user == "" || hash == "" {
 		writeErr(w, http.StatusNotFound, ErrNotFound)
 		return
 	}
@@ -707,18 +777,18 @@ func (h *handler) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	var req protocol.AdminLoginReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, ErrBadJSON)
 		return
 	}
-	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(h.adminUser)) == 1
-	passOK := h.adminPassHash != "" && bcrypt.CompareHashAndPassword([]byte(h.adminPassHash), []byte(req.Password)) == nil
+	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(user)) == 1
+	passOK := hash != "" && bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) == nil
 	if !userOK || !passOK {
 		writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
 		return
 	}
 	tok, err := randomToken()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeInternalErr(w, err)
 		return
 	}
 	expires := time.Now().Add(sessionTTL)
@@ -740,6 +810,11 @@ func (h *handler) adminBootstrapStatus(w http.ResponseWriter, r *http.Request) {
 // token/credentials are configured; the created account is logged in
 // immediately.
 func (h *handler) adminBootstrapCreate(w http.ResponseWriter, r *http.Request) {
+	// Serialize the whole flow so two simultaneous first-run submissions are
+	// decided by the store-level ErrAdminExists guard, not a racy availability
+	// check.
+	h.bootstrapMu.Lock()
+	defer h.bootstrapMu.Unlock()
 	if !h.bootstrapAvailable() {
 		if h.adminUnlocked() {
 			writeErr(w, http.StatusConflict, ErrAdminExists)
@@ -757,7 +832,7 @@ func (h *handler) adminBootstrapCreate(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, ErrBadJSON)
 		return
 	}
 	user := strings.TrimSpace(req.Username)
@@ -777,16 +852,15 @@ func (h *handler) adminBootstrapCreate(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrAdminExists) {
 			writeErr(w, http.StatusConflict, err)
 		} else {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeInternalErr(w, err)
 		}
 		return
 	}
-	h.adminUser = user
-	h.adminPassHash = hash
+	h.setCreds(user, hash)
 	log.Printf("admin: account %q initialized via web bootstrap", user)
 	tok, err := randomToken()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeInternalErr(w, err)
 		return
 	}
 	expires := time.Now().Add(sessionTTL)
@@ -800,13 +874,14 @@ func (h *handler) adminBootstrapCreate(w http.ResponseWriter, r *http.Request) {
 // password, persists the new bcrypt hash and invalidates every existing admin
 // session so all clients must log in again.
 func (h *handler) adminPasswordChange(w http.ResponseWriter, r *http.Request) {
-	if h.adminUser == "" || h.adminPassHash == "" {
+	user, hash := h.creds()
+	if user == "" || hash == "" {
 		writeErr(w, http.StatusNotFound, ErrNotFound)
 		return
 	}
 	var req protocol.AdminPasswordReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, ErrBadJSON)
 		return
 	}
 	if req.OldPassword == "" || req.NewPassword == "" {
@@ -821,18 +896,34 @@ func (h *handler) adminPasswordChange(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("新密码不能与旧密码相同"))
 		return
 	}
-	if bcrypt.CompareHashAndPassword([]byte(h.adminPassHash), []byte(req.OldPassword)) != nil {
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.OldPassword)) != nil {
 		writeErr(w, http.StatusUnauthorized, errors.New("旧密码不正确"))
 		return
 	}
-	newHash, err := h.s.SetAdminPassword(h.adminUser, req.NewPassword)
+	newHash, err := h.s.SetAdminPassword(user, req.NewPassword)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeInternalErr(w, err)
 		return
 	}
-	h.adminPassHash = newHash
+	h.setCreds(user, newHash)
 	h.sessMu.Lock()
 	h.sessions = make(map[string]sessionEntry)
+	h.sessMu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// adminLogout invalidates the caller's session. Static-token callers get a
+// success no-op: a static token cannot be revoked per-session.
+func (h *handler) adminLogout(w http.ResponseWriter, r *http.Request) {
+	tok := tokenOf(r)
+	if tok != "" && !h.sessionValid(tok) {
+		// Static token or already-invalid session: still report success so
+		// the client can always clear its local state.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	h.sessMu.Lock()
+	delete(h.sessions, hashToken(tok))
 	h.sessMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -940,11 +1031,27 @@ func (rl *rateLimiter) blocked(ip string) bool {
 	return wc.count > rl.limit
 }
 
+// prune deletes entries whose window has expired so the per-IP map does not
+// grow without bound over the process lifetime.
+func (rl *rateLimiter) prune() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	for ip, wc := range rl.seen {
+		if now.After(wc.reset) {
+			delete(rl.seen, ip)
+		}
+	}
+}
+
 func (h *handler) clientIP(r *http.Request) string {
 	if h.opts.TrustProxy {
+		// Use the RIGHTMOST XFF entry: the leftmost is fully client-controlled,
+		// while the rightmost was appended by the trusted proxy itself. The
+		// proxy must still be configured to strip inbound spoofed XFF chains.
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.Index(xff, ","); i > 0 {
-				xff = xff[:i]
+			if i := strings.LastIndex(xff, ","); i >= 0 {
+				xff = xff[i+1:]
 			}
 			if ip := strings.TrimSpace(xff); ip != "" {
 				return ip
@@ -973,8 +1080,16 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrAuthCodeFull):
 		writeErr(w, http.StatusConflict, errors.New("设备授权码可绑定的设备数已满"))
 	default:
-		writeErr(w, http.StatusInternalServerError, err)
+		log.Printf("internal error: %v", err)
+		writeErr(w, http.StatusInternalServerError, ErrInternal)
 	}
+}
+
+// writeInternalErr logs the real error and returns a generic message so
+// internal details never leak to clients.
+func writeInternalErr(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	writeErr(w, http.StatusInternalServerError, ErrInternal)
 }
 
 // writeEnrollmentErr renders the "device not authorized" response for the
@@ -1001,9 +1116,26 @@ func writeErr(w http.ResponseWriter, status int, err error) {
 
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s from %s", r.Method, r.URL.Path, clientIPOf(r))
+		log.Printf("%s %s from %s", r.Method, sanitizeLog(r.URL.Path), sanitizeLog(clientIPOf(r)))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sanitizeLog escapes control characters so request paths cannot inject
+// forged lines into the log stream.
+func sanitizeLog(s string) string {
+	if strings.IndexFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0 {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+			continue
+		}
+		fmt.Fprintf(&b, "\\x%02x", r)
+	}
+	return b.String()
 }
 
 func clientIPOf(r *http.Request) string {

@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,7 +54,7 @@ func TestCreateAndJoinFlow(t *testing.T) {
 	ts, _ := newTestServer(t)
 
 	var created protocol.CreateNetworkResp
-	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "", protocol.CreateNetworkReq{PublicKey: "AAA=="}, &created)
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "", protocol.CreateNetworkReq{PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &created)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d", resp.StatusCode)
 	}
@@ -68,21 +67,21 @@ func TestCreateAndJoinFlow(t *testing.T) {
 
 	var joined protocol.JoinResp
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
-		protocol.JoinReq{Code: created.PairingCode, PublicKey: "BBB=="}, &joined)
+		protocol.JoinReq{Code: created.PairingCode, PublicKey: "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t="}, &joined)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("join status = %d", resp.StatusCode)
 	}
 	if joined.IP != "10.88.0.2" {
 		t.Fatalf("joiner ip = %q, want 10.88.0.2", joined.IP)
 	}
-	if len(joined.Peers) != 1 || joined.Peers[0].PublicKey != "AAA==" {
+	if len(joined.Peers) != 1 || joined.Peers[0].PublicKey != "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=" {
 		t.Fatalf("joiner peers wrong: %+v", joined.Peers)
 	}
 
 	// owner sees the joiner in its peer list
 	var peers protocol.PeersResp
 	resp = doJSON(t, http.MethodGet, ts.URL+"/api/v1/networks/"+created.NetworkID+"/peers", created.Token, nil, &peers)
-	if resp.StatusCode != http.StatusOK || len(peers.Peers) != 1 || peers.Peers[0].PublicKey != "BBB==" {
+	if resp.StatusCode != http.StatusOK || len(peers.Peers) != 1 || peers.Peers[0].PublicKey != "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=" {
 		t.Fatalf("owner peers wrong: %d %+v", resp.StatusCode, peers.Peers)
 	}
 
@@ -102,11 +101,11 @@ func TestPairingCodeSecurity(t *testing.T) {
 	ts, _ := newTestServer(t)
 
 	var created protocol.CreateNetworkResp
-	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "", protocol.CreateNetworkReq{PublicKey: "AAA=="}, &created)
+	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "", protocol.CreateNetworkReq{PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &created)
 
 	// wrong code rejected
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
-		protocol.JoinReq{Code: "WRONGCODE123", PublicKey: "BBB=="}, nil)
+		protocol.JoinReq{Code: "WRONGCODE123", PublicKey: "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t="}, nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong code status = %d, want 401", resp.StatusCode)
 	}
@@ -114,10 +113,10 @@ func TestPairingCodeSecurity(t *testing.T) {
 	// 5 wrong attempts lock the code (subsequent attempts incl. correct code get 429)
 	for i := 0; i < 4; i++ {
 		doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
-			protocol.JoinReq{Code: "WRONGCODE123", PublicKey: "BBB=="}, nil)
+			protocol.JoinReq{Code: "WRONGCODE123", PublicKey: "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t="}, nil)
 	}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
-		protocol.JoinReq{Code: created.PairingCode, PublicKey: "BBB=="}, nil)
+		protocol.JoinReq{Code: created.PairingCode, PublicKey: "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t="}, nil)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("locked code should return 429, got %d", resp.StatusCode)
 	}
@@ -125,16 +124,16 @@ func TestPairingCodeSecurity(t *testing.T) {
 	// fresh network: code usable exactly 5 times, then rejected
 	ts2, _ := newTestServer(t)
 	var created2 protocol.CreateNetworkResp
-	doJSON(t, http.MethodPost, ts2.URL+"/api/v1/networks", "", protocol.CreateNetworkReq{PublicKey: "AAA=="}, &created2)
+	doJSON(t, http.MethodPost, ts2.URL+"/api/v1/networks", "", protocol.CreateNetworkReq{PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &created2)
 	for i := 0; i < codeMaxUse; i++ {
 		resp := doJSON(t, http.MethodPost, ts2.URL+"/api/v1/networks/"+created2.NetworkID+"/join", "",
-			protocol.JoinReq{Code: created2.PairingCode, PublicKey: fmt.Sprintf("BBB-%d", i)}, nil)
+			protocol.JoinReq{Code: created2.PairingCode, PublicKey: testKey(40 + i)}, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("join %d = %d, want 200", i, resp.StatusCode)
 		}
 	}
 	resp = doJSON(t, http.MethodPost, ts2.URL+"/api/v1/networks/"+created2.NetworkID+"/join", "",
-		protocol.JoinReq{Code: created2.PairingCode, PublicKey: "BBB-6"}, nil)
+		protocol.JoinReq{Code: created2.PairingCode, PublicKey: testKey(46)}, nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("exhausted code = %d, want 401", resp.StatusCode)
 	}

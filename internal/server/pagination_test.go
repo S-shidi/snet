@@ -18,9 +18,9 @@ func TestAdminPagination(t *testing.T) {
 	// it is created first so the named admin networks sort above it
 	var first protocol.AdminCreateNetworkResp
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		map[string]any{"publicKey": "PUB==", "approvalRequired": true}, &first)
+		map[string]any{"publicKey": testKey(20), "approvalRequired": true}, &first)
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+first.NetworkID+"/join", "",
-		map[string]any{"code": first.PairingCode, "publicKey": "JOIN=="}, nil)
+		map[string]any{"code": first.PairingCode, "publicKey": testKey(21)}, nil)
 
 	for i := 0; i < total; i++ {
 		var created protocol.AdminCreateNetworkResp

@@ -49,35 +49,35 @@ func TestAuthCodeLifecycle(t *testing.T) {
 	}
 
 	// bind
-	if _, err := s.BindDevice(code1, "dev-aaaa", "pub1"); err != nil {
+	if _, err := s.BindDevice(code1, "dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	if !s.DeviceBound("dev-aaaa") {
 		t.Fatal("device not bound after bind")
 	}
 	// idempotent same-code-same-device
-	if _, err := s.BindDevice(code1, "dev-aaaa", "pub1"); err != nil {
+	if _, err := s.BindDevice(code1, "dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatalf("idempotent rebind: %v", err)
 	}
 	// same code by another device → full (default max bindings = 1)
-	if _, err := s.BindDevice(code1, "dev-bbbb", "pub2"); !errors.Is(err, ErrAuthCodeFull) {
+	if _, err := s.BindDevice(code1, "dev-bbbb", testKey(2), ""); !errors.Is(err, ErrAuthCodeFull) {
 		t.Fatalf("rebind by another device = %v, want ErrAuthCodeFull", err)
 	}
 	// invalid code
-	if _, err := s.BindDevice("WRONGCODE123", "dev-cccc", "pub3"); !errors.Is(err, ErrAuthCodeInvalid) {
+	if _, err := s.BindDevice("WRONGCODE123", "dev-cccc", testKey(3), ""); !errors.Is(err, ErrAuthCodeInvalid) {
 		t.Fatalf("invalid code = %v, want ErrAuthCodeInvalid", err)
 	}
 
 	// rotation: binding a fresh code releases the device's previous one
 	code2, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code2, "dev-aaaa", "pub1"); err != nil {
+	if _, err := s.BindDevice(code2, "dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatalf("rotate bind: %v", err)
 	}
 	if !s.DeviceBound("dev-aaaa") {
 		t.Fatal("device lost binding after rotation")
 	}
 	// the released code1 is free again for a different device
-	if _, err := s.BindDevice(code1, "dev-bbbb", "pub2"); err != nil {
+	if _, err := s.BindDevice(code1, "dev-bbbb", testKey(2), ""); err != nil {
 		t.Fatalf("reuse released code: %v", err)
 	}
 	if !s.DeviceBound("dev-bbbb") {
@@ -95,7 +95,7 @@ func TestAuthCodeLifecycle(t *testing.T) {
 		t.Fatalf("unbind unknown device = %v, want ErrNotFound", err)
 	}
 	// the released code2 can now be bound by someone else
-	if _, err := s.BindDevice(code2, "dev-dddd", "pub4"); err != nil {
+	if _, err := s.BindDevice(code2, "dev-dddd", testKey(4), ""); err != nil {
 		t.Fatalf("rebind unbound code: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestAuthCodeLifecycle(t *testing.T) {
 	if err := s.AdminRevokeAuthCode(id1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("double revoke = %v, want ErrNotFound", err)
 	}
-	if _, err := s.BindDevice(code1, "dev-eeee", "pub5"); !errors.Is(err, ErrAuthCodeInvalid) {
+	if _, err := s.BindDevice(code1, "dev-eeee", testKey(5), ""); !errors.Is(err, ErrAuthCodeInvalid) {
 		t.Fatalf("bind revoked code = %v, want ErrAuthCodeInvalid", err)
 	}
 }
@@ -138,7 +138,7 @@ func TestAuthCodePersistenceAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code, "dev-aaaa", "pub1"); err != nil {
+	if _, err := s.BindDevice(code, "dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -158,7 +158,7 @@ func TestAuthCodePersistenceAcrossRestart(t *testing.T) {
 		t.Fatalf("persisted codes wrong: %+v", codes)
 	}
 	// and the stored code is still consumable/bindable
-	if _, err := s2.BindDevice(code, "dev-aaaa", "pub1"); err != nil {
+	if _, err := s2.BindDevice(code, "dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatalf("rebind after restart: %v", err)
 	}
 }
@@ -174,17 +174,17 @@ func TestAuthCodeMultiBind(t *testing.T) {
 	}
 	code, id := codes[0], ids[0]
 
-	if _, err := s.BindDevice(code, "dev-aaa1", "pub1"); err != nil {
+	if _, err := s.BindDevice(code, "dev-aaa1", testKey(1), ""); err != nil {
 		t.Fatalf("bind 1: %v", err)
 	}
-	if _, err := s.BindDevice(code, "dev-bbb2", "pub2"); err != nil {
+	if _, err := s.BindDevice(code, "dev-bbb2", testKey(2), ""); err != nil {
 		t.Fatalf("bind 2: %v", err)
 	}
-	if _, err := s.BindDevice(code, "dev-ccc3", "pub3"); err != nil {
+	if _, err := s.BindDevice(code, "dev-ccc3", testKey(3), ""); err != nil {
 		t.Fatalf("bind 3: %v", err)
 	}
 	// capacity exhausted
-	if _, err := s.BindDevice(code, "dev-ddd4", "pub4"); !errors.Is(err, ErrAuthCodeFull) {
+	if _, err := s.BindDevice(code, "dev-ddd4", testKey(4), ""); !errors.Is(err, ErrAuthCodeFull) {
 		t.Fatalf("4th bind = %v, want ErrAuthCodeFull", err)
 	}
 	for _, d := range []string{"dev-aaa1", "dev-bbb2", "dev-ccc3"} {
@@ -197,10 +197,10 @@ func TestAuthCodeMultiBind(t *testing.T) {
 	}
 
 	// idempotent rebind does not consume capacity
-	if _, err := s.BindDevice(code, "dev-aaa1", "pub1"); err != nil {
+	if _, err := s.BindDevice(code, "dev-aaa1", testKey(1), ""); err != nil {
 		t.Fatalf("idempotent rebind: %v", err)
 	}
-	if _, err := s.BindDevice(code, "dev-ddd4", "pub4"); !errors.Is(err, ErrAuthCodeFull) {
+	if _, err := s.BindDevice(code, "dev-ddd4", testKey(4), ""); !errors.Is(err, ErrAuthCodeFull) {
 		t.Fatalf("post-idempotent 4th bind = %v, want ErrAuthCodeFull", err)
 	}
 
@@ -228,7 +228,7 @@ func TestAuthCodeMultiBind(t *testing.T) {
 	if s.DeviceBound("dev-bbb2") {
 		t.Fatal("dev-bbb still bound after unbind")
 	}
-	if _, err := s.BindDevice(code, "dev-ddd4", "pub4"); err != nil {
+	if _, err := s.BindDevice(code, "dev-ddd4", testKey(4), ""); err != nil {
 		t.Fatalf("bind after unbind: %v", err)
 	}
 	info = s.AdminAuthCodes()
@@ -252,24 +252,24 @@ func TestAuthCodeRotationFreesSlot(t *testing.T) {
 	}
 	codeA, codeB := codesA[0], codesB[0]
 
-	if _, err := s.BindDevice(codeA, "dev-aaa1", "pub1"); err != nil {
+	if _, err := s.BindDevice(codeA, "dev-aaa1", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codeA, "dev-bbb2", "pub2"); err != nil {
+	if _, err := s.BindDevice(codeA, "dev-bbb2", testKey(2), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codeA, "dev-ccc3", "pub3"); !errors.Is(err, ErrAuthCodeFull) {
+	if _, err := s.BindDevice(codeA, "dev-ccc3", testKey(3), ""); !errors.Is(err, ErrAuthCodeFull) {
 		t.Fatalf("A full bind = %v, want ErrAuthCodeFull", err)
 	}
 	// rotating dev-aaa to codeB releases it from codeA
-	if _, err := s.BindDevice(codeB, "dev-aaa1", "pub1"); err != nil {
+	if _, err := s.BindDevice(codeB, "dev-aaa1", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codeA, "dev-ccc3", "pub3"); err != nil {
+	if _, err := s.BindDevice(codeA, "dev-ccc3", testKey(3), ""); err != nil {
 		t.Fatalf("A bind after rotation: %v", err)
 	}
 	// codeB (max 1) is now full
-	if _, err := s.BindDevice(codeB, "dev-ddd4", "pub4"); !errors.Is(err, ErrAuthCodeFull) {
+	if _, err := s.BindDevice(codeB, "dev-ddd4", testKey(4), ""); !errors.Is(err, ErrAuthCodeFull) {
 		t.Fatalf("B full bind = %v, want ErrAuthCodeFull", err)
 	}
 }
@@ -286,10 +286,10 @@ func TestAuthCodeMultiBindPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codes[0], "dev-aaa1", "pub1"); err != nil {
+	if _, err := s.BindDevice(codes[0], "dev-aaa1", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codes[0], "dev-bbb2", "pub2"); err != nil {
+	if _, err := s.BindDevice(codes[0], "dev-bbb2", testKey(2), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -306,7 +306,7 @@ func TestAuthCodeMultiBindPersistence(t *testing.T) {
 		t.Fatalf("persisted multi-bind wrong: %+v", c)
 	}
 	// capacity still enforced after restart
-	if _, err := s2.BindDevice(codes[0], "dev-ccc3", "pub3"); !errors.Is(err, ErrAuthCodeFull) {
+	if _, err := s2.BindDevice(codes[0], "dev-ccc3", testKey(3), ""); !errors.Is(err, ErrAuthCodeFull) {
 		t.Fatalf("restart full bind = %v, want ErrAuthCodeFull", err)
 	}
 }
@@ -323,7 +323,7 @@ func TestAuthCodeLegacyMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codes[0], "dev-old1234", "pubO"); err != nil {
+	if _, err := s.BindDevice(codes[0], "dev-old1234", testKey(16), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -332,11 +332,11 @@ func TestAuthCodeLegacyMigration(t *testing.T) {
 
 	// Rewrite the persisted record back into the legacy flat format.
 	legacy := authCodeRecord{
-		ID:       ids[0],
-		CodeHash: hashCode(codes[0]),
-		Hint:     maskCode(codes[0]),
-		DeviceID: "dev-old1234",
-		PublicKey: "pubO",
+		ID:        ids[0],
+		CodeHash:  hashCode(codes[0]),
+		Hint:      maskCode(codes[0]),
+		DeviceID:  "dev-old1234",
+		PublicKey: testKey(16),
 	}
 	s2, err := NewStoreAt(path)
 	if err != nil {
@@ -376,24 +376,24 @@ func TestRequireDeviceAuthGate(t *testing.T) {
 		t.Fatal("gate flag not on")
 	}
 
-	if _, err := s.CreateNetwork("pub1", "dev-aaaa", "", "", false); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.CreateNetwork(testKey(1), "dev-aaaa", "", "", false); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unbound create = %v, want ErrUnauthorized", err)
 	}
-	if _, err := s.Join("net1", "ABCDEFGHIJKL", "pub2", "dev-bbbb"); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.Join("net1", "ABCDEFGHIJKL", testKey(2), "dev-bbbb"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unbound join = %v, want ErrUnauthorized", err)
 	}
-	if err := s.RegisterDevice("dev-cccc", "pub3", ""); !errors.Is(err, ErrUnauthorized) {
+	if err := s.RegisterDevice("dev-cccc", testKey(3), ""); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unbound register = %v, want ErrUnauthorized", err)
 	}
 
 	code, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code, "dev-aaaa", "pub1"); err != nil {
+	if _, err := s.BindDevice(code, "dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateNetwork("pub1", "dev-aaaa", "", "", false); err != nil {
+	if _, err := s.CreateNetwork(testKey(1), "dev-aaaa", "", "", false); err != nil {
 		t.Fatalf("bound create = %v", err)
 	}
-	if err := s.RegisterDevice("dev-aaaa", "pub1", ""); err != nil {
+	if err := s.RegisterDevice("dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatalf("bound register = %v", err)
 	}
 
@@ -401,13 +401,13 @@ func TestRequireDeviceAuthGate(t *testing.T) {
 	if err := s.AdminUnbindDevice("dev-aaaa"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateNetwork("pub1", "dev-aaaa", "", "", false); !errors.Is(err, ErrUnauthorized) {
+	if _, err := s.CreateNetwork(testKey(1), "dev-aaaa", "", "", false); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("create after unbind = %v, want ErrUnauthorized", err)
 	}
 
 	// gate off: registration is open again
 	s.SetRequireDeviceAuth(false)
-	if err := s.RegisterDevice("dev-cccc", "pub3", ""); err != nil {
+	if err := s.RegisterDevice("dev-cccc", testKey(3), ""); err != nil {
 		t.Fatalf("register with gate off = %v", err)
 	}
 }
@@ -419,17 +419,17 @@ func TestRequireDeviceAuthHTTP(t *testing.T) {
 
 	// unbound create/join/register → 403 with the enrollment hint
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		protocol.CreateNetworkReq{PublicKey: "AAA==", DeviceID: "dev-aaaa"}, nil)
+		protocol.CreateNetworkReq{PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", DeviceID: "dev-aaaa"}, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("unbound create status = %d, want 403", resp.StatusCode)
 	}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/X/join", "",
-		protocol.JoinReq{Code: "ABCDEFGHIJKL", PublicKey: "BBB==", DeviceID: "dev-aaaa"}, nil)
+		protocol.JoinReq{Code: "ABCDEFGHIJKL", PublicKey: "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", DeviceID: "dev-aaaa"}, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("unbound join status = %d, want 403", resp.StatusCode)
 	}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices", "",
-		protocol.RegisterDeviceReq{DeviceID: "dev-aaaa", PublicKey: "AAA=="}, nil)
+		protocol.RegisterDeviceReq{DeviceID: "dev-aaaa", PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("unbound register status = %d, want 403", resp.StatusCode)
 	}
@@ -437,7 +437,7 @@ func TestRequireDeviceAuthHTTP(t *testing.T) {
 	// bind endpoint is open and accepts the code
 	code, _ := genOneCode(t, s)
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices/bind", "",
-		protocol.BindDeviceReq{Code: code, DeviceID: "dev-aaaa", PublicKey: "AAA=="}, nil)
+		protocol.BindDeviceReq{Code: code, DeviceID: "dev-aaaa", PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("bind status = %d, want 200", resp.StatusCode)
 	}
@@ -445,24 +445,24 @@ func TestRequireDeviceAuthHTTP(t *testing.T) {
 	// now create + join succeed
 	var created protocol.CreateNetworkResp
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		protocol.CreateNetworkReq{PublicKey: "AAA==", DeviceID: "dev-aaaa"}, &created)
+		protocol.CreateNetworkReq{PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", DeviceID: "dev-aaaa"}, &created)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("bound create status = %d", resp.StatusCode)
 	}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
-		protocol.JoinReq{Code: created.PairingCode, PublicKey: "BBB==", DeviceID: "dev-aaaa"}, nil)
+		protocol.JoinReq{Code: created.PairingCode, PublicKey: "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", DeviceID: "dev-aaaa"}, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("bound join status = %d", resp.StatusCode)
 	}
 
 	// wrong code → 404 "无效的设备授权码"; used code by another device → 409
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices/bind", "",
-		protocol.BindDeviceReq{Code: "WRONGCODE1234", DeviceID: "dev-ffff", PublicKey: "FFF=="}, nil)
+		protocol.BindDeviceReq{Code: "WRONGCODE1234", DeviceID: "dev-ffff", PublicKey: testKey(15)}, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("bad code status = %d, want 404", resp.StatusCode)
 	}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices/bind", "",
-		protocol.BindDeviceReq{Code: code, DeviceID: "dev-ffff", PublicKey: "FFF=="}, nil)
+		protocol.BindDeviceReq{Code: code, DeviceID: "dev-ffff", PublicKey: testKey(15)}, nil)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("used code status = %d, want 409", resp.StatusCode)
 	}
@@ -507,20 +507,20 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || len(gen2.Codes) != 1 {
 		t.Fatalf("multi-bind generate = %d, %+v", resp.StatusCode, gen2)
 	}
-	if _, err := s.BindDevice(gen2.Codes[0], "dev-m1abc", "pubm1"); err != nil {
+	if _, err := s.BindDevice(gen2.Codes[0], "dev-m1abc", testKey(13), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(gen2.Codes[0], "dev-m2abc", "pubm2"); err != nil {
+	if _, err := s.BindDevice(gen2.Codes[0], "dev-m2abc", testKey(14), ""); err != nil {
 		t.Fatal(err)
 	}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices/bind", "",
-		protocol.BindDeviceReq{Code: gen2.Codes[0], DeviceID: "dev-m3abc", PublicKey: "pubm3"}, nil)
+		protocol.BindDeviceReq{Code: gen2.Codes[0], DeviceID: "dev-m3abc", PublicKey: testKey(17)}, nil)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("3rd bind on max-2 code = %d, want 409", resp.StatusCode)
 	}
 
 	// bind one code through the device API, then list shows the binding
-	if _, err := s.BindDevice(gen.Codes[0], "dev-aaaa", "pub1"); err != nil {
+	if _, err := s.BindDevice(gen.Codes[0], "dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
 	var listPage struct {
@@ -586,7 +586,7 @@ func TestBindConcurrent(t *testing.T) {
 		go func(i int, dev string) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = s.BindDevice(code, dev, "pub")
+			_, errs[i] = s.BindDevice(code, dev, testKey(19+i%4), "")
 		}(i, dev)
 	}
 	close(start)
@@ -615,20 +615,20 @@ func TestRegisterReportsBinding(t *testing.T) {
 	// unbound device register → 200 with bound=false
 	var reg protocol.RegisterDeviceResp
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices", "",
-		protocol.RegisterDeviceReq{DeviceID: "dev-reg-1", PublicKey: "AAA=="}, &reg)
+		protocol.RegisterDeviceReq{DeviceID: "dev-reg-1", PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &reg)
 	if resp.StatusCode != http.StatusOK || reg.Bound == nil || *reg.Bound {
 		t.Fatalf("unbound register = %d %+v, want 200 bound=false", resp.StatusCode, reg)
 	}
 
 	// bind then register → bound=true
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices/bind", "",
-		protocol.BindDeviceReq{Code: code, DeviceID: "dev-reg-1", PublicKey: "AAA=="}, nil)
+		protocol.BindDeviceReq{Code: code, DeviceID: "dev-reg-1", PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("bind status = %d", resp.StatusCode)
 	}
 	reg = protocol.RegisterDeviceResp{}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices", "",
-		protocol.RegisterDeviceReq{DeviceID: "dev-reg-1", PublicKey: "AAA=="}, &reg)
+		protocol.RegisterDeviceReq{DeviceID: "dev-reg-1", PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &reg)
 	if resp.StatusCode != http.StatusOK || reg.Bound == nil || !*reg.Bound {
 		t.Fatalf("bound register = %d %+v, want bound=true", resp.StatusCode, reg)
 	}
@@ -639,7 +639,7 @@ func TestRegisterReportsBinding(t *testing.T) {
 	}
 	reg = protocol.RegisterDeviceResp{}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices", "",
-		protocol.RegisterDeviceReq{DeviceID: "dev-reg-1", PublicKey: "AAA=="}, &reg)
+		protocol.RegisterDeviceReq{DeviceID: "dev-reg-1", PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &reg)
 	if resp.StatusCode != http.StatusOK || reg.Bound == nil || *reg.Bound {
 		t.Fatalf("post-unbind register = %d %+v, want bound=false", resp.StatusCode, reg)
 	}
@@ -652,7 +652,7 @@ func TestBindRateLimited(t *testing.T) {
 	blocked := 0
 	for i := 0; i < tries; i++ {
 		resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices/bind", "",
-			protocol.BindDeviceReq{Code: "WRONGCODE1234", DeviceID: "dev-xxxx", PublicKey: "X=="}, nil)
+			protocol.BindDeviceReq{Code: "WRONGCODE1234", DeviceID: "dev-xxxx", PublicKey: testKey(7)}, nil)
 		if resp.StatusCode == http.StatusTooManyRequests {
 			blocked++
 		} else if resp.StatusCode != http.StatusNotFound {
@@ -668,7 +668,7 @@ func TestBindRateLimited(t *testing.T) {
 func TestBindDeviceReturnsToken(t *testing.T) {
 	s := NewStore()
 	code, _ := genOneCode(t, s)
-	tok, err := s.BindDevice(code, "dev-token1", "pub1")
+	tok, err := s.BindDevice(code, "dev-token1", testKey(1), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,20 +690,20 @@ func TestDeviceNetworkDetails(t *testing.T) {
 
 	// bind owner device
 	code1, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code1, "dev-owner1", "pubA"); err != nil {
+	if _, err := s.BindDevice(code1, "dev-owner1", testKey(8), ""); err != nil {
 		t.Fatal(err)
 	}
 	// bind joiner device
 	code2, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code2, "dev-joiner1", "pubB"); err != nil {
+	if _, err := s.BindDevice(code2, "dev-joiner1", testKey(18), ""); err != nil {
 		t.Fatal(err)
 	}
 
-	created, err := s.CreateNetwork("pubA", "dev-owner1", "test-net", "10.0.0.0/24", false)
+	created, err := s.CreateNetwork(testKey(8), "dev-owner1", "test-net", "10.0.0.0/24", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "pubB", "dev-joiner1")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, testKey(18), "dev-joiner1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,12 +759,12 @@ func TestDeviceNetworkDetails(t *testing.T) {
 func TestDeviceNetworkDetailsTokenRotation(t *testing.T) {
 	s := NewStore()
 	code1, _ := genOneCode(t, s)
-	tok1, _ := s.BindDevice(code1, "dev-rot1", "pubA")
+	tok1, _ := s.BindDevice(code1, "dev-rot1", testKey(8), "")
 	if !s.ValidateDeviceToken("dev-rot1", tok1) {
 		t.Fatal("initial token not valid")
 	}
 
-	created, err := s.CreateNetwork("pubA", "dev-rot1", "net", "", false)
+	created, err := s.CreateNetwork(testKey(8), "dev-rot1", "net", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -813,7 +813,7 @@ func TestGenerateAndValidateDeviceToken(t *testing.T) {
 	s := NewStore()
 	s.SetRequireDeviceAuth(true)
 	code, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code, "dev-tok1", "pub1"); err != nil {
+	if _, err := s.BindDevice(code, "dev-tok1", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -864,25 +864,25 @@ func TestUpdateNodePublicKey(t *testing.T) {
 	s := NewStore()
 	s.SetRequireDeviceAuth(true)
 	code1, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code1, "dev-owner2", "pubA"); err != nil {
+	if _, err := s.BindDevice(code1, "dev-owner2", testKey(8), ""); err != nil {
 		t.Fatal(err)
 	}
 	code2, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code2, "dev-joiner2", "pubB"); err != nil {
+	if _, err := s.BindDevice(code2, "dev-joiner2", testKey(18), ""); err != nil {
 		t.Fatal(err)
 	}
 
-	created, err := s.CreateNetwork("pubA", "dev-owner2", "net", "", false)
+	created, err := s.CreateNetwork(testKey(8), "dev-owner2", "net", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "pubB", "dev-joiner2")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, testKey(18), "dev-joiner2")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// update the joiner's public key
-	if err := s.UpdateNodePublicKey("dev-joiner2", created.NetworkID, joined.NodeID, "pubB-new"); err != nil {
+	if err := s.UpdateNodePublicKey("dev-joiner2", created.NetworkID, joined.NodeID, testKey(2)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -892,21 +892,21 @@ func TestUpdateNodePublicKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, n := range info.Nodes {
-		if n.DeviceID == "dev-joiner2" && n.PublicKey != "pubB-new" {
-			t.Fatalf("public key not updated: got %q, want pubB-new", n.PublicKey)
+		if n.DeviceID == "dev-joiner2" && n.PublicKey != testKey(2) {
+			t.Fatalf("public key not updated: got %q, want updated key", n.PublicKey)
 		}
 	}
 
 	// wrong device → unauthorized
-	if err := s.UpdateNodePublicKey("dev-owner2", created.NetworkID, joined.NodeID, "hacked"); err != ErrUnauthorized {
+	if err := s.UpdateNodePublicKey("dev-owner2", created.NetworkID, joined.NodeID, testKey(24)); err != ErrUnauthorized {
 		t.Fatalf("update by wrong device = %v, want ErrUnauthorized", err)
 	}
 	// wrong network → not found
-	if err := s.UpdateNodePublicKey("dev-joiner2", "fake-net", joined.NodeID, "x"); err != ErrNotFound {
+	if err := s.UpdateNodePublicKey("dev-joiner2", "fake-net", joined.NodeID, testKey(1)); err != ErrNotFound {
 		t.Fatalf("update wrong network = %v, want ErrNotFound", err)
 	}
 	// wrong node → not found
-	if err := s.UpdateNodePublicKey("dev-joiner2", created.NetworkID, "fake-node", "x"); err != ErrNotFound {
+	if err := s.UpdateNodePublicKey("dev-joiner2", created.NetworkID, "fake-node", testKey(1)); err != ErrNotFound {
 		t.Fatalf("update wrong node = %v, want ErrNotFound", err)
 	}
 }
@@ -917,25 +917,25 @@ func TestDeviceNetworkDetailsMultipleNetworks(t *testing.T) {
 	s := NewStore()
 	s.SetRequireDeviceAuth(true)
 	code1, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code1, "dev-multi1", "pub1"); err != nil {
+	if _, err := s.BindDevice(code1, "dev-multi1", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
 	code2, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code2, "dev-multi2", "pub2"); err != nil {
+	if _, err := s.BindDevice(code2, "dev-multi2", testKey(2), ""); err != nil {
 		t.Fatal(err)
 	}
 	code3, _ := genOneCode(t, s)
-	if _, err := s.BindDevice(code3, "dev-multi3", "pub3"); err != nil {
+	if _, err := s.BindDevice(code3, "dev-multi3", testKey(3), ""); err != nil {
 		t.Fatal(err)
 	}
 
 	// create two networks owned by different devices, both joined by dev-multi1
-	net1, _ := s.CreateNetwork("pub1", "dev-multi1", "net1", "", false)
-	net2, _ := s.CreateNetwork("pub3", "dev-multi3", "net2", "", false)
-	if _, err := s.Join(net1.NetworkID, net1.PairingCode, "pub2", "dev-multi2"); err != nil {
+	net1, _ := s.CreateNetwork(testKey(1), "dev-multi1", "net1", "", false)
+	net2, _ := s.CreateNetwork(testKey(3), "dev-multi3", "net2", "", false)
+	if _, err := s.Join(net1.NetworkID, net1.PairingCode, testKey(2), "dev-multi2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Join(net2.NetworkID, net2.PairingCode, "pub2", "dev-multi2"); err != nil {
+	if _, err := s.Join(net2.NetworkID, net2.PairingCode, testKey(2), "dev-multi2"); err != nil {
 		t.Fatal(err)
 	}
 

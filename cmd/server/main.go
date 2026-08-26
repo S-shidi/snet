@@ -104,6 +104,11 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	if *tlsCert == "" || *tlsKey == "" {
+		log.Printf("warning: TLS is not configured; admin credentials would cross the network in cleartext. Consider -tls-cert/-tls-key.")
+	}
+
+	serveErr := make(chan error, 1)
 	go func() {
 		log.Printf("Snet server listening on %s (db: %s, admin: %s, require-device-auth: %v)", *addr, dbPathOrMem(*dbPath), adminState(adminEnabled), *requireDeviceAuth)
 		var err error
@@ -113,13 +118,18 @@ func main() {
 			err = httpSrv.ListenAndServe()
 		}
 		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server: %v", err)
+			serveErr <- err
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	select {
+	case err := <-serveErr:
+		// Return normally so the deferred store/relay/probe closes still run.
+		log.Fatalf("server: %v", err)
+	case <-stop:
+	}
 
 	log.Printf("shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

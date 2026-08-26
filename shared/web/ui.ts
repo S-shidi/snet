@@ -40,7 +40,10 @@ function currentServer(): string {
 }
 
 /* ── Refresh ──────────────────────────────────────────────────── */
+let refreshing = false;
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
   const btn = $("#btn-refresh") as HTMLButtonElement;
   if (btn) btn.disabled = true;
   try {
@@ -53,7 +56,8 @@ async function refresh() {
   renderNetworks();
   renderStatus();
   maybeShowOnboarding();
-  if (btn) setTimeout(() => { btn.disabled = false; }, 800);
+  if (btn) btn.disabled = false;
+  refreshing = false;
 }
 
 /* ── Owner info cache ─────────────────────────────────────────── */
@@ -83,17 +87,17 @@ function renderHeader() {
   if (backend.hasDaemonControl) {
     if (status) {
       dot.className = "live-dot ok";
-      dot.textContent = "后台服务: 运行中";
+      dot.textContent = "运行中";
     } else {
       dot.className = "live-dot err";
-      dot.textContent = "后台服务: 未运行";
+      dot.textContent = "未运行";
     }
     const btn = $("#header-svc-btn") as HTMLButtonElement;
     if (btn) {
       btn.hidden = !!status;
       btn.disabled = false;
       if (!status) {
-        btn.textContent = "启动后台服务";
+        btn.textContent = "启动";
         btn.title = "启动系统后台守护进程（可能弹出管理员密码框）";
         btn.onclick = () => void ensureDaemon();
       }
@@ -174,7 +178,7 @@ function renderNetworks() {
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 4l18 26H6L24 4z"/><path d="M24 34v6"/><path d="M12 46h24"/></svg>
       <div class="t">后台服务未运行</div>
       <div class="s">需要系统后台守护进程 snetd 维持网络隧道</div>
-      <div class="empty-actions">${backend.hasDaemonControl ? `<button id="empty-start" class="btn">启动后台服务</button>` : ""}</div>
+      <div class="empty-actions">${backend.hasDaemonControl ? `<button id="empty-start" class="btn">启动</button>` : ""}</div>
     </div>`;
     const startBtn = $("#empty-start");
     if (startBtn) startBtn.addEventListener("click", ensureDaemon);
@@ -955,7 +959,7 @@ function openSettingsModal() {
       <div class="row"><label>WireGuard 端口</label><input id="s-wgport" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
       <div class="settings-actions" id="s-daemon-row">
         ${backend.hasDaemonControl
-          ? (status ? `<span class="live-dot ok">后台服务: 运行中</span>` : `<button id="s-start-daemon" class="btn ghost">启动后台服务</button>`)
+          ? (status ? `<span class="live-dot ok">运行中</span>` : `<button id="s-start-daemon" class="btn ghost">启动</button>`)
           : ""}
       </div>
       <p class="msg" id="s-msg"></p>
@@ -997,7 +1001,7 @@ function openSettingsModal() {
 
       body.querySelector("#s-start-daemon")?.addEventListener("click", async () => {
         msg.className = "msg";
-        msg.textContent = "正在启动后台服务（可能弹出管理员密码框）…";
+        msg.textContent = "正在启动…";
         try {
           await backend.ensureDaemon();
           msg.className = "msg ok";
@@ -1041,7 +1045,7 @@ function renderOnboarding() {
       startDaemon.textContent = "启动中…";
       const daemonResult = $("#onb-daemon-result") as HTMLElement;
       daemonResult.className = "msg";
-      daemonResult.textContent = "正在启动后台服务（可能弹出管理员密码框）…";
+      daemonResult.textContent = "正在启动…";
       try {
         await backend.ensureDaemon();
         daemonResult.className = "msg ok";
@@ -1053,7 +1057,7 @@ function renderOnboarding() {
         daemonResult.textContent = `启动失败: ${e}`;
       } finally {
         startDaemon.disabled = false;
-        startDaemon.textContent = "启动后台服务";
+        startDaemon.textContent = "启动";
       }
     };
   }
@@ -1106,7 +1110,7 @@ function renderStatus() {
     if (statusJson) statusJson.textContent = "(未连接后台服务)";
     return;
   }
-  if (deviceId) deviceId.textContent = status.deviceId ?? "-";
+  if (deviceId) deviceId.textContent = status.deviceId || "-";
   const addr = status.serverAddr ?? "";
   if (svcServer) svcServer.textContent = status.bound && addr ? addr : "未连接服务器";
   if (svcWgport) svcWgport.textContent = String(status.wgPort ?? "-");
@@ -1188,6 +1192,12 @@ export async function init(b: Backend) {
   initTabs();
   bindNetListEvents();
   bindEvents();
+  // Hide logout button on Desktop/Android (not needed without login)
+  if (backend.hasDaemonControl) {
+    const lo = $("#btn-logout") as HTMLElement | null;
+    if (lo) lo.style.display = "none";
+    document.querySelectorAll<HTMLElement>("[data-action=\"logout\"]").forEach((el) => { el.style.display = "none"; });
+  }
   refresh();
   setInterval(() => {
     if (!document.hidden) refresh();

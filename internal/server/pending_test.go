@@ -9,7 +9,7 @@ import (
 // join-approval-required network.
 func TestJoinApprovalFlow(t *testing.T) {
 	s := NewStore()
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "office", "192.168.50.0/24", true)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "office", "192.168.50.0/24", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,7 +18,7 @@ func TestJoinApprovalFlow(t *testing.T) {
 	}
 
 	// join without approval returns a pending status, no credentials
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "BBB==", "dev-joiner")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-joiner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestJoinApprovalFlow(t *testing.T) {
 	if len(info.Pending) != 1 || info.PendingCount != 1 {
 		t.Fatalf("pending not visible to owner: %+v", info.Pending)
 	}
-	if info.Pending[0].PublicKey != "BBB==" {
+	if info.Pending[0].PublicKey != "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=" {
 		t.Fatalf("pending pubkey = %q", info.Pending[0].PublicKey)
 	}
 
@@ -51,7 +51,7 @@ func TestJoinApprovalFlow(t *testing.T) {
 	}
 
 	// a non-owner cannot approve
-	intruder, err := s.Join(created.NetworkID, created.PairingCode, "CCC==", "dev-intruder")
+	intruder, err := s.Join(created.NetworkID, created.PairingCode, "sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u=", "dev-intruder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,11 +106,11 @@ func TestJoinApprovalFlow(t *testing.T) {
 // TestJoinDenyFlow verifies a denied request is surfaced to the joiner.
 func TestJoinDenyFlow(t *testing.T) {
 	s := NewStore()
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "office", "192.168.51.0/24", true)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "office", "192.168.51.0/24", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "BBB==", "dev-joiner")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-joiner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestJoinDenyFlow(t *testing.T) {
 	}
 
 	// an already-approved request cannot be denied
-	joined2, err := s.Join(created.NetworkID, created.PairingCode, "CCC==", "dev-joiner-2")
+	joined2, err := s.Join(created.NetworkID, created.PairingCode, "sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u=", "dev-joiner-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,11 +143,11 @@ func TestJoinDenyFlow(t *testing.T) {
 // immediately even when the setting field is present.
 func TestJoinNoApprovalStillImmediate(t *testing.T) {
 	s := NewStore()
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "BBB==", "dev-joiner")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-joiner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,11 +160,11 @@ func TestJoinNoApprovalStillImmediate(t *testing.T) {
 // every node is re-allocated, with the self IP reflecting the change.
 func TestSubnetReassign(t *testing.T) {
 	s := NewStore()
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "home", "10.88.0.0/24", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "home", "10.88.0.0/24", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "BBB==", "dev-joiner")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-joiner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestSubnetReassign(t *testing.T) {
 		t.Fatal("invalid subnet should be rejected")
 	}
 	// overlapping subnet is now allowed (networks are independent)
-	other, err := s.CreateNetwork("CCC==", "dev-other", "", "10.88.1.0/24", false)
+	other, err := s.CreateNetwork("sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u=", "dev-other", "", "10.88.1.0/24", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestSubnetReassign(t *testing.T) {
 	}
 
 	// ipam cursor was reset: a new joiner gets the next free address
-	j3, err := s.Join(created.NetworkID, created.PairingCode, "DDD==", "dev-joiner-3")
+	j3, err := s.Join(created.NetworkID, created.PairingCode, testKey(28), "dev-joiner-3")
 	if err != nil {
 		t.Fatal(err)
 	}

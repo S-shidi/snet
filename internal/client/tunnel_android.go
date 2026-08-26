@@ -21,9 +21,9 @@ func configureInterface(_, _ string, _ int) error { return nil }
 
 // addHostRoute / removeHostRoute / addSubnetRoute / removeSubnetRoute are
 // no-ops on Android; VpnService.Builder.addRoute() handles routing.
-func addHostRoute(_, _ string) error    { return nil }
-func removeHostRoute(_, _ string) error { return nil }
-func addSubnetRoute(_, _ string) error  { return nil }
+func addHostRoute(_, _ string) error      { return nil }
+func removeHostRoute(_, _ string) error   { return nil }
+func addSubnetRoute(_, _ string) error    { return nil }
 func removeSubnetRoute(_, _ string) error { return nil }
 
 // enableIPForwarding is a no-op on Android; the kernel handles it.

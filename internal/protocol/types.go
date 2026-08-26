@@ -38,7 +38,10 @@ type Node struct {
 	Endpoint  string `json:"endpoint"`
 	LastSeen  int64  `json:"lastSeen,omitempty"`
 	DeviceID  string `json:"deviceId,omitempty"`
-	Online    bool   `json:"online,omitempty"`
+	// DeviceName is the display name of the bound device (admin views only;
+	// empty when the device never reported a name).
+	DeviceName string `json:"deviceName,omitempty"`
+	Online     bool   `json:"online,omitempty"`
 	// AllowedSubnets lists CIDR subnets this node advertises for routing.
 	// Other peers route traffic for these subnets through this node's tunnel.
 	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
@@ -131,7 +134,9 @@ type PendingNode struct {
 	ID        string `json:"id"`
 	PublicKey string `json:"publicKey"`
 	DeviceID  string `json:"deviceId,omitempty"`
-	CreatedAt string `json:"createdAt,omitempty"`
+	// DeviceName is the device's display name (empty when never reported).
+	DeviceName string `json:"deviceName,omitempty"`
+	CreatedAt  string `json:"createdAt,omitempty"`
 }
 
 // PendingStatusResp reports a pending join's state. Status 为 "pending" /
@@ -246,6 +251,9 @@ type BindDeviceReq struct {
 	Code      string `json:"code"`
 	DeviceID  string `json:"deviceId"`
 	PublicKey string `json:"publicKey"`
+	// Name is the client-reported display name (e.g. hostname). Optional and
+	// only honored when the device has no name yet; admin renames win.
+	Name string `json:"name,omitempty"`
 }
 
 type BindDeviceResp struct {
@@ -259,21 +267,23 @@ type BindDeviceResp struct {
 // single code may bind up to MaxBindings devices; BoundCount reports how many
 // are bound.
 type AuthCodeInfo struct {
-	ID            string `json:"id"`
-	Code          string `json:"code"` // plaintext code, e.g. "7K3H2M9Q"
-	MaxBindings   int    `json:"maxBindings"`
-	BoundCount    int    `json:"boundCount"`
-	BoundToDevice string `json:"boundToDevice,omitempty"` // first bound device (backward compatible)
-	BoundAt       string `json:"boundAt,omitempty"`
+	ID            string                `json:"id"`
+	Code          string                `json:"code"` // plaintext code, e.g. "7K3H2M9Q"
+	MaxBindings   int                   `json:"maxBindings"`
+	BoundCount    int                   `json:"boundCount"`
+	BoundToDevice string                `json:"boundToDevice,omitempty"` // first bound device (backward compatible)
+	BoundAt       string                `json:"boundAt,omitempty"`
 	BoundDevices  []AuthCodeBindingInfo `json:"boundDevices,omitempty"`
-	CreatedAt     string `json:"createdAt"`
+	CreatedAt     string                `json:"createdAt"`
 }
 
 // AuthCodeBindingInfo describes one device bound to a shared authorization
 // code.
 type AuthCodeBindingInfo struct {
 	DeviceID string `json:"deviceId"`
-	BoundAt  string `json:"boundAt,omitempty"`
+	// DeviceName is the device's display name (empty when never reported).
+	DeviceName string `json:"deviceName,omitempty"`
+	BoundAt    string `json:"boundAt,omitempty"`
 }
 
 type AdminGenerateAuthCodesReq struct {

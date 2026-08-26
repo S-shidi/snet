@@ -14,14 +14,14 @@ import (
 func TestSubnetAssignment(t *testing.T) {
 	s := NewStore()
 
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "office", "192.168.5.0/24", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "office", "192.168.5.0/24", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if created.IP != "192.168.5.1" || created.Subnet != "192.168.5.0/24" {
 		t.Fatalf("custom subnet create = %q/%q", created.IP, created.Subnet)
 	}
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "BBB==", "dev-phone")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-phone")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,14 +39,14 @@ func TestSubnetAssignment(t *testing.T) {
 
 func TestOneNetworkPerDevice(t *testing.T) {
 	s := NewStore()
-	if _, err := s.CreateNetwork("AAA==", "dev-single", "", "", false); err != nil {
+	if _, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-single", "", "", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateNetwork("BBB==", "dev-single", "", "", false); err == nil {
+	if _, err := s.CreateNetwork("rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-single", "", "", false); err == nil {
 		t.Fatal("second create by same device should be rejected")
 	}
 	// a different device may still create
-	if _, err := s.CreateNetwork("CCC==", "dev-other", "", "", false); err != nil {
+	if _, err := s.CreateNetwork("sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u=", "dev-other", "", "", false); err != nil {
 		t.Fatalf("different device create rejected: %v", err)
 	}
 }
@@ -54,14 +54,14 @@ func TestOneNetworkPerDevice(t *testing.T) {
 func TestSubnetValidation(t *testing.T) {
 	s := NewStore()
 	cases := map[string]bool{
-		"8.8.8.0/24":     false, // public range
-		"10.88.0.0/16":   true,
-		"10.88.0.0/25":   false, // too small (prefix > 24)
+		"8.8.8.0/24":      false, // public range
+		"10.88.0.0/16":    true,
+		"10.88.0.0/25":    false, // too small (prefix > 24)
 		"192.168.1.99/24": false, // not a network address
-		"2001:db8::/64":  false, // not IPv4
+		"2001:db8::/64":   false, // not IPv4
 	}
 	for subnet, ok := range cases {
-		_, err := s.CreateNetwork("K==", "device-1", "", subnet, false)
+		_, err := s.CreateNetwork(testKey(1), "device-1", "", subnet, false)
 		if (err == nil) != ok {
 			t.Fatalf("subnet %q: ok=%v err=%v", subnet, ok, err)
 		}
@@ -70,7 +70,7 @@ func TestSubnetValidation(t *testing.T) {
 
 func TestSubnetAutoAssignAndOverlap(t *testing.T) {
 	s := NewStore()
-	a, err := s.CreateNetwork("A==", "device-a", "", "", false)
+	a, err := s.CreateNetwork(testKey(22), "device-a", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,11 +78,11 @@ func TestSubnetAutoAssignAndOverlap(t *testing.T) {
 		t.Fatalf("auto subnet 1 = %q", a.Subnet)
 	}
 	// overlapping subnet is now allowed (networks are independent)
-	if _, err := s.CreateNetwork("B==", "device-b", "", "10.88.0.0/24", false); err != nil {
+	if _, err := s.CreateNetwork(testKey(25), "device-b", "", "10.88.0.0/24", false); err != nil {
 		t.Fatalf("overlapping subnet should be allowed: %v", err)
 	}
 	// next auto subnet skips exact match
-	b, err := s.CreateNetwork("C==", "device-c", "", "", false)
+	b, err := s.CreateNetwork(testKey(26), "device-c", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,11 +96,11 @@ func TestSubnetAutoAssignAndOverlap(t *testing.T) {
 
 func TestOwnerAuthorization(t *testing.T) {
 	s := NewStore()
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "BBB==", "dev-intruder")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-intruder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestOwnerAuthorization(t *testing.T) {
 func TestLegacyClaimAndBind(t *testing.T) {
 	s := NewStore()
 	// legacy create: no device identity at all
-	created, err := s.CreateNetwork("AAA==", "", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestLegacyClaimAndBind(t *testing.T) {
 		t.Fatalf("bind: %v", err)
 	}
 	// other node cannot bind itself to someone else's token
-	if _, err := s.Join(created.NetworkID, created.PairingCode, "BBB==", "dev-other"); err != nil {
+	if _, err := s.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-other"); err != nil {
 		t.Fatal(err)
 	}
 	// claim as the bound device
@@ -177,23 +177,23 @@ func TestLegacyClaimAndBind(t *testing.T) {
 
 func TestDeviceRegistration(t *testing.T) {
 	s := NewStore()
-	if err := s.RegisterDevice("device-1", "PUB1==", ""); err != nil {
+	if err := s.RegisterDevice("device-1", testKey(11), ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterDevice("device-1", "PUB1b==", ""); err != nil {
+	if err := s.RegisterDevice("device-1", testKey(12), ""); err != nil {
 		t.Fatalf("re-register should be idempotent: %v", err)
 	}
-	if err := s.RegisterDevice("bad id!", "PUB==", ""); err == nil {
+	if err := s.RegisterDevice("bad id!", testKey(23), ""); err == nil {
 		t.Fatal("invalid device id should be rejected")
 	}
 	devs := s.AdminDevices()
-	if len(devs) != 1 || devs[0].PublicKey != "PUB1b==" {
+	if len(devs) != 1 || devs[0].PublicKey != testKey(12) {
 		t.Fatalf("devices = %+v", devs)
 	}
 
 	// device appears in DeviceNetworks after joining
-	c, _ := s.CreateNetwork("A==", "device-1", "", "", false)
-	if _, err := s.Join(c.NetworkID, c.PairingCode, "B==", "device-1"); err != nil {
+	c, _ := s.CreateNetwork(testKey(22), "device-1", "", "", false)
+	if _, err := s.Join(c.NetworkID, c.PairingCode, testKey(27), "device-1"); err != nil {
 		t.Fatal(err)
 	}
 	nets := s.DeviceNetworks("device-1")
@@ -204,7 +204,7 @@ func TestDeviceRegistration(t *testing.T) {
 
 func TestZombieSweep(t *testing.T) {
 	s := NewStore()
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestZombieSweep(t *testing.T) {
 func TestRelayActivityKeepsNetworkAlive(t *testing.T) {
 	s := NewStore()
 	s.SetRelay("relay.test", 51820, 8)
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,13 +394,13 @@ func TestOwnerHTTPEndpoints(t *testing.T) {
 
 	var created protocol.CreateNetworkResp
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		protocol.CreateNetworkReq{PublicKey: "AAA==", DeviceID: "dev-owner", Name: "office", Subnet: "10.99.0.0/24"}, &created)
+		protocol.CreateNetworkReq{PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", DeviceID: "dev-owner", Name: "office", Subnet: "10.99.0.0/24"}, &created)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create = %d", resp.StatusCode)
 	}
 	var joined protocol.JoinResp
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
-		protocol.JoinReq{Code: created.PairingCode, PublicKey: "BBB==", DeviceID: "dev-phone"}, &joined)
+		protocol.JoinReq{Code: created.PairingCode, PublicKey: "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", DeviceID: "dev-phone"}, &joined)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("join = %d", resp.StatusCode)
 	}
@@ -444,7 +444,7 @@ func TestDeviceBindAndClaimHTTP(t *testing.T) {
 	ts, _ := newTestServer(t)
 	var created protocol.CreateNetworkResp
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		protocol.CreateNetworkReq{PublicKey: "AAA=="}, &created)
+		protocol.CreateNetworkReq{PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &created)
 
 	// bind node to device
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/nodes/"+created.NodeID+"/device",
@@ -460,7 +460,7 @@ func TestDeviceBindAndClaimHTTP(t *testing.T) {
 	}
 	// register device endpoint
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices", "",
-		protocol.RegisterDeviceReq{DeviceID: "dev-owner", PublicKey: "AAA=="}, nil)
+		protocol.RegisterDeviceReq{DeviceID: "dev-owner", PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("register = %d", resp.StatusCode)
 	}
@@ -470,7 +470,7 @@ func TestAdminDevicesEndpoint(t *testing.T) {
 	ts, _ := newTestServerOpts(t, Options{AdminToken: "secret"})
 	var created protocol.CreateNetworkResp
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		protocol.CreateNetworkReq{PublicKey: "AAA==", DeviceID: "dev-owner"}, &created)
+		protocol.CreateNetworkReq{PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", DeviceID: "dev-owner"}, &created)
 
 	var devPage struct {
 		Items []protocol.Device `json:"items"`

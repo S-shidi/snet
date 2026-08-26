@@ -17,11 +17,11 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := s.Join(created.NetworkID, created.PairingCode, "BBB==", "dev-joiner")
+	joined, err := s.Join(created.NetworkID, created.PairingCode, "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "dev-joiner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,12 +44,12 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("owner peers after restart: %v", err)
 	}
-	if len(peersResp.Peers) != 1 || peersResp.Peers[0].PublicKey != "BBB==" || peersResp.Peers[0].Endpoint != "203.0.113.7:51821" {
+	if len(peersResp.Peers) != 1 || peersResp.Peers[0].PublicKey != "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=" || peersResp.Peers[0].Endpoint != "203.0.113.7:51821" {
 		t.Fatalf("owner peers wrong after restart: %+v", peersResp.Peers)
 	}
 
 	// pairing code still usable after restart
-	j2, err := s2.Join(created.NetworkID, created.PairingCode, "CCC==", "dev-joiner-2")
+	j2, err := s2.Join(created.NetworkID, created.PairingCode, "sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u=", "dev-joiner-2")
 	if err != nil {
 		t.Fatalf("join after restart failed: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestTokenStoredHashed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestPairingCodeStoredHashed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestPairingCodeStoredHashed(t *testing.T) {
 
 func TestLastSeenTracking(t *testing.T) {
 	s := NewStore()
-	created, _ := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, _ := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 
 	if err := s.SetEndpoint(created.Token, "203.0.113.1:51820"); err != nil {
 		t.Fatal(err)

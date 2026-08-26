@@ -8,6 +8,14 @@ CTL_ADDR="127.0.0.1:19432"
 
 mkdir -p "$DATA_DIR"
 
+# Ensure /dev/net/tun exists (wireguard-go needs it)
+if [ ! -e /dev/net/tun ]; then
+    mkdir -p /dev/net
+    mknod /dev/net/tun c 10 200
+    chmod 600 /dev/net/tun
+    echo "[entrypoint] Created /dev/net/tun"
+fi
+
 # Prefer the binary from the data volume if present (allows hot-upgrade
 # via bind mount without rebuilding the image).
 if [ -x "$DATA_DIR/snetd" ]; then

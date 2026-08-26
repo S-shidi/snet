@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +15,13 @@ import (
 
 	"snet/internal/protocol"
 )
+
+// testKey returns a distinct, format-valid WireGuard public key for tests.
+func testKey(i int) string {
+	b := make([]byte, 32)
+	binary.LittleEndian.PutUint32(b, uint32(i))
+	return base64.StdEncoding.EncodeToString(b)
+}
 
 func TestHealthz(t *testing.T) {
 	ts, _ := newTestServer(t)
@@ -201,7 +210,7 @@ func TestAdminFlow(t *testing.T) {
 
 	// create a network and join one peer
 	var created map[string]any
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "", map[string]any{"publicKey": "AAA=="}, &created)
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "", map[string]any{"publicKey": "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &created)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create = %d", resp.StatusCode)
 	}
@@ -209,7 +218,7 @@ func TestAdminFlow(t *testing.T) {
 	code := created["pairingCode"].(string)
 	var joined map[string]any
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+nid+"/join", "",
-		map[string]any{"code": code, "publicKey": "BBB=="}, &joined)
+		map[string]any{"code": code, "publicKey": "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t="}, &joined)
 
 	// list networks (admin)
 	var netPage struct {
@@ -250,19 +259,19 @@ func TestAdminFlow(t *testing.T) {
 		t.Fatalf("reset code = %d", resp.StatusCode)
 	}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+nid+"/join", "",
-		map[string]any{"code": code, "publicKey": "CCC=="}, nil)
+		map[string]any{"code": code, "publicKey": "sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u="}, nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("old code should be invalid after reset, got %d", resp.StatusCode)
 	}
 	var j3 map[string]any
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+nid+"/join", "",
-		map[string]any{"code": "RESETCODE1", "publicKey": "CCC=="}, nil)
+		map[string]any{"code": "RESETCODE1", "publicKey": "sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u="}, nil)
 	_ = j3
 	// the actual new code comes from the reset response body
 	var resetBody map[string]string
 	doJSON(t, http.MethodPost, ts.URL+"/admin/networks/"+nid+"/code", "secret", nil, &resetBody)
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+nid+"/join", "",
-		map[string]any{"code": resetBody["code"], "publicKey": "CCC=="}, nil)
+		map[string]any{"code": resetBody["code"], "publicKey": "sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u="}, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("new code join = %d", resp.StatusCode)
 	}
@@ -282,13 +291,13 @@ func TestCreateRateLimit(t *testing.T) {
 	ts, _ := newTestServerOpts(t, Options{CreatePerHour: 5})
 	for i := 0; i < 5; i++ {
 		resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-			map[string]any{"publicKey": fmt.Sprintf("KEY-%d", i)}, nil)
+			map[string]any{"publicKey": testKey(i)}, nil)
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("create %d = %d, want 201", i, resp.StatusCode)
 		}
 	}
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		map[string]any{"publicKey": "KEY-6"}, nil)
+		map[string]any{"publicKey": testKey(6)}, nil)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("6th create = %d, want 429", resp.StatusCode)
 	}
@@ -298,19 +307,19 @@ func TestJoinRateLimit(t *testing.T) {
 	ts, _ := newTestServerOpts(t, Options{JoinPerMinute: 30})
 	var created map[string]any
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		map[string]any{"publicKey": "AAA=="}, &created)
+		map[string]any{"publicKey": "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s="}, &created)
 	nid := created["networkId"].(string)
 	code := created["pairingCode"].(string)
 
 	for i := 0; i < 30; i++ {
 		resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+nid+"/join", "",
-			map[string]any{"code": code, "publicKey": fmt.Sprintf("KEY-%d", i)}, nil)
+			map[string]any{"code": code, "publicKey": testKey(i)}, nil)
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("join %d = %d", i, resp.StatusCode)
 		}
 	}
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+nid+"/join", "",
-		map[string]any{"code": code, "publicKey": "KEY-31"}, nil)
+		map[string]any{"code": code, "publicKey": testKey(31)}, nil)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("over-limit join = %d, want 429", resp.StatusCode)
 	}
@@ -320,21 +329,21 @@ func TestTrustProxy(t *testing.T) {
 	ts, _ := newTestServerOpts(t, Options{TrustProxy: true, CreatePerHour: 5})
 	for i := 0; i < 5; i++ {
 		resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-			map[string]any{"publicKey": fmt.Sprintf("KEY-%d", i)}, nil)
+			map[string]any{"publicKey": testKey(i)}, nil)
 		if resp.StatusCode != http.StatusCreated {
 			t.Fatalf("create %d = %d", i, resp.StatusCode)
 		}
 	}
 	// real client (127.0.0.1, no XFF) now blocked
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		map[string]any{"publicKey": "KEY-X"}, nil)
+		map[string]any{"publicKey": testKey(50)}, nil)
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("real client should be blocked, got %d", resp.StatusCode)
 	}
 
 	// spoofed XFF from a fresh IP bypasses the local limit (trusted proxy)
 	var buf bytes.Buffer
-	_ = json.NewEncoder(&buf).Encode(map[string]any{"publicKey": "KEY-Y"})
+	_ = json.NewEncoder(&buf).Encode(map[string]any{"publicKey": testKey(51)})
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/networks", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Forwarded-For", "203.0.113.99")
@@ -374,7 +383,7 @@ func TestAdminCreateNetwork(t *testing.T) {
 	// pairing code allows more joins than codeMaxUse (unlimited budget)
 	for i := 0; i < 8; i++ {
 		resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
-			map[string]any{"code": created.PairingCode, "publicKey": fmt.Sprintf("KEY-%d", i),
+			map[string]any{"code": created.PairingCode, "publicKey": testKey(i),
 				"deviceId": fmt.Sprintf("dev-%d", i)}, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("join %d = %d", i, resp.StatusCode)
@@ -384,7 +393,7 @@ func TestAdminCreateNetwork(t *testing.T) {
 	// a managed network cannot be claimed by a joining client
 	var joined protocol.JoinResp
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
-		map[string]any{"code": created.PairingCode, "publicKey": "CLAIMKEY", "deviceId": "claim-dev"}, &joined)
+		map[string]any{"code": created.PairingCode, "publicKey": testKey(9), "deviceId": "claim-dev"}, &joined)
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/claim", joined.Token,
 		map[string]any{"deviceId": "claim-dev"}, nil)
 	if resp.StatusCode != http.StatusForbidden {
@@ -406,7 +415,7 @@ func TestManagedExemptFromSweep(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("admin create = %d", resp.StatusCode)
 	}
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +445,7 @@ func TestManagedExemptFromSweep(t *testing.T) {
 func TestAdminEditSettings(t *testing.T) {
 	ts, s := newTestServerOpts(t, Options{AdminToken: "secret"})
 
-	created, err := s.CreateNetwork("AAA==", "dev-owner", "", "", false)
+	created, err := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +485,7 @@ func TestAdminApproveDeny(t *testing.T) {
 
 	var created map[string]any
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "",
-		map[string]any{"publicKey": "AAA==", "deviceId": "dev-owner", "approvalRequired": true}, &created)
+		map[string]any{"publicKey": "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "deviceId": "dev-owner", "approvalRequired": true}, &created)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create = %d", resp.StatusCode)
 	}
@@ -485,7 +494,7 @@ func TestAdminApproveDeny(t *testing.T) {
 
 	var joined protocol.JoinResp
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+nid+"/join", "",
-		map[string]any{"code": code, "publicKey": "BBB==", "deviceId": "dev-joiner"}, &joined)
+		map[string]any{"code": code, "publicKey": "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t=", "deviceId": "dev-joiner"}, &joined)
 	if resp.StatusCode != http.StatusOK || joined.Status != "pending" {
 		t.Fatalf("join = %d %+v", resp.StatusCode, joined)
 	}
@@ -507,7 +516,7 @@ func TestAdminApproveDeny(t *testing.T) {
 	// second pending join then deny it
 	var joined2 protocol.JoinResp
 	doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+nid+"/join", "",
-		map[string]any{"code": code, "publicKey": "CCC==", "deviceId": "dev-joiner2"}, &joined2)
+		map[string]any{"code": code, "publicKey": "sRw3bI7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u=", "deviceId": "dev-joiner2"}, &joined2)
 	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/networks/"+nid+"/pending/"+joined2.PendingID+"/deny", "secret", nil, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("deny = %d", resp.StatusCode)

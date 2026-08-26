@@ -128,11 +128,12 @@ func (c *apiClient) RegisterDevice(deviceID, publicKey, name string) (*bool, err
 }
 
 // BindDevice presents a device authorization code to link this device to the
-// server. The code is sent once and never persisted.
-func (c *apiClient) BindDevice(deviceID, publicKey, code string) (protocol.BindDeviceResp, error) {
+// server. The code is sent once and never persisted. name is the
+// client-reported display name (hostname); old servers ignore it.
+func (c *apiClient) BindDevice(deviceID, publicKey, code, name string) (protocol.BindDeviceResp, error) {
 	var out protocol.BindDeviceResp
 	err := c.do(http.MethodPost, "/api/v1/devices/bind", "",
-		protocol.BindDeviceReq{Code: code, DeviceID: deviceID, PublicKey: publicKey}, &out)
+		protocol.BindDeviceReq{Code: code, DeviceID: deviceID, PublicKey: publicKey, Name: name}, &out)
 	return out, err
 }
 

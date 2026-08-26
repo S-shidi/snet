@@ -432,17 +432,17 @@
     if (backend.hasDaemonControl) {
       if (status) {
         dot.className = "live-dot ok";
-        dot.textContent = "\u540E\u53F0\u670D\u52A1: \u8FD0\u884C\u4E2D";
+        dot.textContent = "\u8FD0\u884C\u4E2D";
       } else {
         dot.className = "live-dot err";
-        dot.textContent = "\u540E\u53F0\u670D\u52A1: \u672A\u8FD0\u884C";
+        dot.textContent = "\u672A\u8FD0\u884C";
       }
       const btn = $("#header-svc-btn");
       if (btn) {
         btn.hidden = !!status;
         btn.disabled = false;
         if (!status) {
-          btn.textContent = "\u542F\u52A8\u540E\u53F0\u670D\u52A1";
+          btn.textContent = "\u542F\u52A8";
           btn.title = "\u542F\u52A8\u7CFB\u7EDF\u540E\u53F0\u5B88\u62A4\u8FDB\u7A0B\uFF08\u53EF\u80FD\u5F39\u51FA\u7BA1\u7406\u5458\u5BC6\u7801\u6846\uFF09";
           btn.onclick = () => void ensureDaemon();
         }
@@ -514,7 +514,7 @@
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 4l18 26H6L24 4z"/><path d="M24 34v6"/><path d="M12 46h24"/></svg>
       <div class="t">\u540E\u53F0\u670D\u52A1\u672A\u8FD0\u884C</div>
       <div class="s">\u9700\u8981\u7CFB\u7EDF\u540E\u53F0\u5B88\u62A4\u8FDB\u7A0B snetd \u7EF4\u6301\u7F51\u7EDC\u96A7\u9053</div>
-      <div class="empty-actions">${backend.hasDaemonControl ? `<button id="empty-start" class="btn">\u542F\u52A8\u540E\u53F0\u670D\u52A1</button>` : ""}</div>
+      <div class="empty-actions">${backend.hasDaemonControl ? `<button id="empty-start" class="btn">\u542F\u52A8</button>` : ""}</div>
     </div>`;
       const startBtn = $("#empty-start");
       if (startBtn) startBtn.addEventListener("click", ensureDaemon);
@@ -1303,7 +1303,7 @@
       </div>
       <div class="row"><label>WireGuard \u7AEF\u53E3</label><input id="s-wgport" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
       <div class="settings-actions" id="s-daemon-row">
-        ${backend.hasDaemonControl ? status ? `<span class="live-dot ok">\u540E\u53F0\u670D\u52A1: \u8FD0\u884C\u4E2D</span>` : `<button id="s-start-daemon" class="btn ghost">\u542F\u52A8\u540E\u53F0\u670D\u52A1</button>` : ""}
+        ${backend.hasDaemonControl ? status ? `<span class="live-dot ok">\u8FD0\u884C\u4E2D</span>` : `<button id="s-start-daemon" class="btn ghost">\u542F\u52A8</button>` : ""}
       </div>
       <p class="msg" id="s-msg"></p>
       <details class="help">
@@ -1353,7 +1353,7 @@
         });
         body.querySelector("#s-start-daemon")?.addEventListener("click", async () => {
           msg.className = "msg";
-          msg.textContent = "\u6B63\u5728\u542F\u52A8\u540E\u53F0\u670D\u52A1\uFF08\u53EF\u80FD\u5F39\u51FA\u7BA1\u7406\u5458\u5BC6\u7801\u6846\uFF09\u2026";
+          msg.textContent = "\u6B63\u5728\u542F\u52A8\u2026";
           try {
             await backend.ensureDaemon();
             msg.className = "msg ok";
@@ -1394,7 +1394,7 @@
         startDaemon.textContent = "\u542F\u52A8\u4E2D\u2026";
         const daemonResult = $("#onb-daemon-result");
         daemonResult.className = "msg";
-        daemonResult.textContent = "\u6B63\u5728\u542F\u52A8\u540E\u53F0\u670D\u52A1\uFF08\u53EF\u80FD\u5F39\u51FA\u7BA1\u7406\u5458\u5BC6\u7801\u6846\uFF09\u2026";
+        daemonResult.textContent = "\u6B63\u5728\u542F\u52A8\u2026";
         try {
           await backend.ensureDaemon();
           daemonResult.className = "msg ok";
@@ -1406,7 +1406,7 @@
           daemonResult.textContent = `\u542F\u52A8\u5931\u8D25: ${e}`;
         } finally {
           startDaemon.disabled = false;
-          startDaemon.textContent = "\u542F\u52A8\u540E\u53F0\u670D\u52A1";
+          startDaemon.textContent = "\u542F\u52A8";
         }
       };
     }
@@ -1464,7 +1464,7 @@
       if (statusJson) statusJson.textContent = "(\u672A\u8FDE\u63A5\u540E\u53F0\u670D\u52A1)";
       return;
     }
-    if (deviceId) deviceId.textContent = status.deviceId ?? "-";
+    if (deviceId) deviceId.textContent = status.deviceId || "-";
     const addr = status.serverAddr ?? "";
     if (svcServer) svcServer.textContent = status.bound && addr ? addr : "\u672A\u8FDE\u63A5\u670D\u52A1\u5668";
     if (svcWgport) svcWgport.textContent = String(status.wgPort ?? "-");
@@ -1543,6 +1543,13 @@
     initTabs();
     bindNetListEvents();
     bindEvents();
+    if (backend.hasDaemonControl) {
+      const lo = $("#btn-logout");
+      if (lo) lo.style.display = "none";
+      document.querySelectorAll('[data-action="logout"]').forEach((el) => {
+        el.style.display = "none";
+      });
+    }
     refresh();
     setInterval(() => {
       if (!document.hidden) refresh();

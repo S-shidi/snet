@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"snet/internal/protocol"
 	"golang.org/x/crypto/bcrypt"
+	"snet/internal/protocol"
 )
 
 // CtlReq is the request body for create/join control endpoints.

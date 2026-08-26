@@ -27,7 +27,7 @@ class MainActivity : AppCompatActivity() {
 
         // Initialize SnetBridge before WebView loads
         if (SnetBridge.getStatus(this) == null) {
-            SnetBridge.init(filesDir.absolutePath)
+            SnetBridge.init(this, filesDir.absolutePath)
         }
 
         // Simple full-screen WebView

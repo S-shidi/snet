@@ -73,6 +73,9 @@ type Daemon struct {
 	retryPending map[string]struct{}
 	// retryStop signals the background retry loop to exit.
 	retryStop chan struct{}
+	// androidTunFD holds the TUN file descriptor from VpnService on Android.
+	// When non-zero, bringUp uses NewTunnelFromFD instead of NewTunnel.
+	androidTunFD int
 	// hostnameCache caches the machine hostname for device registration.
 	hostnameCache string
 }
@@ -96,6 +99,12 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 // SetDeviceIDFile overrides the on-disk device identity path.
 func (d *Daemon) SetDeviceIDFile(path string) {
 	d.deviceIDFile = path
+}
+
+// SetAndroidTunFD stores the TUN file descriptor from VpnService so bringUp
+// can use NewTunnelFromFD instead of trying to create a TUN device directly.
+func (d *Daemon) SetAndroidTunFD(fd int) {
+	d.androidTunFD = fd
 }
 
 func (d *Daemon) save() error {
@@ -131,6 +140,15 @@ func (d *Daemon) hostname() string {
 	h, _ := os.Hostname()
 	d.hostnameCache = h
 	return h
+}
+
+// SetHostname overrides the display name reported during device registration
+// and binding. Intended for embedders (e.g. Android passes Build.MODEL since
+// os.Hostname is generic there). Call before Start or any network activity.
+func (d *Daemon) SetHostname(name string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.hostnameCache = strings.TrimSpace(name)
 }
 
 // ensureKeys points the daemon at a server and guarantees a private key and
@@ -440,7 +458,7 @@ func (d *Daemon) Bind(serverAddr, caPath, code string) error {
 	}
 	d.cfg.ServerCAPath = caPath
 	api := d.apiLocked()
-	resp, err := api.BindDevice(d.cfg.DeviceID, d.publicKeyLocked(), code)
+	resp, err := api.BindDevice(d.cfg.DeviceID, d.publicKeyLocked(), code, d.hostname())
 	if err != nil {
 		d.rollbackSwitchLocked(sw)
 		return err
@@ -801,6 +819,20 @@ func (d *Daemon) Start() error {
 	return nil
 }
 
+// BringUpActive brings up tunnels for all active networks. Used on Android
+// when the TUN fd becomes available after the daemon was already created.
+func (d *Daemon) BringUpActive() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active && d.nets[nid] == nil {
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("bring up active %s: %v", nid, err)
+			}
+		}
+	}
+}
+
 func (d *Daemon) bringUp(nid string) error {
 	nc := d.cfg.Networks[nid]
 	if nc == nil {
@@ -818,7 +850,7 @@ func (d *Daemon) bringUp(nid string) error {
 	if nc.Port == 0 {
 		nc.Port = d.pickPortLocked()
 	}
-	t, err := NewTunnel(d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU)
+	t, err := createTunnelForPlatform(d.androidTunFD, d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU)
 	if err != nil {
 		d.netErrs[nid] = err.Error()
 		d.scheduleRetryLocked(nid)
@@ -1162,8 +1194,17 @@ func (d *Daemon) Rejoin(nid string) error {
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
+	// If already active but tunnel is missing (e.g. VPN service restarted),
+	// re-bring-up instead of refusing.
 	if nc.Active {
-		return fmt.Errorf("网络 %s 已激活", nid)
+		if rt := d.nets[nid]; rt != nil && rt.tun != nil {
+			return fmt.Errorf("网络 %s 已激活", nid)
+		}
+		// Tunnel lost — bring it up again.
+		if err := d.bringUp(nid); err != nil {
+			log.Printf("rejoin bring up %s: %v", nid, err)
+		}
+		return nil
 	}
 	nc.Active = true
 	if err := d.save(); err != nil {
@@ -1246,6 +1287,7 @@ func (d *Daemon) UpdateSubnets(nid string, subnets []string) error {
 	}
 	return nil
 }
+
 // DetectLocalSubnets enumerates network interfaces and returns the private
 // IPv4 CIDR subnets (e.g. "192.168.1.0/24") this device is directly on.
 // Virtual / tunnel interfaces are excluded.
@@ -1348,7 +1390,6 @@ func ipNetCIDR(n *net.IPNet) string {
 	}
 	return fmt.Sprintf("%s/%d", base.String(), ones)
 }
-
 
 // ApprovePending approves a member's join request on a network this node owns.
 func (d *Daemon) ApprovePending(nid, pendingID string) error {

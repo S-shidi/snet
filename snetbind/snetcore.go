@@ -23,6 +23,8 @@ type SnetCore struct {
 	daemon       *client.Daemon
 	configPath   string
 	deviceIDFile string
+	hardwareID   string // Kotlin-provided hardware-bound device ID (takes priority)
+	deviceName   string // Kotlin-provided display name (e.g. Build.MODEL)
 }
 
 // NewSnetCore creates a new core instance. configDir is the app-private
@@ -37,9 +39,6 @@ func (c *SnetCore) ensureDaemon() (*client.Daemon, error) {
 	if c.daemon != nil {
 		return c.daemon, nil
 	}
-	if c.deviceIDFile != "" {
-		client.SetDeviceIDFile(c.deviceIDFile)
-	}
 	cfg, err := client.LoadConfigAt(c.configPath)
 	if err != nil {
 		cfg = &client.Config{WireguardPort: protocol.DefaultWGPort}
@@ -48,19 +47,46 @@ func (c *SnetCore) ensureDaemon() (*client.Daemon, error) {
 	if c.deviceIDFile != "" {
 		d.SetDeviceIDFile(c.deviceIDFile)
 	}
+	if c.deviceName != "" {
+		d.SetHostname(c.deviceName)
+	}
+	// Generate device ID eagerly so it's available before any bind/join.
+	// Priority: Kotlin hardware ID > file-based > Go-generated.
+	if c.hardwareID != "" {
+		if cfg.DeviceID == "" || cfg.DeviceID != c.hardwareID {
+			cfg.DeviceID = c.hardwareID
+			d.SaveConfig()
+			// Also persist to device.key file for caching
+			if c.deviceIDFile != "" {
+				_ = client.SaveDeviceKeypair(c.deviceIDFile, c.hardwareID, cfg.PrivateKey)
+			}
+		}
+	} else if cfg.DeviceID == "" {
+		if id, err := client.LoadOrCreateDeviceID(c.deviceIDFile, ""); err == nil && id != "" {
+			cfg.DeviceID = id
+			d.SaveConfig()
+		}
+	}
 	c.daemon = d
 	return d, nil
 }
 
 // Start loads config and brings up all active networks. tunFD is the file
 // descriptor from VpnService.establish(). deviceIDPath is where the device
-// identity file is stored.
+// identity file is stored. If a daemon already exists, just sets the fd and
+// brings up active networks instead of creating a new daemon.
 func (c *SnetCore) Start(tunFD int, deviceIDPath string, serverAddr string, serverCA string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.deviceIDFile = deviceIDPath
-	client.SetDeviceIDFile(deviceIDPath)
+
+	// If daemon already exists (from ensureDaemon), just set fd and bring up.
+	if c.daemon != nil {
+		c.daemon.SetAndroidTunFD(int(tunFD))
+		c.daemon.BringUpActive()
+		return nil
+	}
 
 	cfg, err := client.LoadConfigAt(c.configPath)
 	if err != nil {
@@ -73,7 +99,13 @@ func (c *SnetCore) Start(tunFD int, deviceIDPath string, serverAddr string, serv
 		cfg.ServerCAPath = serverCA
 	}
 
+	// Inject Kotlin hardware ID if available and config doesn't have one yet.
+	if c.hardwareID != "" && cfg.DeviceID == "" {
+		cfg.DeviceID = c.hardwareID
+	}
+
 	d := client.NewDaemonAt(cfg, c.configPath)
+	d.SetAndroidTunFD(int(tunFD))
 
 	if err := d.Start(); err != nil {
 		return fmt.Errorf("daemon start: %w", err)
@@ -88,6 +120,40 @@ func (c *SnetCore) SetDeviceIDFile(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deviceIDFile = path
+}
+
+// SetHardwareID sets the Kotlin-provided hardware-bound device ID.
+// This takes priority over file-based and Go-generated device IDs.
+func (c *SnetCore) SetHardwareID(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hardwareID = id
+}
+
+// SetDeviceName sets the Kotlin-provided display name (e.g. Build.MODEL)
+// reported to the server during device registration and binding. Call during
+// init, before Start or Bind.
+func (c *SnetCore) SetDeviceName(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deviceName = name
+	if c.daemon != nil {
+		c.daemon.SetHostname(name)
+	}
+}
+
+// SetTunFD sets the TUN file descriptor on the existing daemon and brings up
+// all active networks. Called from VpnService when the TUN fd becomes
+// available. Does NOT create a new daemon — uses the one from ensureDaemon.
+func (c *SnetCore) SetTunFD(tunFD int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d, err := c.ensureDaemon()
+	if err != nil {
+		return
+	}
+	d.SetAndroidTunFD(int(tunFD))
+	d.BringUpActive()
 }
 
 // Stop gracefully shuts down the daemon and tears down all tunnels.

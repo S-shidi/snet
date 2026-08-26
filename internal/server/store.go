@@ -3,6 +3,8 @@ package server
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +13,7 @@ import (
 	"net"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +40,12 @@ var (
 	// ErrAdminExists is returned by BootstrapAdmin when an admin account has
 	// already been initialized.
 	ErrAdminExists = errors.New("管理员账号已初始化")
+	// ErrInternal is the client-facing stand-in for unexpected server errors;
+	// the real cause is logged server-side.
+	ErrInternal = errors.New("服务器内部错误，请稍后重试")
+	// ErrBadJSON replaces raw JSON decoder errors on 400 responses so parser
+	// internals never leak to clients.
+	ErrBadJSON = errors.New("请求格式错误")
 )
 
 const (
@@ -736,6 +745,9 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 	if err := validateDeviceID(deviceID); err != nil {
 		return protocol.CreateNetworkResp{}, err
 	}
+	if err := validatePublicKey(publicKey); err != nil {
+		return protocol.CreateNetworkResp{}, err
+	}
 	if deviceID != "" {
 		for _, other := range s.networks {
 			if other.n.OwnerDeviceID == deviceID {
@@ -858,6 +870,7 @@ func (s *Store) upsertDeviceLocked(deviceID, publicKey, name string) error {
 	if deviceID == "" {
 		return nil
 	}
+	name = normalizeName(name)
 	now := time.Now().Unix()
 	d := s.devices[deviceID]
 	if d == nil {
@@ -873,6 +886,14 @@ func (s *Store) upsertDeviceLocked(deviceID, publicKey, name string) error {
 	d.PublicKey = publicKey
 	d.LastSeen = now
 	return s.persistDevice(d)
+}
+
+// fillDeviceNameLocked applies a client-reported name without clobbering an
+// existing one; admin-set names always win. Callers hold s.mu.
+func (s *Store) fillDeviceNameLocked(d *deviceRecord, name string) {
+	if n := normalizeName(name); n != "" && d.Name == "" {
+		d.Name = n
+	}
 }
 
 // touchLocked refreshes the network activity timestamp and persists at most
@@ -899,6 +920,9 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 
 	if s.requireDeviceAuth && !s.deviceBoundLocked(deviceID) {
 		return protocol.JoinResp{}, ErrUnauthorized
+	}
+	if err := validatePublicKey(publicKey); err != nil {
+		return protocol.JoinResp{}, err
 	}
 
 	ns := s.networks[nid]
@@ -1023,6 +1047,9 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 }
 
 func (s *Store) SetEndpoint(token, endpoint string) error {
+	if err := validateEndpoint(endpoint); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	te, ok := s.byToken[hashToken(token)]
@@ -1133,11 +1160,67 @@ func validateDeviceID(id string) error {
 	return nil
 }
 
+// validatePublicKey checks that a client-supplied WireGuard public key is a
+// base64-encoded 32-byte key. An empty value is allowed (the field is
+// optional on some endpoints); anything non-empty must be well-formed so
+// junk cannot be persisted and fanned out to peers.
+func validatePublicKey(pk string) error {
+	if pk == "" {
+		return nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(pk)
+	if err != nil {
+		// Tolerate unpadded input; real keys are padded but be liberal.
+		raw, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(pk, "="))
+		if err != nil {
+			return errors.New("公钥格式无效（需 base64 编码的 WireGuard 公钥）")
+		}
+	}
+	if len(raw) != 32 {
+		return errors.New("公钥长度无效（需 32 字节 WireGuard 公钥）")
+	}
+	return nil
+}
+
+// maxNameLen caps client-supplied display names (network names are checked
+// separately with the same limit).
+const maxNameLen = 64
+
+// normalizeName trims and caps a display name.
+func normalizeName(name string) string {
+	name = strings.TrimSpace(name)
+	r := []rune(name)
+	if len(r) > maxNameLen {
+		return string(r[:maxNameLen])
+	}
+	return name
+}
+
+// validateEndpoint checks the host:port shape of a peer-advertised endpoint.
+// An empty value is allowed (clears the endpoint).
+func validateEndpoint(ep string) error {
+	if ep == "" {
+		return nil
+	}
+	host, portStr, err := net.SplitHostPort(ep)
+	if err != nil || host == "" || portStr == "" {
+		return errors.New("endpoint 需为 host:port 形式")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return errors.New("endpoint 端口无效")
+	}
+	return nil
+}
+
 // RegisterDevice records (or refreshes) a device identity and binds the
 // device's WireGuard public key to it.  The name parameter seeds the display
 // name on new devices; an empty string leaves any existing name untouched.
 func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
 	if err := validateDeviceID(deviceID); err != nil {
+		return err
+	}
+	if err := validatePublicKey(publicKey); err != nil {
 		return err
 	}
 	if deviceID == "" {
@@ -1640,14 +1723,23 @@ func (s *Store) AdminPending(nid string) ([]protocol.PendingNode, error) {
 		return nil, ErrNotFound
 	}
 	pruneExpiredPendingLocked(s, time.Now())
+	// Only surface requests still awaiting a decision: approved/denied records
+	// are kept for client polling (PendingStatus) but are noise for admins.
 	out := make([]protocol.PendingNode, 0, len(ns.pending))
 	for _, p := range ns.pending {
-		out = append(out, protocol.PendingNode{
+		if p.Status != "pending" {
+			continue
+		}
+		pn := protocol.PendingNode{
 			ID:        p.ID,
 			PublicKey: p.PublicKey,
 			DeviceID:  p.DeviceID,
 			CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339),
-		})
+		}
+		if d := s.devices[p.DeviceID]; d != nil {
+			pn.DeviceName = d.Name
+		}
+		out = append(out, pn)
 	}
 	return out, nil
 }
@@ -2210,21 +2302,29 @@ func (s *Store) GenerateDeviceToken(deviceID string) (string, error) {
 }
 
 // ValidateDeviceToken checks whether the presented token matches the stored
-// device token for deviceID.
+// device token for deviceID. Comparison is constant-time.
 func (s *Store) ValidateDeviceToken(deviceID, token string) bool {
 	if deviceID == "" || token == "" {
 		return false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	d := s.devices[deviceID]
-	return d != nil && d.DeviceToken != "" && d.DeviceToken == token
+	if d == nil || d.DeviceToken == "" {
+		s.mu.Unlock()
+		return false
+	}
+	stored := d.DeviceToken
+	s.mu.Unlock()
+	return subtle.ConstantTimeCompare([]byte(stored), []byte(token)) == 1
 }
 
 // UpdateNodePublicKey updates the WireGuard public key of a node identified by
 // its device binding. This is used after a client reinstall when the device
 // generates a new keypair.
 func (s *Store) UpdateNodePublicKey(deviceID, networkID, nodeID, publicKey string) error {
+	if err := validatePublicKey(publicKey); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ns := s.networks[networkID]
@@ -2251,7 +2351,11 @@ func (s *Store) AdminNodes(nid string) ([]protocol.Node, error) {
 	}
 	nodes := make([]protocol.Node, 0, len(ns.nodes))
 	for _, n := range ns.nodes {
-		nodes = append(nodes, *n)
+		node := *n
+		if d := s.devices[n.DeviceID]; d != nil {
+			node.DeviceName = d.Name
+		}
+		nodes = append(nodes, node)
 	}
 	return nodes, nil
 }
@@ -2283,6 +2387,9 @@ func (s *Store) AdminRemoveNode(nid, nodeID string) error {
 // of its own beyond a placeholder: peers reach it once it initiates, so its
 // endpoint stays empty until the server observes it. Returns node ID and IP.
 func (s *Store) AdminAddExternalNode(nid, publicKey string) (string, string, error) {
+	if err := validatePublicKey(publicKey); err != nil {
+		return "", "", err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ns := s.networks[nid]
@@ -2521,10 +2628,14 @@ func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
 			BoundCount:  len(ac.Bindings),
 		}
 		for _, b := range ac.Bindings {
-			info.BoundDevices = append(info.BoundDevices, protocol.AuthCodeBindingInfo{
+			bi := protocol.AuthCodeBindingInfo{
 				DeviceID: b.DeviceID,
 				BoundAt:  b.BoundAt.UTC().Format(time.RFC3339),
-			})
+			}
+			if d := s.devices[b.DeviceID]; d != nil {
+				bi.DeviceName = d.Name
+			}
+			info.BoundDevices = append(info.BoundDevices, bi)
 		}
 		if len(ac.Bindings) > 0 {
 			// Backward-compatible single-device fields mirror the first binding.
@@ -2694,6 +2805,7 @@ func (s *Store) AdminDeleteDevice(deviceID string) error {
 
 // AdminRenameDevice sets a device's display name.
 func (s *Store) AdminRenameDevice(deviceID, name string) error {
+	name = normalizeName(name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d := s.devices[deviceID]
@@ -2723,8 +2835,11 @@ func (s *Store) deleteDevice(deviceID string) error {
 // codes by handing out fresh ones. A device is bound to at most one code.
 // Returns the device token for device-scoped API calls (e.g. network sync
 // after reinstall).
-func (s *Store) BindDevice(code, deviceID, publicKey string) (string, error) {
+func (s *Store) BindDevice(code, deviceID, publicKey, name string) (string, error) {
 	if err := validateDeviceID(deviceID); err != nil {
+		return "", err
+	}
+	if err := validatePublicKey(publicKey); err != nil {
 		return "", err
 	}
 	if deviceID == "" {
@@ -2748,6 +2863,7 @@ func (s *Store) BindDevice(code, deviceID, publicKey string) (string, error) {
 		// Idempotent: same device, same code. Still return the device token.
 		d := s.devices[deviceID]
 		if d != nil && d.DeviceToken != "" {
+			s.fillDeviceNameLocked(d, name)
 			return d.DeviceToken, nil
 		}
 		// First time binding with this device: generate a token.
@@ -2764,6 +2880,7 @@ func (s *Store) BindDevice(code, deviceID, publicKey string) (string, error) {
 		}
 		d.DeviceToken = tok
 		d.PublicKey = publicKey
+		s.fillDeviceNameLocked(d, name)
 		d.LastSeen = time.Now().Unix()
 		if err := s.persistDevice(d); err != nil {
 			return "", err
@@ -2793,7 +2910,7 @@ func (s *Store) BindDevice(code, deviceID, publicKey string) (string, error) {
 	}
 	// Registering the device here keeps the device list consistent even when
 	// the client never calls /api/v1/devices.
-	if err := s.upsertDeviceLocked(deviceID, publicKey, ""); err != nil {
+	if err := s.upsertDeviceLocked(deviceID, publicKey, name); err != nil {
 		return "", err
 	}
 	// Generate a device token for device-scoped API calls.
