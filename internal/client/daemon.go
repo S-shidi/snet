@@ -43,7 +43,7 @@ type netRuntime struct {
 // Daemon coordinates the local tunnels and the coordination server for any
 // number of networks against a single server.
 type Daemon struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	cfg  *Config
 	nets map[string]*netRuntime
 	// pendingRuns tracks the poll goroutines of pending join requests.
@@ -134,11 +134,17 @@ func (d *Daemon) publicKeyLocked() string {
 }
 
 func (d *Daemon) hostname() string {
+	d.mu.RLock()
 	if d.hostnameCache != "" {
-		return d.hostnameCache
+		v := d.hostnameCache
+		d.mu.RUnlock()
+		return v
 	}
+	d.mu.RUnlock()
 	h, _ := os.Hostname()
+	d.mu.Lock()
 	d.hostnameCache = h
+	d.mu.Unlock()
 	return h
 }
 
@@ -546,15 +552,15 @@ func (d *Daemon) pendingLoop(pendingID string, stop chan struct{}) {
 		}
 		switch status.Status {
 		case "approved":
-			delete(d.cfg.PendingJoins, pendingID)
-			delete(d.pendingRuns, pendingID)
-			_ = d.save()
 			err := d.attach(status.NetworkID, pj.Name, status.NodeID, status.IP, status.Token, pj.Code, status.Subnet, false)
 			if err != nil {
 				log.Printf("join approved %s: %v", pendingID, err)
 				d.mu.Unlock()
 				return
 			}
+			delete(d.cfg.PendingJoins, pendingID)
+			delete(d.pendingRuns, pendingID)
+			_ = d.save()
 			d.reconcileOwnership(status.NetworkID)
 			d.mu.Unlock()
 			log.Printf("pending %s approved, joined %s", pendingID, status.NetworkID)
@@ -848,7 +854,13 @@ func (d *Daemon) bringUp(nid string) error {
 		delete(d.nets, nid)
 	}
 	if nc.Port == 0 {
-		nc.Port = d.pickPortLocked()
+		p, err := d.pickPortLocked()
+		if err != nil {
+			d.netErrs[nid] = err.Error()
+			d.scheduleRetryLocked(nid)
+			return fmt.Errorf("pick port: %w", err)
+		}
+		nc.Port = p
 	}
 	t, err := createTunnelForPlatform(d.androidTunFD, d.cfg.PrivateKey, nc.IP, nc.Port, protocol.DefaultMTU)
 	if err != nil {
@@ -929,17 +941,17 @@ func (d *Daemon) retryLoop(stop chan struct{}) {
 }
 
 // pickPortLocked finds a free UDP port, preferring the configured base.
-func (d *Daemon) pickPortLocked() int {
+func (d *Daemon) pickPortLocked() (int, error) {
 	base := d.cfg.WireguardPort
 	if base == 0 {
 		base = protocol.DefaultWGPort
 	}
 	for p := base; p < base+64; p++ {
 		if portFree(p) {
-			return p
+			return p, nil
 		}
 	}
-	return base
+	return 0, fmt.Errorf("no free UDP port in range %d-%d", base, base+63)
 }
 
 func (d *Daemon) localEndpointLocked(port int) (string, error) {

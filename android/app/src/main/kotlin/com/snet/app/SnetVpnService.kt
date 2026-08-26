@@ -112,6 +112,22 @@ class SnetVpnService : VpnService() {
                 .addRoute("0.0.0.0", 0)
                 .setBlocking(true)
 
+            // Exclude local subnets so LAN access and DNS resolution to local
+            // servers continue to work. These ranges are excluded from the VPN
+            // tunnel and route through the physical interface instead.
+            val localSubnets = listOf(
+                "192.168.0.0" to 16,
+                "10.0.0.0" to 8,
+                "172.16.0.0" to 12,
+                "169.254.0.0" to 16,  // link-local
+                "127.0.0.0" to 8      // loopback
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                for ((addr, prefix) in localSubnets) {
+                    builder.excludeRoute(java.net.InetNetwork(addr, prefix))
+                }
+            }
+
             val pfd = builder.establish()
             if (pfd == null) {
                 Log.e(TAG, "Failed to establish VPN")

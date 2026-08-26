@@ -98,8 +98,9 @@ class WebBridge(private val activity: MainActivity) {
                 val intent = android.content.Intent(activity, SnetVpnService::class.java)
                 intent.action = "START"
                 activity.startForegroundService(intent)
-                // Wait for VPN service to establish TUN and init daemon
-                Thread.sleep(1500)
+                // Non-blocking: start VPN and attempt rejoin immediately.
+                // If the daemon is not yet ready, rejoin will fail gracefully
+                // and the UI should retry on next refresh/poll.
             }
             SnetBridge.rejoin(nid)
             """{"ok":true}"""

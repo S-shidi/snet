@@ -335,14 +335,4 @@ object SnetBridge {
             """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
         }
     }
-
-    fun updateNetwork(@Suppress("UNUSED_PARAMETER") context: android.content.Context, networkID: String, name: String, subnets: List<String>): String {
-        val c = core ?: return """{"error":"core not initialized"}"""
-        return try {
-            c.updateSettings(networkID, name, "", false)
-            """{"ok":true}"""
-        } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
-        }
-    }
 }
