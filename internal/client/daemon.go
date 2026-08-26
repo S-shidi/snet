@@ -127,6 +127,14 @@ func (d *Daemon) SaveConfig() error {
 	return d.save()
 }
 
+// Config returns the daemon's current configuration. The caller must not
+// modify the returned pointer; it is a snapshot taken under the lock.
+func (d *Daemon) Config() *Config {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.cfg
+}
+
 func (d *Daemon) apiLocked() *apiClient {
 	if d.api != nil && d.apiServer == d.cfg.ServerAddr && d.apiCA == d.cfg.ServerCAPath {
 		return d.api
@@ -971,8 +979,25 @@ func (d *Daemon) localEndpointLocked(port int) (string, error) {
 	return net.JoinHostPort(ip, fmt.Sprint(port)), nil
 }
 
+// pollIntervalFor returns the peer poll interval scaled by network count.
+// Base is 2 s; each extra network adds 0.5 s, capped at 10 s.
+func pollIntervalFor(n int) time.Duration {
+	if n <= 1 {
+		return protocol.PollIntervalSeconds * time.Second
+	}
+	dur := time.Duration(int(protocol.PollIntervalSeconds*10)+5*(n-1)) * 100 * time.Millisecond
+	if dur > 10*time.Second {
+		dur = 10 * time.Second
+	}
+	return dur
+}
+
 func (d *Daemon) pollLoop(nid string) {
-	ticker := time.NewTicker(protocol.PollIntervalSeconds * time.Second)
+	n := len(d.cfg.Networks)
+	if n < 1 {
+		n = 1
+	}
+	ticker := time.NewTicker(pollIntervalFor(n))
 	defer ticker.Stop()
 	for {
 		select {

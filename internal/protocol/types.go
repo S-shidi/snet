@@ -144,6 +144,7 @@ type PendingNode struct {
 type PendingStatusResp struct {
 	Status    string `json:"status"`
 	NetworkID string `json:"networkId,omitempty"`
+	Name      string `json:"name,omitempty"`
 	NodeID    string `json:"nodeId,omitempty"`
 	IP        string `json:"ip,omitempty"`
 	Token     string `json:"token,omitempty"`

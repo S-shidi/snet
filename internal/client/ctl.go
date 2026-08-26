@@ -14,6 +14,10 @@ import (
 	"snet/internal/protocol"
 )
 
+// shutdownGraceDelay is the pause between flushing the shutdown HTTP
+// response and actually stopping the server.  Tests may override it.
+var shutdownGraceDelay = 200 * time.Millisecond
+
 // CtlReq is the request body for create/join control endpoints.
 type CtlReq struct {
 	Server string `json:"server"`
@@ -32,6 +36,7 @@ type CtlReq struct {
 }
 
 // ServeCtl exposes the local control API for snetctl and the Tauri UI.
+// The listener is bound to 127.0.0.1 only (no network exposure).
 // onShutdown is invoked (with the running server) shortly after the
 // /ctl/shutdown handler has flushed its response; the caller decides how to
 // terminate: a foreground daemon exits the process, while a Windows service
@@ -354,7 +359,7 @@ func ServeCtl(d *Daemon, addr string, onShutdown func(*http.Server)) error {
 		d.Close()
 		w.WriteHeader(204)
 		go func() {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(shutdownGraceDelay)
 			onShutdown(srv)
 		}()
 	})

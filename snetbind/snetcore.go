@@ -106,6 +106,9 @@ func (c *SnetCore) Start(tunFD int, deviceIDPath string, serverAddr string, serv
 
 	d := client.NewDaemonAt(cfg, c.configPath)
 	d.SetAndroidTunFD(int(tunFD))
+	if c.deviceName != "" {
+		d.SetHostname(c.deviceName)
+	}
 
 	if err := d.Start(); err != nil {
 		return fmt.Errorf("daemon start: %w", err)
@@ -291,6 +294,22 @@ func (c *SnetCore) Info(nid string) string {
 		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
 	b, _ := json.Marshal(info)
+	return string(b)
+}
+
+// GetAllowedSubnets returns the allowed subnets for a network as a JSON array.
+func (c *SnetCore) GetAllowedSubnets(nid string) string {
+	c.mu.Lock()
+	d, err := c.ensureDaemon()
+	c.mu.Unlock()
+	if err != nil {
+		return "[]"
+	}
+	nc := d.Config().Networks[nid]
+	if nc == nil {
+		return "[]"
+	}
+	b, _ := json.Marshal(nc.AllowedSubnets)
 	return string(b)
 }
 

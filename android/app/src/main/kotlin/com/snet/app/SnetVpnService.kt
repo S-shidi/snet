@@ -52,7 +52,7 @@ class SnetVpnService : VpnService() {
     private val started = AtomicBoolean(false)
     private var vpnStartTime = 0L
 
-    private val keepAliveRunnable = object : Runnable {
+    private val tunHealthCheck = object : Runnable {
         override fun run() {
             if (!isRunning) return
             protectKeepAlive()
@@ -146,7 +146,7 @@ class SnetVpnService : VpnService() {
 
             SnetBridge.onTunFdReady(pfd.fd)
 
-            handler.postDelayed(keepAliveRunnable, KEEPALIVE_INTERVAL)
+            handler.postDelayed(tunHealthCheck, KEEPALIVE_INTERVAL)
             handler.postDelayed(statusCheckRunnable, STATUS_CHECK_INTERVAL)
 
             Log.d(TAG, "VPN established, TUN fd=${pfd.fd}")
@@ -163,7 +163,7 @@ class SnetVpnService : VpnService() {
         started.set(false)
         notifyStatus("disconnected")
 
-        handler.removeCallbacks(keepAliveRunnable)
+        handler.removeCallbacks(tunHealthCheck)
         handler.removeCallbacks(statusCheckRunnable)
 
         tunFd?.close()

@@ -314,25 +314,4 @@ object SnetBridge {
             obj.optString("deviceId", null) // Go key: "deviceId"
         } catch (e: Exception) { null }
     }
-
-    fun connect(@Suppress("UNUSED_PARAMETER") context: android.content.Context, networkID: String): String {
-        val c = core ?: return """{"error":"core not initialized"}"""
-        return try { c.rejoin(networkID); """{"ok":true}""" } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
-        }
-    }
-
-    fun disconnect(@Suppress("UNUSED_PARAMETER") context: android.content.Context, networkID: String): String {
-        val c = core ?: return """{"error":"core not initialized"}"""
-        return try { c.leaveNetwork(networkID); """{"ok":true}""" } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
-        }
-    }
-
-    fun getInviteCode(@Suppress("UNUSED_PARAMETER") context: android.content.Context, networkID: String): String {
-        val c = core ?: return """{"error":"core not initialized"}"""
-        return try { c.info(networkID) } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
-        }
-    }
 }

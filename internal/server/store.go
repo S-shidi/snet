@@ -1441,6 +1441,7 @@ func (s *Store) PendingStatus(pendingID string) (protocol.PendingStatusResp, err
 			return protocol.PendingStatusResp{
 				Status:    "approved",
 				NetworkID: ns.n.ID,
+				Name:      ns.n.Name,
 				NodeID:    p.NodeID,
 				IP:        p.IP,
 				Token:     p.Token,
@@ -1449,9 +1450,9 @@ func (s *Store) PendingStatus(pendingID string) (protocol.PendingStatusResp, err
 				Peers:     peers,
 			}, nil
 		case "denied":
-			return protocol.PendingStatusResp{Status: "denied", NetworkID: ns.n.ID}, nil
+			return protocol.PendingStatusResp{Status: "denied", NetworkID: ns.n.ID, Name: ns.n.Name}, nil
 		default:
-			return protocol.PendingStatusResp{Status: "pending", NetworkID: ns.n.ID}, nil
+			return protocol.PendingStatusResp{Status: "pending", NetworkID: ns.n.ID, Name: ns.n.Name}, nil
 		}
 	}
 	return protocol.PendingStatusResp{Status: "gone"}, nil
@@ -1636,6 +1637,7 @@ func (s *Store) pendingStatusLocked(ns *networkState, p *pendingNode) protocol.P
 	return protocol.PendingStatusResp{
 		Status:    "approved",
 		NetworkID: ns.n.ID,
+		Name:      ns.n.Name,
 		NodeID:    p.NodeID,
 		IP:        p.IP,
 		Token:     p.Token,
