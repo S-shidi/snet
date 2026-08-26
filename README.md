@@ -2,10 +2,10 @@
 
 端到端加密的私有虚拟局域网（WireGuard 数据面 + HTTPS 协调 + UDP 中继）。
 
-- **服务端**（Go）：网络协调、成员管理、NAT 穿透探测、UDP 中继、Web 管理页（分页列表、总览统计）、设备授权码。
+- **服务端**（Go）：网络协调、成员管理、NAT 穿透探测、UDP 中继、Web 管理页（分页列表、总览统计）、设备授权码、设备命名。安全加固：限流、安全头（CSP/HSTS/no-store）、XFF 最右、凭据加锁、引导互斥。
 - **客户端**（Go daemon + Tauri 桌面端）：macOS（launchd）、Windows（SCM 服务）、Linux 均支持；
-  数据面优先 NAT 打洞直连，打不通时经服务器中继转发。
-- **Android 端**（WebView UI + gomobile AAR）：内置 VPN 服务，扫码/链接加入网络。
+  数据面优先 NAT 打洞直连，打不通时经服务器中继转发。设备名自动上报（首次连接填充，管理端改名优先）。
+- **Android 端**（WebView UI + gomobile AAR）：内置 VPN 服务，扫码/链接加入网络。设备名取 manufacturer+model。
 - **手机**：服务器端生成节点配置，用 WireGuard App 导入（见 `deploy/phone-android.conf` 模板）。
 
 ## 目录结构
@@ -20,9 +20,13 @@ internal/
   client/                daemon 核心：隧道（ifconfig/netsh）、设备 ID、ctl 接口
   protocol/              客户端-服务端协议类型
 android/                 Android 客户端（Gradle 工程，WebView UI + gomobile AAR）
+  app/src/main/kotlin/com/snet/app/
+    HardwareID.kt        Android 设备硬件 ID 派生
+    SnetBridge.kt        gomobile 绑定层（设备名上报、VPN 控制）
 desktop/                 Tauri 桌面端（Rust + Vite/TypeScript）
   src-tauri/src/snet/    ctl 封装与各平台服务安装（macos launchd / windows sc.exe）
 deploy/                  部署文档、systemd 服务单元、手机配置
+snetbind/                gomobile 绑定层（SetDeviceName、ensureDaemon）
 scripts/                 e2e 测试、rollout 脚本、辅助工具
 build/                   各平台已编译产物（linux-amd64/arm64、windows-amd64，含 wintun.dll）
 .github/workflows/       CI：Windows 安装包构建

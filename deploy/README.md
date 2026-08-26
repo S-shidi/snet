@@ -110,7 +110,7 @@ iptables -A INPUT -p udp --dport 51820:51883 -j ACCEPT  # UDP 中继池
   （服务器公钥证书 `server.pem`，客户端 `snetd --ca-path` / `snetctl --ca-path`）。
 - 客户端为多网络模式：一台机器可加入多个网络并存（每个网络独立 utun + WG 端口，
   端口从 `--port` 起自动探测空闲）；单协调服务器（多服务器请另跑一个 daemon）。
-- 创建设备身份：`snetd` 首次启动生成 16 位设备 ID（macOS 取 IOPlatformUUID、Linux 取 DMI product_uuid 派生，虚拟机等取不到时回退随机）存于 `/usr/local/snet/device.id`（卸载重装不丢失；硬件 ID 派生，重装系统也不变）；新创建的网络自动认领为 owner（迁移旧网络：`snetctl claim --nid`）。
+- 创建设备身份：`snetd` 首次启动生成 16 位设备 ID（macOS 取 IOPlatformUUID、Linux 取 DMI product_uuid 派生，虚拟机等取不到时回退随机）存于 `/usr/local/snet/device.id`（卸载重装不丢失；硬件 ID 派生，重装系统也不变）；新创建的网络自动认领为 owner（迁移旧网络：`snetctl claim --nid`）。设备名自动上报（Android: manufacturer+model，桌面端: hostname），管理端可随时改名。
 - 创建网络 → 生成邀请链接/配对码 → 另一端复制链接加入（加入方同样需 `--ca-path`）。
 - 客户端创建的网络 72h 无任何设备在线会被服务端清理；owner 可在管理页/客户端看到僵尸状态。
   服务端在管理页创建的网络无此限制，配对码长期有效、可反复加入（管理页重置即作废旧码）。
@@ -136,11 +136,26 @@ iptables -A INPUT -p udp --dport 51820:51883 -j ACCEPT  # UDP 中继池
   - 创建网络：无网主、豁免 72h 清理、配对码长期有效可反复加入、客户端无法认领
     （需要手机等外部设备时用「添加外部节点」生成节点配置）
   - 网络卡片操作收在名称右侧「⋯ 更多操作」菜单：查看/收起成员 / 编辑设置 /
-    添加节点 / 邀请 / 查看配对码 / 删除网络；有待批准请求时名称行保留
-    「待批准 (N)」快捷按钮
+    邀请 / 查看配对码 / 删除网络；有待批准请求时名称行保留
+    「待批准 (N)」可点击按钮（点击打开待批准列表弹窗）
+  - 成员弹窗：设备名（设备ID） | IP | 状态 | 操作（踢出），无待批准区块
+  - 设备列表：设备名 | ID | 状态 | 操作，搜索支持名称/ID
   - 三个列表（网络/设备/授权码）均为服务端分页（每页 20 条），网络支持按名称/ID/
     网段搜索与 在线/离线/服务端管理/僵尸/待批准 状态筛选
 - 数据 API 兼容 `Authorization: Bearer <VNET_ADMIN_TOKEN>`（静态 token 双通道，不支持改密）
+
+### 安全加固
+
+服务端已启用以下安全措施：
+
+- **限流**：创建网络（50/h）、加入网络（60/min）、绑定设备（20/min）、注册设备（30/min）、登录（5/min）
+- **安全头**：CSP（default-src 'self'）、no-store、HSTS（1 年）
+- **输入校验**：公钥 Base64 44 字节、端点 host:port 格式、设备名/网络名 64 字符
+- **错误脱敏**：400 统一 `{"error":"请求格式错误"}`（不泄露解码细节）、500 统一 `{"error":"服务器内部错误"}`
+- **XFF 处理**：取最右可信代理 IP（`-behind-proxy` 启用时）
+- **日志消毒**：控制字符替换为 `\xNN`
+- **凭据保护**：adminUser/adminPassHash 加 RWMutex、bootstrap 加互斥锁
+- **POST /admin/logout**：显式注销 session
 
 ### 数据 API 形状
 
@@ -152,7 +167,7 @@ iptables -A INPUT -p udp --dport 51820:51883 -j ACCEPT  # UDP 中继池
 # 网络列表：q=关键词(名称/ID/网段) status=online|offline|managed|zombie|pending
 curl -sk 'https://snet.uizhi.eu.org:8090/admin/networks?page=1&page_size=20&status=pending' \
   -H "Authorization: Bearer $VNET_ADMIN_TOKEN"
-# 设备列表：q=关键词(ID/名称/公钥)
+# 设备列表：q=关键词(ID/名称)，返回含 deviceName 字段
 curl -sk 'https://snet.uizhi.eu.org:8090/admin/devices?q=dev-abc' -H "Authorization: Bearer $VNET_ADMIN_TOKEN"
 # 授权码列表
 curl -sk 'https://snet.uizhi.eu.org:8090/admin/devices/authcodes?page=2' -H "Authorization: Bearer $VNET_ADMIN_TOKEN"
@@ -160,6 +175,10 @@ curl -sk 'https://snet.uizhi.eu.org:8090/admin/devices/authcodes?page=2' -H "Aut
 curl -sk https://snet.uizhi.eu.org:8090/admin/stats -H "Authorization: Bearer $VNET_ADMIN_TOKEN"
 # → {"networksTotal":..,"networksOnline":..,"nodesTotal":..,"pendingTotal":..,
 #     "devicesTotal":..,"codesTotal":..,"codesBound":..,"codesFree":..,"recentNetworks":[..]}
+# 设备改名
+curl -sk -X PATCH https://snet.uizhi.eu.org:8090/admin/devices/<deviceId> \
+  -H "Authorization: Bearer $VNET_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"新名称"}'
 ```
 
 ### 设备授权码（开启强制授权后的准入流程）
@@ -172,6 +191,8 @@ curl -sk -X POST https://snet.uizhi.eu.org:8090/admin/devices/authcodes/generate
 
 # 2) 客户端绑定（桌面端「设置」→「链接服务器」，或命令行）
 snetctl bind --server https://snet.uizhi.eu.org:8090 --code XXXX...   # 需 -ca-path（如适用）
+# 客户端首次绑定时自动上报设备名（Android: manufacturer+model，桌面端: hostname）；
+# 管理端可通过 PATCH /admin/devices/<id> 改名，改名后客户端不再覆盖
 
 # 3) 运维
 curl -sk https://snet.uizhi.eu.org:8090/admin/devices/authcodes \
