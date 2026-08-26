@@ -1,8 +1,11 @@
 package com.snet.app
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.webkit.ConsoleMessage
@@ -10,27 +13,49 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
     private companion object {
         const val TAG = "MainActivity"
-        const val VPN_REQUEST_CODE = 100
     }
 
     private lateinit var webView: WebView
-    private var pendingVpnStart = false
+
+    private val vpnPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            val intent = Intent(this, SnetVpnService::class.java)
+            intent.action = "START"
+            startForegroundService(intent)
+        } else {
+            Log.w(TAG, "VPN permission denied")
+            webView.evaluateJavascript("""
+                (function() {
+                    if (typeof toast === 'function') toast('需要 VPN 权限', 'err');
+                })();
+            """, null)
+        }
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) Log.w(TAG, "POST_NOTIFICATIONS permission denied")
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize SnetBridge before WebView loads
         if (SnetBridge.getStatus(this) == null) {
             SnetBridge.init(this, filesDir.absolutePath)
         }
 
-        // Simple full-screen WebView
         webView = WebView(this)
         setContentView(webView)
 
@@ -38,7 +63,7 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             allowFileAccess = true
-            allowContentAccess = true
+            allowContentAccess = false
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
@@ -64,39 +89,21 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Register JavaScript interface
         webView.addJavascriptInterface(WebBridge(this), "WebBridge")
-
-        // Load the shared web app from assets
         webView.loadUrl("file:///android_asset/web/index.html")
-    }
 
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_REQUEST_CODE) {
-            if (resultCode == RESULT_OK) {
-                // VPN permission granted, start the service
-                val intent = Intent(this, SnetVpnService::class.java)
-                intent.action = "START"
-                startForegroundService(intent)
-            } else {
-                Log.w(TAG, "VPN permission denied")
-                // Notify JavaScript
-                webView.evaluateJavascript("""
-                    (function() {
-                        if (typeof toast === 'function') toast('需要 VPN 权限', 'err');
-                    })();
-                """, null)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) webView.goBack() else isEnabled = false
             }
-        }
-    }
+        })
 
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
     }
 
@@ -105,25 +112,17 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    /**
-     * Called from WebBridge to request VPN permission
-     */
     fun requestVpnPermission() {
         val intent = VpnService.prepare(this)
         if (intent != null) {
-            pendingVpnStart = true
-            startActivityForResult(intent, VPN_REQUEST_CODE)
+            vpnPermissionLauncher.launch(intent)
         } else {
-            // Permission already granted
             val startIntent = Intent(this, SnetVpnService::class.java)
             startIntent.action = "START"
             startForegroundService(startIntent)
         }
     }
 
-    /**
-     * Called from JavaScript to evaluate code on the UI thread
-     */
     fun evaluateJs(script: String) {
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }

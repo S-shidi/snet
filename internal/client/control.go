@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -16,9 +17,19 @@ import (
 	"snet/internal/protocol"
 )
 
+// httpStatusErr carries the HTTP status code from the server so callers can
+// match on the code instead of parsing error strings.
+type httpStatusErr struct {
+	code int
+	msg  string
+}
+
+func (e *httpStatusErr) Error() string { return fmt.Sprintf("server %d: %s", e.code, e.msg) }
+
 type apiClient struct {
 	server string
 	http   *http.Client
+	ctx    context.Context
 }
 
 // newAPIClient builds an HTTP client for the coordination server. For https
@@ -27,7 +38,7 @@ type apiClient struct {
 // (so public certificates such as Let's Encrypt work out of the box); set
 // SNET_INSECURE_SKIP_VERIFY=1 to explicitly skip verification for self-signed
 // deployments that have not pinned their CA.
-func newAPIClient(server, caPath string) *apiClient {
+func newAPIClient(server, caPath string, ctx context.Context) *apiClient {
 	if !strings.HasPrefix(server, "http") {
 		server = "http://" + server
 	}
@@ -61,7 +72,7 @@ func newAPIClient(server, caPath string) *apiClient {
 		}
 	}
 	httpClient := &http.Client{Transport: transport, Timeout: 15 * time.Second}
-	return &apiClient{server: strings.TrimRight(server, "/"), http: httpClient}
+	return &apiClient{server: strings.TrimRight(server, "/"), http: httpClient, ctx: ctx}
 }
 
 func (c *apiClient) do(method, path string, token string, body any, out any) error {
@@ -73,7 +84,7 @@ func (c *apiClient) do(method, path string, token string, body any, out any) err
 		}
 		rdr = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, c.server+path, rdr)
+	req, err := http.NewRequestWithContext(c.ctx, method, c.server+path, rdr)
 	if err != nil {
 		return err
 	}
@@ -92,7 +103,7 @@ func (c *apiClient) do(method, path string, token string, body any, out any) err
 	if resp.StatusCode >= 400 {
 		var e protocol.ErrResp
 		_ = json.Unmarshal(data, &e)
-		return fmt.Errorf("server %d: %s", resp.StatusCode, e.Error)
+		return &httpStatusErr{code: resp.StatusCode, msg: e.Error}
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)
@@ -233,7 +244,7 @@ func (c *apiClient) DeviceNetworks(deviceID, deviceToken string) ([]protocol.Dev
 	if resp.StatusCode >= 400 {
 		var e protocol.ErrResp
 		_ = json.Unmarshal(data, &e)
-		return nil, fmt.Errorf("server %d: %s", resp.StatusCode, e.Error)
+		return nil, &httpStatusErr{code: resp.StatusCode, msg: e.Error}
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, err
@@ -265,7 +276,7 @@ func (c *apiClient) UpdateNodePublicKey(nid, nodeID, deviceID, deviceToken, publ
 		data, _ := io.ReadAll(resp.Body)
 		var e protocol.ErrResp
 		_ = json.Unmarshal(data, &e)
-		return fmt.Errorf("server %d: %s", resp.StatusCode, e.Error)
+		return &httpStatusErr{code: resp.StatusCode, msg: e.Error}
 	}
 	return nil
 }

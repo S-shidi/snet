@@ -1590,7 +1590,7 @@
       }));
     },
     async bind(params) {
-      call("bind", JSON.stringify({
+      return call("bind", JSON.stringify({
         server: params.server,
         ca: params.ca,
         code: params.code

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +23,8 @@ var netGoneErr = errors.New("该网络在服务端已不存在")
 // wrapNetGone converts a server 404 error into netGoneErr so callers can
 // present a clear "network gone" message to the user.
 func wrapNetGone(err error) error {
-	if err != nil && strings.Contains(err.Error(), "404") {
+	var se *httpStatusErr
+	if errors.As(err, &se) && se.code == 404 {
 		return netGoneErr
 	}
 	return err
@@ -37,7 +39,6 @@ const retryInterval = 30 * time.Second
 type netRuntime struct {
 	tun  *Tunnel
 	stop chan struct{}
-	err  string
 }
 
 // Daemon coordinates the local tunnels and the coordination server for any
@@ -54,6 +55,10 @@ type Daemon struct {
 	api       *apiClient
 	apiServer string
 	apiCA     string
+	// ctx/cancel scope the Daemon's lifetime; cancelling ctx aborts all
+	// in-flight HTTP requests made through api.
+	ctx    context.Context
+	cancel context.CancelFunc
 	// configPath is where Save persists state; empty falls back to the user
 	// config dir. Explicit path keeps daemons running without $HOME
 	// (e.g. launchd) functional.
@@ -85,6 +90,7 @@ func NewDaemon(cfg *Config) *Daemon {
 }
 
 func NewDaemonAt(cfg *Config, configPath string) *Daemon {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Daemon{
 		cfg:          cfg,
 		configPath:   configPath,
@@ -93,6 +99,8 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		netErrs:      make(map[string]string),
 		retryPending: make(map[string]struct{}),
 		deviceIDFile: DefaultDeviceIDFile,
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 }
 
@@ -123,7 +131,7 @@ func (d *Daemon) apiLocked() *apiClient {
 	if d.api != nil && d.apiServer == d.cfg.ServerAddr && d.apiCA == d.cfg.ServerCAPath {
 		return d.api
 	}
-	d.api = newAPIClient(d.cfg.ServerAddr, d.cfg.ServerCAPath)
+	d.api = newAPIClient(d.cfg.ServerAddr, d.cfg.ServerCAPath, d.ctx)
 	d.apiServer = d.cfg.ServerAddr
 	d.apiCA = d.cfg.ServerCAPath
 	return d.api
@@ -267,7 +275,8 @@ func (d *Daemon) rollbackSwitchLocked(sw serverSwitch) {
 // isUnboundErr reports whether err is the server's "device not authorized"
 // enrollment-gate response, i.e. the device is not bound on that server.
 func isUnboundErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "设备未授权")
+	var se *httpStatusErr
+	return errors.As(err, &se) && se.code == 403
 }
 
 // clearBindingLocked drops the local bound state. Callers must hold d.mu.
@@ -962,23 +971,6 @@ func (d *Daemon) localEndpointLocked(port int) (string, error) {
 	return net.JoinHostPort(ip, fmt.Sprint(port)), nil
 }
 
-func (d *Daemon) failNetwork(nid, msg string) {
-	rt := d.nets[nid]
-	if rt == nil {
-		return
-	}
-	if rt.tun != nil {
-		rt.tun.Close()
-	}
-	close(rt.stop)
-	delete(d.nets, nid)
-	if nc := d.cfg.Networks[nid]; nc != nil {
-		nc.Active = false
-		_ = d.save()
-	}
-	log.Printf("network %s failed: %s", nid, msg)
-}
-
 func (d *Daemon) pollLoop(nid string) {
 	ticker := time.NewTicker(protocol.PollIntervalSeconds * time.Second)
 	defer ticker.Stop()
@@ -1111,7 +1103,7 @@ func (d *Daemon) probeLoop(nid string) {
 		}
 		lastIP = ip
 		ep := net.JoinHostPort(ip, fmt.Sprint(port))
-		if err := newAPIClient(serverAddr, serverCA).SetEndpointFor(nid, nc.NodeID, nc.Token, ep); err != nil {
+		if err := newAPIClient(serverAddr, serverCA, d.ctx).SetEndpointFor(nid, nc.NodeID, nc.Token, ep); err != nil {
 			log.Printf("set public endpoint %s: %v", nid, err)
 			continue
 		}
@@ -1531,6 +1523,7 @@ func writeDeviceIDFile(path, id string) error {
 // a later start restores the previously active networks. Used by graceful
 // daemon shutdown.
 func (d *Daemon) Close() {
+	d.cancel()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.bindCheckStop != nil {
@@ -1570,7 +1563,6 @@ func (d *Daemon) Status() (map[string]any, error) {
 			"joinedAt":       nc.JoinedAt,
 		}
 		if rt := d.nets[nid]; rt != nil {
-			entry["error"] = rt.err
 			if rt.tun != nil {
 				entry["interface"] = rt.tun.InterfaceName()
 				if stats, err := rt.tun.Stats(); err == nil {
@@ -1578,10 +1570,8 @@ func (d *Daemon) Status() (map[string]any, error) {
 				}
 			}
 		}
-		if entry["error"] == "" {
-			if e, ok := d.netErrs[nid]; ok {
-				entry["error"] = e
-			}
+		if e, ok := d.netErrs[nid]; ok {
+			entry["error"] = e
 		}
 		nets = append(nets, entry)
 	}
