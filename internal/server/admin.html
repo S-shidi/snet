@@ -3790,6 +3790,7 @@ async function showPending(nid) {
     const box = $('modal-body');
     if (!list.length) {
       box.innerHTML = '<p class="hint mb0">暂无待批准请求</p>';
+      setTimeout(closeModal, 600);
       return;
     }
     let rows = '';

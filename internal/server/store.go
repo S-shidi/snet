@@ -1682,7 +1682,12 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 	n.NodeCount = len(ns.nodes)
 	n.Online = now-ns.lastActivityAt < int64(netAliveTTL/time.Second)
 	n.LastActivityAt = ns.lastActivityAt
-	n.PendingCount = len(ns.pending)
+	n.PendingCount = 0
+	for _, p := range ns.pending {
+		if p.Status == "pending" {
+			n.PendingCount++
+		}
+	}
 	nodes := make([]protocol.Node, 0, len(ns.nodes))
 	for _, nd := range ns.nodes {
 		c := *nd
@@ -2070,7 +2075,11 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 			Online:         now.Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second),
 			Zombie:         zombie,
 			LastActivityAt: ns.lastActivityAt,
-			PendingCount:   len(ns.pending),
+		}
+		for _, p := range ns.pending {
+			if p.Status == "pending" {
+				sum.PendingCount++
+			}
 		}
 		switch status {
 		case "", "all":
@@ -2705,8 +2714,12 @@ func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
 			Online:         online,
 			Zombie:         zombie,
 			LastActivityAt: ns.lastActivityAt,
-			PendingCount:   len(ns.pending),
 		})
+		for _, p := range ns.pending {
+			if p.Status == "pending" {
+				recent[len(recent)-1].PendingCount++
+			}
+		}
 	}
 	ov.DevicesTotal = len(s.devices)
 	for _, ac := range s.authCodes {
