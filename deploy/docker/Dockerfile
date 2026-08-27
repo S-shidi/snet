@@ -19,22 +19,18 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 # ---- Stage 1b: Build web UI from shared TypeScript ----
 FROM node:20-alpine AS webbuilder
 
-WORKDIR /src
-COPY desktop/package.json desktop/package-lock.json* ./
-RUN npm install --ignore-scripts 2>/dev/null || true
+RUN npm install -g esbuild
 
-# Copy shared TypeScript source
+WORKDIR /src
+# Copy shared TypeScript source + HTML/CSS
 COPY shared/web/ ./shared/web/
-# Copy web adapter and HTML/CSS
+# Copy web adapter
 COPY desktop/src/web.ts ./desktop/src/web.ts
-COPY deploy/docker/web/index.html ./deploy/docker/web/index.html
-COPY deploy/docker/web/styles.css ./deploy/docker/web/styles.css
 
 # Bundle TypeScript → single app.js (ES2022 target, IIFE format)
-RUN npx esbuild desktop/src/web.ts \
+RUN esbuild desktop/src/web.ts \
     --bundle --format=iife --target=es2022 \
-    --outfile=deploy/docker/web/app.js \
-    --define:process.env.NODE_ENV=\"production\" \
+    --outfile=web-out/app.js \
     --minify
 
 # ---- Stage 2: Runtime ----
@@ -49,9 +45,9 @@ RUN install -d -m 700 /data
 
 # Web UI static files (from webbuilder stage)
 RUN install -d -m 755 /var/www/snet
-COPY --from=webbuilder /src/deploy/docker/web/index.html /var/www/snet/
-COPY --from=webbuilder /src/deploy/docker/web/styles.css  /var/www/snet/
-COPY --from=webbuilder /src/deploy/docker/web/app.js      /var/www/snet/
+COPY --from=webbuilder /src/shared/web/index.html /var/www/snet/
+COPY --from=webbuilder /src/shared/web/styles.css  /var/www/snet/
+COPY --from=webbuilder /src/web-out/app.js         /var/www/snet/
 
 # Nginx config
 COPY deploy/docker/nginx.conf /etc/nginx/http.d/default.conf

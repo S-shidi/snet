@@ -9,6 +9,9 @@ export PATH="$HOME/go/bin:$JAVA_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:
 
 cd "$(dirname "$0")/.."
 
+echo "=== Building web assets (shared UI) ==="
+bash scripts/build-web.sh
+
 echo "=== Building snet.aar (gomobile) ==="
 gomobile bind -target=android -o /tmp/snet.aar ./snetbind/
 

@@ -164,6 +164,16 @@ func (d *Daemon) hostname() string {
 	return h
 }
 
+// hostnameLocked returns the hostname assuming the caller already holds d.mu.
+func (d *Daemon) hostnameLocked() string {
+	if d.hostnameCache != "" {
+		return d.hostnameCache
+	}
+	h, _ := os.Hostname()
+	d.hostnameCache = h
+	return h
+}
+
 // SetHostname overrides the display name reported during device registration
 // and binding. Intended for embedders (e.g. Android passes Build.MODEL since
 // os.Hostname is generic there). Call before Start or any network activity.
@@ -481,7 +491,7 @@ func (d *Daemon) Bind(serverAddr, caPath, code string) error {
 	}
 	d.cfg.ServerCAPath = caPath
 	api := d.apiLocked()
-	resp, err := api.BindDevice(d.cfg.DeviceID, d.publicKeyLocked(), code, d.hostname())
+	resp, err := api.BindDevice(d.cfg.DeviceID, d.publicKeyLocked(), code, d.hostnameLocked())
 	if err != nil {
 		d.rollbackSwitchLocked(sw)
 		return err
@@ -664,7 +674,7 @@ func (d *Daemon) reconcileOwnership(nid string) {
 		return
 	}
 	api := d.apiLocked()
-	if _, err := api.RegisterDevice(d.cfg.DeviceID, d.publicKeyLocked(), d.hostname()); err != nil {
+	if _, err := api.RegisterDevice(d.cfg.DeviceID, d.publicKeyLocked(), d.hostnameLocked()); err != nil {
 		log.Printf("register device: %v", err)
 	}
 	if err := api.SetNodeDevice(nid, nc.NodeID, nc.Token, d.cfg.DeviceID); err != nil {
@@ -705,7 +715,7 @@ func (d *Daemon) SyncNetworks(deviceToken string) error {
 	pub := d.publicKeyLocked()
 
 	// Register this device with its current (possibly new) public key.
-	if _, err := api.RegisterDevice(deviceID, pub, d.hostname()); err != nil {
+	if _, err := api.RegisterDevice(deviceID, pub, d.hostnameLocked()); err != nil {
 		log.Printf("sync networks: register device: %v", err)
 	}
 

@@ -22,3 +22,6 @@ android/app/src/main/jniLibs/
 
 # Stray local binaries / junk
 .DS_Store
+/server
+/snetd
+/snetctl
