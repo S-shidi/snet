@@ -43,12 +43,12 @@ header {
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand .logo {
-  width: 28px; height: 28px; border-radius: 8px; flex: none;
+  width: 40px; height: 40px; border-radius: 10px; flex: none;
   background: linear-gradient(135deg, var(--accent), #7c5cff);
   display: flex; align-items: center; justify-content: center;
   box-shadow: 0 4px 12px rgba(79,140,255,.35);
 }
-.brand .logo svg { width: 16px; height: 16px; }
+.brand .logo svg { width: 22px; height: 22px; }
 .brand h1 { font-size: 16px; font-weight: 700; letter-spacing: .2px; }
 .brand .sub { font-size: 11px; color: var(--faint); }
 .header-right { display: flex; align-items: center; gap: 10px; }
@@ -86,11 +86,16 @@ header {
   background: var(--accent); color: #fff; border: 1px solid transparent; border-radius: var(--radius-s);
   padding: 7px 14px; font-size: 13px; cursor: pointer; white-space: nowrap; font-family: inherit;
   transition: filter .12s, background .12s, border-color .12s, transform .04s;
+  position: relative;
 }
 .btn:hover { filter: brightness(1.08); }
 .btn:active { transform: translateY(1px); }
 .btn:focus-visible { outline: none; box-shadow: var(--ring); }
 .btn:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+.btn.muted {
+  background: var(--card2); color: var(--dim); border-color: var(--border);
+  opacity: 1; cursor: not-allowed; filter: none;
+}
 .btn.ghost { background: var(--card2); color: var(--text); border-color: var(--border); }
 .btn.ghost:hover { border-color: var(--border2); }
 .btn.danger { background: #8b3a3a; }
@@ -100,6 +105,40 @@ header {
 .btn.icon { padding: 5px; width: 28px; height: 28px; border-radius: 7px; background: transparent; color: var(--dim); border: 1px solid transparent; }
 .btn.icon:hover { background: var(--card2); color: var(--text); border-color: var(--border); }
 .btn .spin { margin-left: 2px; }
+
+/* CSS-only tooltip for disabled buttons (hover-triggered) */
+.btn[data-disabled-reason][disabled]:hover::after,
+.btn[data-disabled-reason][disabled]:focus-visible::after {
+  content: attr(data-disabled-reason);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #0f1422;
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .4);
+  cursor: not-allowed;
+}
+.btn[data-disabled-reason][disabled]:hover::before,
+.btn[data-disabled-reason][disabled]:focus-visible::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--border2);
+  pointer-events: none;
+  z-index: 1000;
+  cursor: not-allowed;
+}
 
 /* ── tabs (center-aligned + sliding pill) ─ */
 .tabs {
@@ -158,6 +197,7 @@ header {
 .pill.off  { background: rgba(154,163,178,.12); color: var(--dim); }
 .pill.owner { background: var(--accent-soft); color: var(--accent2); }
 .pill.subnet-route { background: #1a3a2a; color: var(--ok); }
+.pill.gone { background: rgba(220,53,69,.12); color: var(--err); }
 .badge-dot { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--err); color: #fff; font-size: 11px; font-weight: 700; }
 
 .pending-heading { color: var(--warn); font-size: 13px; margin: 18px 0 8px; letter-spacing: .04em; }
@@ -182,9 +222,6 @@ header {
 .net-side { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .net-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--dim); }
 .net-stats b { color: var(--text); font-weight: 600; }
-.net-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
-.net-actions .btn { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
-
 /* ── switch / toggle ────────────────────── */
 .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
 .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
@@ -199,6 +236,34 @@ header {
 .switch input:checked + .slider { background: var(--ok); }
 .switch input:checked + .slider::before { transform: translateX(20px); background: #fff; }
 .switch input:disabled + .slider { opacity: .5; cursor: not-allowed; }
+
+/* ── net-menu (⋯ more dropdown) ──────────── */
+.net-menu-wrap { position: relative; margin-left: 8px; flex: none; }
+.net-more {
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent; border-radius: 8px; color: var(--dim);
+  cursor: pointer; transition: all .12s;
+}
+.net-more:hover, .net-more.open { color: var(--text); border-color: var(--border2); background: var(--card2); }
+.net-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); min-width: 150px; z-index: 30;
+  background: var(--card); border: 1px solid var(--border2); border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.18); padding: 4px; animation: menuIn .12s ease-out;
+}
+.net-menu.up { top: auto; bottom: calc(100% + 4px); animation: menuInUp .12s ease-out; }
+@keyframes menuIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes menuInUp { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.net-menu button {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--text); font-size: 13px; text-align: left; cursor: pointer;
+}
+.net-menu button:hover { background: var(--accent-soft); color: var(--accent); }
+.net-menu button.danger { color: var(--err); }
+.net-menu button.danger:hover { background: var(--err-soft); color: var(--err); }
+.net-menu button svg { width: 15px; height: 15px; flex: none; }
+.net-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 6px; }
+.meta-link { background: none; border: none; color: var(--dim); font: inherit; cursor: pointer; text-decoration: none; padding: 0; transition: color .12s; }
+.meta-link:hover { color: var(--accent2); text-decoration: underline; }
 
 /* ── empty / loading ────────────────────── */
 .empty { text-align: center; padding: 40px 16px; color: var(--dim); background: var(--card); border: 1px dashed var(--border); border-radius: var(--radius); }

@@ -4,6 +4,7 @@ deploy/phone-android.png
 
 # Build artifacts (JS/Rust) — not source
 desktop/node_modules/
+node_modules/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/dist/

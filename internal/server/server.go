@@ -372,6 +372,16 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		writeJSON(w, http.StatusOK, info)
 	}))
 
+	mux.HandleFunc("GET /api/v1/networks/{nid}/exists", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		nid := r.PathValue("nid")
+		netID, err := s.NodeNetwork(tokenOf(r))
+		if err != nil || netID != nid {
+			writeErr(w, http.StatusNotFound, ErrNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"exists": true})
+	}))
+
 	mux.HandleFunc("PATCH /api/v1/networks/{nid}", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		if !ownerNID(w, r) {
 			return

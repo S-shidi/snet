@@ -1,4 +1,5 @@
 /* ── Shared UI utilities ────────────────────────────────────────── */
+import qrcodeDefault from "qrcode-generator";
 
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
 
@@ -10,13 +11,14 @@ export const esc = (s: string): string =>
 export const SPIN = '<span class="spinner"></span>';
 
 /* ── QR Code (local, no external API) ─────────────────────────── */
-let qrcodeFn: ((typeNumber: number, errorCorrectionLevel: string) => { addData(data: string): void; make(): void; createSvgTag(opts: { cellSize: number; margin: number; scalable: boolean }): string }) | null = null;
+type QRFactory = (typeNumber: number, errorCorrectionLevel: string) => { addData(data: string): void; make(): void; createSvgTag(opts: { cellSize: number; margin: number; scalable: boolean }): string };
+let qrcodeFn: QRFactory | null = (qrcodeDefault as unknown as QRFactory) || null;
 
 export async function loadQR() {
   if (qrcodeFn) return;
   try {
     const mod = await import("qrcode-generator");
-    qrcodeFn = mod.default;
+    qrcodeFn = (mod.default as unknown as QRFactory) || null;
   } catch {
     // Web build bundles qrcode-generator statically; desktop uses dynamic import
   }

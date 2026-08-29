@@ -164,6 +164,12 @@ func (c *apiClient) NetworkInfo(nid, token string) (protocol.NetworkInfoResp, er
 	return out, err
 }
 
+func (c *apiClient) NetworkExists(nid, token string) (bool, error) {
+	var out struct{ Exists bool }
+	err := c.do(http.MethodGet, "/api/v1/networks/"+nid+"/exists", token, nil, &out)
+	return out.Exists, err
+}
+
 func (c *apiClient) UpdateNetworkSettings(nid, token, name, subnet string, approvalRequired *bool) error {
 	return c.do(http.MethodPatch, "/api/v1/networks/"+nid, token,
 		protocol.NetworkSettingsReq{Name: name, Subnet: subnet, ApprovalRequired: approvalRequired}, nil)

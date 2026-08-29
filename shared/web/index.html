@@ -135,11 +135,11 @@
       </div>
       <div class="header-right">
         <span class="live-dot ok" id="daemon-state">snetd</span>
-        <button class="btn sm" id="header-svc-btn" hidden>启动</button>
+        <button class="btn ghost sm" id="header-svc-btn" hidden>启动</button>
         <div class="header-actions" id="header-actions">
-          <button class="btn sm" id="btn-refresh">刷新</button>
-          <button class="btn sm" id="btn-settings">设置</button>
-          <button class="btn sm ghost" id="btn-logout">退出</button>
+          <button class="btn ghost sm" id="btn-refresh">刷新</button>
+          <button class="btn ghost sm" id="btn-settings">设置</button>
+          <button class="btn ghost sm" id="btn-logout">退出</button>
         </div>
         <div class="header-more" id="header-more" hidden>
           <button class="btn icon" id="btn-more" title="更多">
@@ -164,11 +164,11 @@
   <div id="app-main">
     <div id="panel-networks" class="tab-panel active">
       <div class="toolbar">
-        <button class="btn sm" id="btn-create">+ 创建</button>
+        <button class="btn sm" id="btn-create" data-disabled-reason="已创建网络，不支持再创建">+ 创建</button>
         <button class="btn sm ghost" id="btn-join">加入</button>
         <span class="spacer"></span>
       </div>
-      <div id="net-list"></div>
+      <div id="net-list" class="net-list"></div>
     </div>
 
     <div id="panel-status" class="tab-panel">

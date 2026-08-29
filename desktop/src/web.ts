@@ -1,4 +1,6 @@
-/* ── Web adapter: fetch HTTP → shared UI ──────────────────────── */
+/* ── Web adapter: fetch HTTP → shared UI ────────────────────────
+ * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
+ */
 import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp } from "../../shared/web/types.js";
 import { init } from "../../shared/web/ui.js";
 
@@ -38,8 +40,8 @@ function jsonPost(path: string, body: Record<string, unknown>): RequestInit {
   return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
-/* ── Auth flow (Web-only) ─────────────────────────────────────── */
-export async function checkAuth(): Promise<"no_password" | "needs_login" | "authenticated"> {
+/* ── Auth flow ────────────────────────────────────────────────── */
+async function checkAuth(): Promise<"no_password" | "needs_login" | "authenticated"> {
   try {
     const resp = await authApi("/check");
     if (!resp.hasPassword) return "no_password";
@@ -50,66 +52,28 @@ export async function checkAuth(): Promise<"no_password" | "needs_login" | "auth
   }
 }
 
-export async function doLogin(password: string, remember: boolean): Promise<boolean> {
+async function doLogin(password: string, remember: boolean): Promise<void> {
   const resp = await authApi("/login", { method: "POST", body: JSON.stringify({ password, remember }) });
   authToken = resp.token;
   localStorage.setItem("snet_token", authToken!);
-  return true;
 }
 
-export async function doLogout(): Promise<void> {
+async function doLogout(): Promise<void> {
   try { await authApi("/logout", { method: "POST" }); } catch {}
   authToken = null;
   localStorage.removeItem("snet_token");
 }
 
-export async function doSetPassword(current: string, newPass: string): Promise<void> {
+async function doSetPassword(current: string, newPass: string): Promise<void> {
   await authApi("/password", { method: "POST", body: JSON.stringify({ current, new: newPass }) });
 }
 
-/* ── Standalone page routing ──────────────────────────────────── */
-export function showApp(): void {
-  const app = document.getElementById("app");
-  const login = document.getElementById("login-page");
-  const setup = document.getElementById("setup-page");
-  const onb = document.getElementById("onboarding-page");
-  if (app) app.hidden = false;
-  if (login) login.hidden = true;
-  if (setup) setup.hidden = true;
-  if (onb) onb.hidden = true;
-}
-
-export function showLoginPage(): void {
-  const app = document.getElementById("app");
-  const login = document.getElementById("login-page");
-  const setup = document.getElementById("setup-page");
-  const onb = document.getElementById("onboarding-page");
-  if (app) app.hidden = true;
-  if (setup) setup.hidden = true;
-  if (onb) onb.hidden = true;
-  if (login) { login.hidden = false; login.querySelector<HTMLInputElement>("#login-password")?.focus(); }
-}
-
-export function showSetupPage(): void {
-  const app = document.getElementById("app");
-  const login = document.getElementById("login-page");
-  const setup = document.getElementById("setup-page");
-  const onb = document.getElementById("onboarding-page");
-  if (app) app.hidden = true;
-  if (login) login.hidden = true;
-  if (onb) onb.hidden = true;
-  if (setup) { setup.hidden = false; setup.querySelector<HTMLInputElement>("#setup-password")?.focus(); }
-}
-
-export function showOnboardingPage(): void {
-  const app = document.getElementById("app");
-  const login = document.getElementById("login-page");
-  const setup = document.getElementById("setup-page");
-  const onb = document.getElementById("onboarding-page");
-  if (app) app.hidden = true;
-  if (login) login.hidden = true;
-  if (setup) setup.hidden = true;
-  if (onb) { onb.hidden = false; onb.querySelector<HTMLInputElement>("#onb-server")?.focus(); }
+/* ── Page routing ─────────────────────────────────────────────── */
+function showPage(id: string) {
+  for (const p of ["app", "login-page", "setup-page", "onboarding-page"]) {
+    const el = document.getElementById(p);
+    if (el) el.hidden = (p !== id);
+  }
 }
 
 /* ── Backend implementation ───────────────────────────────────── */
@@ -185,19 +149,13 @@ const backend: Backend = {
   },
 };
 
-/* ── Init with auth flow ──────────────────────────────────────── */
-document.addEventListener("DOMContentLoaded", () => {
-  // Tab switching
-  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", (e) => {
-    const id = (e.currentTarget as HTMLElement).dataset.tab;
-    document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
-    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
-    const tabBtn = document.querySelector(`[data-tab="${id}"]`);
-    if (tabBtn) tabBtn.classList.add("active");
-    const panel = document.getElementById("panel-" + id);
-    if (panel) panel.classList.add("active");
-  }));
+/* ── Bootstrap ────────────────────────────────────────────────── */
+function startApp() {
+  showPage("app");
+  init(backend);
+}
 
+document.addEventListener("DOMContentLoaded", () => {
   // Login form
   const loginSubmit = document.getElementById("login-submit");
   if (loginSubmit) loginSubmit.addEventListener("click", async () => {
@@ -209,8 +167,7 @@ document.addEventListener("DOMContentLoaded", () => {
     result.className = "msg"; result.textContent = "正在登录…";
     try {
       await doLogin(pw, remember);
-      showApp();
-      init(backend);
+      startApp();
     } catch (e) {
       result.className = "msg"; result.textContent = "登录失败: " + e;
       (loginSubmit as HTMLButtonElement).disabled = false;
@@ -231,8 +188,7 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       await doSetPassword("", pw);
       await doLogin(pw, true);
-      showApp();
-      init(backend);
+      startApp();
     } catch (e) {
       result.className = "msg"; result.textContent = "设置失败: " + e;
       (setupSubmit as HTMLButtonElement).disabled = false;
@@ -251,16 +207,14 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       await backend.bind({ server, ca: "", code });
       result.className = "msg ok"; result.textContent = "已绑定 " + server;
-      showApp();
-      init(backend);
+      startApp();
     } catch (e) { result.className = "msg"; result.textContent = "绑定失败: " + e; }
   });
 
   const onbSkip = document.getElementById("onb-skip");
   if (onbSkip) onbSkip.addEventListener("click", (e) => {
     e.preventDefault();
-    showApp();
-    init(backend);
+    startApp();
   });
 
   // Password visibility toggles
@@ -276,19 +230,21 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Logout
-  document.getElementById("btn-logout")?.addEventListener("click", async () => {
-    if (!confirm("确定退出当前会话？")) return;
+  // Logout (listen for shared UI event)
+  window.addEventListener("snet-logout", async () => {
     await doLogout();
-    showLoginPage();
+    showPage("login-page");
+  });
+  document.getElementById("btn-logout")?.addEventListener("click", async () => {
+    await doLogout();
+    showPage("login-page");
   });
 
   // Initial auth check
   (async () => {
     const authState = await checkAuth();
-    if (authState === "needs_login") { showLoginPage(); return; }
-    if (authState === "no_password") { showSetupPage(); return; }
-    showApp();
-    init(backend);
+    if (authState === "no_password") { showPage("setup-page"); return; }
+    if (authState === "needs_login") { showPage("login-page"); return; }
+    startApp();
   })();
 });

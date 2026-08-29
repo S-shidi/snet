@@ -72,6 +72,11 @@ type Daemon struct {
 	// netErrs records the last tunnel bring-up failure per network so the
 	// status API can explain why an active-looking network has no tunnel.
 	netErrs map[string]string
+	// serverState records the server-side existence of each joined network.
+	// Values: "ok"   = network exists on server
+	//         "gone" = network no longer exists (deleted by owner)
+	//         ""     = unknown (not yet probed)
+	serverState map[string]string
 	// retryPending tracks networks whose tunnel creation failed; a background
 	// loop retries them so transient failures (or a late privilege fix, e.g.
 	// installing the root LaunchDaemon) self-heal without a daemon restart.
@@ -274,6 +279,7 @@ func (d *Daemon) commitSwitchLocked(sw serverSwitch) {
 	}
 	d.netErrs = make(map[string]string)
 	d.retryPending = make(map[string]struct{})
+	d.serverState = make(map[string]string)
 	if d.retryStop != nil {
 		close(d.retryStop)
 		d.retryStop = nil
@@ -849,6 +855,10 @@ func (d *Daemon) Start() error {
 	if d.cfg.Bound() {
 		d.startBindCheckLocked()
 	}
+	// One-shot startup probe of every joined network so the UI can render a
+	// "已删除" badge for networks that the owner has removed from the server.
+	// Run asynchronously so daemon startup is not blocked on the server.
+	go d.pingAllServerStates()
 	return nil
 }
 
@@ -1224,14 +1234,26 @@ func (d *Daemon) leaveLocked(nid string) {
 	delete(d.retryPending, nid)
 }
 
-// Rejoin brings a left network's tunnel back up.
+// Rejoin brings a network's tunnel back up.
 func (d *Daemon) Rejoin(nid string) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	nc := d.cfg.Networks[nid]
 	if nc == nil {
+		d.mu.Unlock()
 		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	d.mu.Unlock()
+	// Lazy probe: if the server-side network is gone the user should not be
+	// able to rejoin it.
+	d.pingServerState(nid)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc = d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	if d.serverState[nid] == "gone" {
+		return netGoneErr
 	}
 	// If already active but tunnel is missing (e.g. VPN service restarted),
 	// re-bring-up instead of refusing.
@@ -1268,6 +1290,7 @@ func (d *Daemon) Remove(nid string) error {
 	d.leaveLocked(nid)
 	_ = d.apiLocked().RemoveNode(nid, nc.NodeID, nc.Token)
 	delete(d.cfg.Networks, nid)
+	delete(d.serverState, nid)
 	return d.save()
 }
 
@@ -1502,7 +1525,8 @@ func (d *Daemon) Info(nid string) (protocol.NetworkInfoResp, error) {
 	api := d.apiLocked()
 	token := nc.Token
 	d.mu.Unlock()
-	return api.NetworkInfo(nid, token)
+	resp, err := api.NetworkInfo(nid, token)
+	return resp, wrapNetGone(err)
 }
 
 // Peers returns the live peer list for a network. Unlike Info it works for
@@ -1519,6 +1543,56 @@ func (d *Daemon) Peers(nid string) (protocol.PeersResp, error) {
 	token := nc.Token
 	d.mu.Unlock()
 	return api.PeersState(nid, token)
+}
+
+// pingServerState probes whether the given network still exists on the
+// server. The result is cached in d.serverState so the UI can render a
+// "已删除" badge without having to re-probe on every status request. A 404
+// from the server marks the network as gone; any other error (including
+// transient network errors) leaves the previous state unchanged so we don't
+// flap between ok/gone.
+func (d *Daemon) pingServerState(nid string) {
+	d.mu.Lock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		d.mu.Unlock()
+		return
+	}
+	api := d.apiLocked()
+	token := nc.Token
+	d.mu.Unlock()
+
+	_, err := api.NetworkExists(nid, token)
+	var se *httpStatusErr
+	gone := errors.As(err, &se) && se.code == 404
+	if !gone && err != nil {
+		return
+	}
+	d.mu.Lock()
+	if d.serverState == nil {
+		d.serverState = make(map[string]string)
+	}
+	if gone {
+		d.serverState[nid] = "gone"
+	} else {
+		d.serverState[nid] = "ok"
+	}
+	d.mu.Unlock()
+}
+
+// pingAllServerStates probes every joined network once. Intended to run at
+// daemon startup and after the user explicitly asks for a refresh; it does
+// not run on a timer.
+func (d *Daemon) pingAllServerStates() {
+	d.mu.Lock()
+	nids := make([]string, 0, len(d.cfg.Networks))
+	for nid := range d.cfg.Networks {
+		nids = append(nids, nid)
+	}
+	d.mu.Unlock()
+	for _, nid := range nids {
+		d.pingServerState(nid)
+	}
 }
 
 // SetDeviceID replaces this machine's device identity (advanced; normally
@@ -1571,6 +1645,7 @@ func (d *Daemon) Close() {
 	}
 	d.netErrs = make(map[string]string)
 	d.retryPending = make(map[string]struct{})
+	d.serverState = make(map[string]string)
 	for nid := range d.nets {
 		d.leaveLocked(nid)
 	}
@@ -1583,14 +1658,23 @@ func (d *Daemon) Status() (map[string]any, error) {
 
 	nets := make([]map[string]any, 0, len(d.cfg.Networks))
 	for nid, nc := range d.cfg.Networks {
+		state := d.serverState[nid]
+		active := nc.Active
+		// A "gone" network cannot be linked; reflect that in the active flag
+		// so the UI toggle is disabled without having to teach the renderer
+		// about serverState first.
+		if state == "gone" {
+			active = false
+		}
 		entry := map[string]any{
 			"networkId":      nid,
 			"name":           nc.Name,
 			"ip":             nc.IP,
 			"subnet":         nc.Subnet,
 			"port":           nc.Port,
-			"active":         nc.Active,
+			"active":         active,
 			"owner":          nc.Owner,
+			"serverState":    state,
 			"error":          "",
 			"interface":      "",
 			"peerStats":      map[string]PeerStats{},
@@ -1605,7 +1689,9 @@ func (d *Daemon) Status() (map[string]any, error) {
 				}
 			}
 		}
-		if e, ok := d.netErrs[nid]; ok {
+		if state == "gone" {
+			entry["error"] = netGoneErr.Error()
+		} else if e, ok := d.netErrs[nid]; ok {
 			entry["error"] = e
 		}
 		nets = append(nets, entry)

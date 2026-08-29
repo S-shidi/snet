@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SNET</title>
+    <title>Snet</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
@@ -15,13 +15,13 @@
               <svg viewBox="0 0 32 32" fill="none"><path d="M10 11 C16 11, 16 21, 22 21" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="10" cy="11" r="3.5" fill="#fff"/><circle cx="16" cy="16" r="2.5" fill="#fff"/><circle cx="22" cy="21" r="3.5" fill="#fff"/></svg>
             </span>
             <span>
-              <h1>SNET</h1>
+              <h1>Snet</h1>
               <span class="sub">虚拟组网 · 桌面客户端</span>
             </span>
           </div>
           <div class="header-right">
             <span id="daemon-state" class="live-dot" title="系统后台守护进程 snetd：维持所有网络的 WireGuard 隧道">后台服务: 未知</span>
-            <button id="header-svc-btn" class="btn ghost sm" hidden>启动后台服务</button>
+            <button id="header-svc-btn" class="btn ghost sm" hidden>启动</button>
             <button id="btn-refresh" class="btn ghost sm" title="刷新">刷新</button>
             <button id="btn-settings" class="btn ghost sm" title="设置">设置</button>
           </div>
@@ -36,10 +36,9 @@
       <main id="app-main">
         <section id="tab-networks" class="tab-panel active">
           <div class="toolbar">
-            <button id="btn-create" class="btn">+ 创建网络</button>
+            <button id="btn-create" class="btn" data-disabled-reason="已创建网络，不支持再创建">+ 创建网络</button>
             <button id="btn-join" class="btn ghost">加入网络</button>
             <span class="spacer"></span>
-            <span id="create-limit" class="hint" hidden>本设备已创建网络（每客户端仅能创建一个）</span>
           </div>
           <div id="net-list" class="net-list">
             <div class="loading"><span class="spinner"></span>加载中…</div>
@@ -75,7 +74,7 @@
           <span class="l-logo">
             <svg width="24" height="24" viewBox="0 0 32 32" fill="none"><path d="M10 11 C16 11, 16 21, 22 21" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="10" cy="11" r="3.5" fill="#fff"/><circle cx="16" cy="16" r="2.5" fill="#fff"/><circle cx="22" cy="21" r="3.5" fill="#fff"/></svg>
           </span>
-          <div class="l-title">欢迎使用 SNET 虚拟组网</div>
+          <div class="l-title">欢迎使用 Snet 虚拟组网</div>
           <div class="l-sub">选择协调服务器：其他设备通过它互相发现并建立加密隧道</div>
         </div>
         <div class="onboarding-daemon" id="onb-daemon">

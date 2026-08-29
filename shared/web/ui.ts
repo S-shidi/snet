@@ -41,14 +41,16 @@ function currentServer(): string {
 
 /* ── Refresh ──────────────────────────────────────────────────── */
 let refreshing = false;
+let lastNetHTML = "";
+let lastTunnelHTML = "";
+let lastEmptyHTML = "";
 async function refresh() {
   if (refreshing) return;
   refreshing = true;
-  const btn = $("#btn-refresh") as HTMLButtonElement;
-  if (btn) btn.disabled = true;
   try {
     status = await backend.status();
     await refreshOwnerInfo();
+    await refreshPeerSubnets();
   } catch {
     status = null;
   }
@@ -56,7 +58,6 @@ async function refresh() {
   renderNetworks();
   renderStatus();
   maybeShowOnboarding();
-  if (btn) btn.disabled = false;
   refreshing = false;
 }
 
@@ -75,6 +76,29 @@ async function refreshOwnerInfo(force = false) {
         ownerInfo[n.networkId] = await backend.netinfo(n.networkId);
       } catch {
         delete ownerInfo[n.networkId];
+      }
+    }),
+  );
+}
+
+/* ── Peer advertised subnets (any member) ─────────────────────── */
+const peerAllowed: Record<string, string[]> = {};
+let lastPeerSubnetsFetch = 0;
+async function refreshPeerSubnets(force = false) {
+  const now = Date.now();
+  if (!force && now - lastPeerSubnetsFetch < 10000) return;
+  lastPeerSubnetsFetch = now;
+  if (!status) return;
+  await Promise.all(
+    (status.networks ?? []).map(async (n) => {
+      try {
+        const r = await backend.peers(n.networkId);
+        const set = new Set<string>();
+        for (const p of r.peers ?? []) (p.allowedSubnets ?? []).forEach((s) => set.add(s));
+        for (const s of n.allowedSubnets ?? []) set.add(s);
+        peerAllowed[n.networkId] = [...set].sort();
+      } catch {
+        delete peerAllowed[n.networkId];
       }
     }),
   );
@@ -110,10 +134,11 @@ function renderHeader() {
 }
 
 /* ── Network cards ────────────────────────────────────────────── */
-function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; error?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[] }): string {
+function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[] }): string {
+  const gone = n.serverState === "gone";
   const linked = !!n.interface;
-  const state = linked ? "已链接" : n.active ? "未就绪" : "未链接";
-  const cls = linked ? "ok" : n.active ? "warn" : "off";
+  const state = gone ? "已删除" : linked ? "已链接" : n.active ? "未就绪" : "未链接";
+  const cls = gone ? "gone" : linked ? "ok" : n.active ? "warn" : "off";
   const peers = n.peerStats ?? {};
   const total = Object.keys(peers).length;
   const detail = n.owner ? ownerInfo[n.networkId] : undefined;
@@ -122,50 +147,108 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
     ? (detail.nodes ?? []).filter((nd) => nd.online).length
     : onlineCount(n) + (linked ? 1 : 0);
   const pendingCount = detail?.pendingCount ?? detail?.pending?.length ?? 0;
-  const memberLine =
-    memberTotal <= 1
+  const memberLine = gone
+    ? `<span class="muted">已失效</span>`
+    : memberTotal <= 1
       ? `<span class="muted">暂无其他成员</span>`
-      : `<span>成员 <b>${memberOnline}/${memberTotal}</b> 在线</span>`;
+      : `<button type="button" data-act="members" class="meta-link">成员 <b>${memberOnline}/${memberTotal}</b> 在线</button>`;
   const tx = Object.values(peers).reduce((a, p) => a + (p.TxBytes ?? 0), 0);
   const rx = Object.values(peers).reduce((a, p) => a + (p.RxBytes ?? 0), 0);
-  const ops: string[] = [];
-  if (n.owner) {
-    ops.push(`<button data-act="info" class="btn ghost sm" title="查看服务器上该网络的完整信息">详情</button>`);
-    ops.push(`<button data-act="members" class="btn ghost sm" title="查看成员列表与在线状态">成员 ${memberTotal}${pendingCount > 0 ? ` <span class="badge-dot" title="${pendingCount} 个待批准请求">${pendingCount}</span>` : ""}</button>`);
-    ops.push(`<button data-act="invite" class="btn ghost sm" title="展示邀请链接与加入二维码">邀请</button>`);
-    ops.push(`<button data-act="settings" class="btn ghost sm" title="修改网络名称、网段或加入批准设置">设置</button>`);
-    ops.push(`<button data-act="subnets" class="btn ghost sm" title="宣告本设备的局域网子网">子网路由</button>`);
-    ops.push(`<button data-act="code" class="btn ghost sm" title="查看当前配对码并复制">查看配对码</button>`);
-    ops.push(`<button data-act="delete" class="btn danger ghost sm" title="彻底删除网络">删除</button>`);
-  } else {
-    ops.push(`<button data-act="subnets" class="btn ghost sm" title="宣告本设备的局域网子网">子网路由</button>`);
-    ops.push(`<button data-act="remove" class="btn danger ghost sm" title="本机退出该网络并遗忘配置">退出网络</button>`);
-  }
-  const err = n.error ? `<p class="msg">${esc(n.error)}</p>` : "";
+  const pendingPill = !gone && pendingCount > 0 ? `<button class="pill pending" data-act="show-pending" title="点击查看待批准请求">待批准 (${pendingCount})</button>` : "";
+  const err = gone ? `<p class="msg">${esc(n.error || "该网络已在服务端被删除")}</p>` : n.error ? `<p class="msg">${esc(n.error)}</p>` : "";
+  const allSubnets = peerAllowed[n.networkId] ?? n.allowedSubnets ?? [];
   return `
-  <div class="net" data-nid="${esc(n.networkId)}">
+  <div class="net" data-nid="${esc(n.networkId)}" data-owner="${n.owner ? "1" : "0"}" ${gone ? 'data-gone="1"' : ""}>
     <div class="net-row">
       <div class="net-main">
-        <div class="net-name">${esc(n.name || n.networkId)} ${n.owner ? `<span class="pill owner">owner</span>` : ""}</div>
+        <div class="net-name">${esc(n.name || n.networkId)} ${n.owner ? `<span class="pill owner">owner</span>` : ""} ${pendingPill}</div>
         <div class="net-meta">
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
           <span>ID <code>${esc(n.networkId)}</code></span>
-          ${(n.allowedSubnets?.length ?? 0) > 0 ? `<span class="pill subnet-route">路由 ${n.allowedSubnets!.length} 个子网</span>` : ""}
+          ${allSubnets.length > 0 ? `<span class="pill subnet-route" title="可路由：${esc(allSubnets.join(", "))}">路由 ${allSubnets.length} 个子网</span>` : ""}
         </div>
         <div class="net-stats">${memberLine}<span>收 <b>${fmtBytes(rx)}</b></span><span>发 <b>${fmtBytes(tx)}</b></span></div>
       </div>
       <div class="net-side">
         <span class="pill ${cls}">${state}</span>
-        <label class="switch" title="${linked ? "断开该网络" : "连接该网络"}">
-          <input type="checkbox" data-act="toggle" ${linked ? "checked" : ""} />
+        <label class="switch" title="${gone ? "该网络已删除" : linked ? "断开该网络" : "连接该网络"}">
+          <input type="checkbox" data-act="toggle" ${linked ? "checked" : ""} ${gone ? "disabled" : ""} />
           <span class="slider"></span>
         </label>
+        <div class="net-menu-wrap">
+          <button class="net-more" data-act="more" title="更多操作" aria-haspopup="menu">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+          </button>
+        </div>
       </div>
     </div>
-    <div class="net-actions">${ops.join("")}</div>
     ${err}
   </div>`;
+}
+
+/* ── Network card "more" menu ─────────────────────────────────── */
+function buildNetMenu(nid: string, isOwner: boolean, gone: boolean): HTMLElement {
+  const card = document.querySelector<HTMLElement>(`.net[data-nid="${CSS.escape(nid)}"]`);
+  const wrap = card?.querySelector('.net-menu-wrap');
+  if (!wrap) return document.createElement('div');
+  wrap.querySelector('.net-menu')?.remove();
+  const menu = document.createElement('div');
+  menu.className = 'net-menu';
+  menu.setAttribute('role', 'menu');
+  const iconMembers = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
+  const iconInvite = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>';
+  const iconSettings = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+  const iconSubnets = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>';
+  const iconCode = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>';
+  const iconInfo = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+  const iconTrash = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+  const iconExit = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>';
+  if (gone) {
+    // The network is gone on the server; only allow the user to drop the
+    // local record. Server-side ops are blocked by the action guard.
+    menu.innerHTML = `
+      <button type="button" data-act="delete" data-nid="${esc(nid)}" class="danger">${iconTrash} 删除本地记录</button>`;
+  } else if (isOwner) {
+    menu.innerHTML = `
+      <button type="button" data-act="info" data-nid="${esc(nid)}">${iconInfo} 详情</button>
+      <button type="button" data-act="members" data-nid="${esc(nid)}">${iconMembers} 查看成员</button>
+      <button type="button" data-act="invite" data-nid="${esc(nid)}">${iconInvite} 邀请</button>
+      <button type="button" data-act="settings" data-nid="${esc(nid)}">${iconSettings} 设置</button>
+      <button type="button" data-act="subnets" data-nid="${esc(nid)}">${iconSubnets} 子网路由</button>
+      <button type="button" data-act="code" data-nid="${esc(nid)}">${iconCode} 查看配对码</button>
+      <hr/>
+      <button type="button" data-act="delete" data-nid="${esc(nid)}" class="danger">${iconTrash} 删除网络</button>`;
+  } else {
+    menu.innerHTML = `
+      <button type="button" data-act="subnets" data-nid="${esc(nid)}">${iconSubnets} 子网路由</button>
+      <hr/>
+      <button type="button" data-act="remove" data-nid="${esc(nid)}" class="danger">${iconExit} 退出网络</button>`;
+  }
+  wrap.appendChild(menu);
+  const mr = menu.getBoundingClientRect();
+  const btnEl = wrap.querySelector('.net-more');
+  const btnTop = btnEl ? btnEl.getBoundingClientRect().top : 0;
+  if (mr.bottom > window.innerHeight - 8 && mr.height < btnTop - 8) {
+    menu.classList.add('up');
+  }
+  return menu;
+}
+
+function closeNetMenus() {
+  document.querySelectorAll('.net-menu').forEach(m => m.remove());
+  document.querySelectorAll('.net-more.open').forEach(b => b.classList.remove('open'));
+}
+
+function toggleNetMenu(btn: HTMLButtonElement, nid: string, gone: boolean) {
+  const wrap = btn.closest('.net-menu-wrap');
+  const isOpen = !!wrap?.querySelector('.net-menu');
+  closeNetMenus();
+  if (isOpen) return;
+  btn.classList.add('open');
+  const card = btn.closest<HTMLElement>('.net');
+  const isOwner = card?.dataset.owner === "1";
+  buildNetMenu(nid, isOwner, gone);
 }
 
 function renderNetworks() {
@@ -174,33 +257,45 @@ function renderNetworks() {
   const nets = status?.networks ?? [];
   const pending = status?.pendingJoins ?? [];
   if (!status) {
-    list.innerHTML = `<div class="empty">
+    const html = `<div class="empty">
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M24 4l18 26H6L24 4z"/><path d="M24 34v6"/><path d="M12 46h24"/></svg>
       <div class="t">后台服务未运行</div>
       <div class="s">需要系统后台守护进程 snetd 维持网络隧道</div>
       <div class="empty-actions">${backend.hasDaemonControl ? `<button id="empty-start" class="btn">启动</button>` : ""}</div>
     </div>`;
-    const startBtn = $("#empty-start");
-    if (startBtn) startBtn.addEventListener("click", ensureDaemon);
+    if (html !== lastEmptyHTML) {
+      list.innerHTML = html;
+      lastEmptyHTML = html;
+      lastNetHTML = "";
+      const startBtn = $("#empty-start");
+      if (startBtn) startBtn.addEventListener("click", ensureDaemon);
+    }
     return;
   }
+  lastEmptyHTML = "";
   const hasOwner = nets.some((n) => n.owner);
   const btnCreate = $("#btn-create");
-  const createLimit = $("#create-limit");
-  if (btnCreate) btnCreate.hidden = hasOwner;
-  if (createLimit) createLimit.hidden = !hasOwner;
+  if (btnCreate) {
+    btnCreate.disabled = hasOwner;
+    btnCreate.classList.toggle("muted", hasOwner);
+  }
   if (!nets.length && !pending.length) {
-    list.innerHTML = `<div class="empty">
+    const html = `<div class="empty">
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="24" r="6"/><circle cx="36" cy="24" r="6"/><path d="M18 24h12"/></svg>
       <div class="t">还没有加入任何网络</div>
       <div class="s">创建一个网络，或使用邀请链接/配对码加入其他设备</div>
       <div class="empty-actions">
-        <button id="empty-create" class="btn">创建网络</button>
+        <button id="empty-create" class="btn" ${hasOwner ? 'disabled data-disabled-reason="已创建网络，不支持再创建"' : ''}>创建网络</button>
         <button id="empty-join" class="btn ghost">加入网络</button>
       </div>
     </div>`;
-    $("#empty-create")?.addEventListener("click", openCreateModal);
-    $("#empty-join")?.addEventListener("click", openJoinModal);
+    if (html !== lastEmptyHTML) {
+      list.innerHTML = html;
+      lastEmptyHTML = html;
+      lastNetHTML = "";
+      $("#empty-create")?.addEventListener("click", openCreateModal);
+      $("#empty-join")?.addEventListener("click", openJoinModal);
+    }
     return;
   }
   const sortedNets = [...nets].sort((a, b) => {
@@ -228,7 +323,11 @@ function renderNetworks() {
       </div>`,
       ).join("")
     : "";
-  list.innerHTML = netHTML + pendingHTML;
+  const combinedHTML = netHTML + pendingHTML;
+  if (combinedHTML !== lastNetHTML) {
+    list.innerHTML = combinedHTML;
+    lastNetHTML = combinedHTML;
+  }
   const cnt = $("#cnt-net");
   if (cnt) {
     cnt.textContent = String(nets.length);
@@ -243,11 +342,49 @@ function bindNetListEvents() {
   if (!netList) return;
 
   netList.addEventListener("click", async (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-act]");
-    if (!btn) return;
-    const card = btn.closest<HTMLElement>(".net");
+    const target = e.target as HTMLElement;
+    // Handle "more" button
+    const moreBtn = target.closest<HTMLButtonElement>(".net-more");
+    if (moreBtn) {
+      e.stopPropagation();
+      const card = moreBtn.closest<HTMLElement>(".net");
+      if (card) toggleNetMenu(moreBtn, card.dataset.nid!, card.dataset.gone === "1");
+      return;
+    }
+    // Handle menu item clicks
+    const menuBtn = target.closest<HTMLButtonElement>(".net-menu button[data-act]");
+    if (menuBtn) {
+      e.stopPropagation();
+      const nid = menuBtn.dataset.nid || menuBtn.closest<HTMLElement>(".net")?.dataset.nid;
+      const pid = menuBtn.closest<HTMLElement>(".net")?.dataset.pid;
+      closeNetMenus();
+      if (!nid) return;
+      const act = menuBtn.dataset.act!;
+      if (act === "cancel-pending") {
+        if (!(await confirmDialog("取消加入请求", "取消等待批准？", true))) return;
+        try {
+          await backend.cancelPending(pid!);
+          toast("已取消加入请求");
+        } catch (err) {
+          toast(String(err), "err");
+        }
+        await refresh();
+        return;
+      }
+      if (act === "show-pending") {
+        await showPending(nid);
+        return;
+      }
+      await onAction(act, nid, menuBtn);
+      return;
+    }
+    // Handle pending card cancel button
+    const actEl = target.closest<HTMLElement>("[data-act]");
+    if (!actEl) return;
+    const card = actEl.closest<HTMLElement>(".net");
     if (!card) return;
-    if (btn.dataset.act === "cancel-pending") {
+    const act = actEl.dataset.act!;
+    if (act === "cancel-pending") {
       if (!(await confirmDialog("取消加入请求", "取消等待批准？", true))) return;
       try {
         await backend.cancelPending(card.dataset.pid!);
@@ -258,7 +395,25 @@ function bindNetListEvents() {
       await refresh();
       return;
     }
-    await onAction(btn.dataset.act!, card.dataset.nid!, btn);
+    if (act === "show-pending") {
+      await showPending(card.dataset.nid!);
+      return;
+    }
+    if (act === "members") {
+      await onAction("members", card.dataset.nid!, actEl as HTMLElement);
+      return;
+    }
+    await onAction(act, card.dataset.nid!, actEl as HTMLElement);
+  });
+
+  // Close menus on outside click
+  document.addEventListener("click", (e) => {
+    if (!(e.target as HTMLElement).closest('.net-menu') && !(e.target as HTMLElement).closest('.net-more')) {
+      closeNetMenus();
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === 'Escape') closeNetMenus();
   });
 
   netList.addEventListener("change", async (e) => {
@@ -273,6 +428,11 @@ function bindNetListEvents() {
 async function onToggle(card: HTMLElement, checked: boolean) {
   const nid = card.dataset.nid!;
   const input = card.querySelector<HTMLInputElement>('input[data-act="toggle"]')!;
+  if (card.dataset.gone === "1") {
+    input.checked = false;
+    toast("该网络已从服务端删除");
+    return;
+  }
   input.disabled = true;
   card.classList.add("busy");
   try {
@@ -297,6 +457,15 @@ async function onAction(act: string, nid: string, btn: HTMLButtonElement) {
   btn.disabled = true;
   const setPending = (t: string) => { btn.innerHTML = `${SPIN} ${t}`; };
   try {
+    // Block all ops except "delete" / "remove" for a network that has been
+    // deleted from the server.
+    if (act !== "delete" && act !== "remove") {
+      const net = (status?.networks ?? []).find((n) => n.networkId === nid);
+      if (net?.serverState === "gone") {
+        toast("该网络已从服务端删除，仅可删除本地记录");
+        return;
+      }
+    }
     switch (act) {
       case "info": {
         setPending("查询中…");
@@ -631,9 +800,64 @@ async function openInviteModal(nid: string) {
   });
 }
 
+/* ── Pending approval modal ───────────────────────────────────── */
+async function showPending(nid: string) {
+  try {
+    const r = await backend.netinfo(nid);
+    ownerInfo[nid] = r;
+    const pending = r.pending ?? [];
+    if (!pending.length) {
+      openModal({ title: `待批准请求 · ${nid}`, body: `<p class="muted">暂无待批准请求</p>` });
+      return;
+    }
+    const rows = pending.map((p) => {
+      return `<tr>
+        <td><code>${p.deviceId ? esc(p.deviceId.slice(0, 12)) + "…" : "-"}</code></td>
+        <td><code>${esc(p.publicKey.slice(0, 12))}…</code></td>
+        <td><span class="pill warn">待批准</span></td>
+        <td>
+          <button data-pend="${esc(p.id)}" class="btn sm" style="background:var(--ok)">批准</button>
+          <button data-pend="${esc(p.id)}" class="btn danger sm">拒绝</button>
+        </td>
+      </tr>`;
+    }).join("");
+    openModal({
+      title: `待批准请求 · ${nid}`,
+      body: `<table class="members"><thead><tr><th>设备</th><th>公钥</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>`,
+    });
+    const modal = $("#modal-body");
+    if (modal) {
+      modal.addEventListener("click", async (e) => {
+        const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-pend]");
+        if (!btn) return;
+        const pid = btn.dataset.pend!;
+        const isDeny = btn.classList.contains("danger");
+        if (isDeny) {
+          if (!(await confirmDialog("拒绝加入", "确定拒绝该设备的加入请求？", true))) return;
+        }
+        try {
+          if (isDeny) await backend.deny(nid, pid);
+          else await backend.approve(nid, pid);
+          toast(isDeny ? "已拒绝" : "已批准");
+          await refresh();
+          await showPending(nid);
+        } catch (err) {
+          toast(String(err), "err");
+        }
+      });
+    }
+  } catch (e) {
+    toast(String(e), "err");
+  }
+}
+
 /* ── Members modal ────────────────────────────────────────────── */
 async function showMembers(nid: string) {
   const mine = (status?.networks ?? []).find((n) => n.networkId === nid);
+  if (mine?.serverState === "gone") {
+    toast("该网络已删除，无法查看成员");
+    return;
+  }
   const myIp = mine?.ip;
   if (mine?.owner) {
     const r = await backend.netinfo(nid);
@@ -642,7 +866,7 @@ async function showMembers(nid: string) {
       const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
       const kick = nd.ip === myIp ? `<span class="muted">自己</span>` : `<button data-node="${esc(nd.id)}" class="btn danger ghost sm">踢出</button>`;
       const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-        ? `<span class="pill subnet-route">${esc(nd.allowedSubnets!.join(", "))}</span>`
+        ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
         : `<span class="muted">-</span>`;
       return `<tr><td class="mono">${esc(nd.ip)}</td><td>${nd.deviceId ? `<span class="muted mono">${esc(nd.deviceId.slice(0, 8))}</span>` : "-"}</td><td>${online}</td><td>${subnets}</td><td>${kick}</td></tr>`;
     }).join("");
@@ -710,8 +934,8 @@ async function showMembers(nid: string) {
     const isSelf = nd.ip === myIp;
     const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
     const subnets = (nd.allowedSubnets?.length ?? 0) > 0
-      ? `<span class="pill subnet-route">${esc(nd.allowedSubnets!.join(", "))}</span>`
-      : `<span class="muted">-</span>`;
+        ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
+        : `<span class="muted">-</span>`;
     return `<tr><td class="mono">${esc(nd.ip)}</td><td>${nd.deviceId ? `<span class="muted mono">${esc(nd.deviceId.slice(0, 8))}</span>` : "-"}</td><td>${online}</td><td>${subnets}</td><td>${isSelf ? `<span class="muted">自己</span>` : ""}</td></tr>`;
   }).join("");
   openModal({
@@ -738,8 +962,6 @@ function openCreateModal() {
       <div class="row"><label>网络名称</label><input id="m-name" type="text" placeholder="例如：家庭网络" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "m-subnet", placeholder: "留空自动分配（如 10.88.0.0/24）", emptyHint: "留空自动分配，通常为 10.88.N.0/24" })}</div>
       ${serverHint}
-      <div class="row"><label>WireGuard 端口</label><input id="m-port" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
-      <div class="row"><label>CA 证书路径</label><input id="m-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
       <p class="msg" id="m-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn" ${hasOwner || !srv ? "disabled" : ""}>创建</button>`,
     onBody: (body) => {
@@ -757,11 +979,9 @@ function openCreateModal() {
           if (!chk.ok) throw new Error(`网段无效：${chk.error}`);
           const subnet = chk.value;
           const server = currentServer();
-          const port = Number((body.querySelector("#m-port") as HTMLInputElement).value);
-          const ca = (body.querySelector("#m-ca") as HTMLInputElement).value.trim();
           if (!name) throw new Error("请输入网络名称");
           if (!server) throw new Error("未连接服务器：请先在设置中链接服务器");
-          const r: CreateResp = await backend.create({ server, port, ca, name, subnet, approvalRequired: false });
+          const r: CreateResp = await backend.create({ server, port: s.wgport, ca: s.ca, name, subnet, approvalRequired: false });
           const modalEl = body;
           const mBody = modalEl.querySelector<HTMLElement>(".modal-body")!;
           const mFoot = modalEl.querySelector<HTMLElement>(".modal-foot")!;
@@ -818,8 +1038,6 @@ function openJoinModal() {
       <div class="row"><label>网络ID</label><input id="m-nid" type="text" placeholder="6 位网络ID" /></div>
       <div class="row"><label>配对码</label><input id="m-code" type="text" placeholder="12 位配对码" /></div>
       ${serverHint}
-      <div class="row"><label>WireGuard 端口</label><input id="m-port" type="number" min="1024" max="65535" value="${s.wgport}" /></div>
-      <div class="row"><label>CA 证书路径</label><input id="m-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
       <div id="m-bind-auth" hidden></div>
       <p class="msg" id="m-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">加入</button>`,
@@ -827,7 +1045,6 @@ function openJoinModal() {
       const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
       const result = body.querySelector<HTMLElement>("#m-result")!;
       const authWrap = body.querySelector<HTMLElement>("#m-bind-auth")!;
-      const caInput = body.querySelector<HTMLInputElement>("#m-ca")!;
 
       const bindAndThen = (server: string, then: () => Promise<void>) => {
         authWrap.hidden = false;
@@ -848,7 +1065,7 @@ function openJoinModal() {
           bindBtn.disabled = true;
           bindResult.className = "msg"; bindResult.textContent = "正在绑定…";
           try {
-            const ca = caInput.value.trim();
+            const ca = s.ca;
             await backend.bind({ server, ca, code });
             saveSettings({ ...loadSettings(), server, ca });
             bindResult.className = "msg ok"; bindResult.textContent = `已绑定 ${server}，正在加入…`;
@@ -868,8 +1085,7 @@ function openJoinModal() {
         result.className = "msg";
         result.textContent = "";
         try {
-          const port = Number((body.querySelector("#m-port") as HTMLInputElement).value);
-          const ca = caInput.value.trim();
+          const ca = s.ca;
           let link = (body.querySelector("#m-link") as HTMLInputElement).value.trim();
           if (!link) {
             const nid = (body.querySelector("#m-nid") as HTMLInputElement).value.trim();
@@ -885,7 +1101,7 @@ function openJoinModal() {
             const server = linkServer && linkServer.trim() ? linkServer : srv;
             if (!server) throw new Error("未连接服务器：请先在设置中链接服务器");
             try {
-              const r: JoinResp = await backend.join({ server, port, ca, link });
+              const r: JoinResp = await backend.join({ server, port: s.wgport, ca, link });
               result.className = "msg ok";
               if (r.status === "pending") {
                 result.innerHTML = `<p>已提交加入请求，等待网络创建者批准。</p><p class="hint">批准后本机会自动加入并连接；也可在上方「待批准 · 加入请求」卡片中取消。</p>`;
@@ -1106,7 +1322,11 @@ function renderStatus() {
     if (deviceId) deviceId.textContent = "-";
     if (svcServer) svcServer.textContent = "-";
     if (svcWgport) svcWgport.textContent = "-";
-    if (tunnelDetail) tunnelDetail.innerHTML = `<p class="muted">后台服务未运行</p>`;
+    const emptyHtml = `<p class="muted">后台服务未运行</p>`;
+    if (tunnelDetail && emptyHtml !== lastTunnelHTML) {
+      tunnelDetail.innerHTML = emptyHtml;
+      lastTunnelHTML = emptyHtml;
+    }
     if (statusJson) statusJson.textContent = "(未连接后台服务)";
     return;
   }
@@ -1116,7 +1336,7 @@ function renderStatus() {
   if (svcWgport) svcWgport.textContent = String(status.wgPort ?? "-");
   const nets = status.networks ?? [];
   if (tunnelDetail) {
-    tunnelDetail.innerHTML = nets.length
+    const html = nets.length
       ? nets.map((n) => {
           const stats = Object.values(n.peerStats ?? {});
           const bytes = stats.reduce((a, p) => a + (p.RxBytes ?? 0) + (p.TxBytes ?? 0), 0);
@@ -1129,6 +1349,10 @@ function renderStatus() {
           </div>`;
         }).join("")
       : `<p class="muted">未加入任何网络</p>`;
+    if (html !== lastTunnelHTML) {
+      tunnelDetail.innerHTML = html;
+      lastTunnelHTML = html;
+    }
   }
   if (statusJson) statusJson.textContent = JSON.stringify(status, null, 2);
 }
@@ -1153,7 +1377,7 @@ function bindEvents() {
   $("#btn-settings")?.addEventListener("click", openSettingsModal);
   $("#btn-create")?.addEventListener("click", openCreateModal);
   $("#btn-join")?.addEventListener("click", openJoinModal);
-  $("#btn-refresh")?.addEventListener("click", () => void refresh());
+  $("#btn-refresh")?.addEventListener("click", async () => { await refresh(); toast("已刷新"); });
   $("#btn-leave-all")?.addEventListener("click", async () => {
     try {
       await backend.leave("");
@@ -1200,6 +1424,6 @@ export async function init(b: Backend) {
   }
   refresh();
   setInterval(() => {
-    if (!document.hidden) refresh();
-  }, 3000);
+    if (!document.hidden && !refreshing) refresh();
+  }, 5000);
 }
