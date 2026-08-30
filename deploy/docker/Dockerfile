@@ -22,6 +22,12 @@ FROM node:20-alpine AS webbuilder
 RUN npm install -g esbuild
 
 WORKDIR /src
+# Copy package manifests first so npm can install the web runtime deps
+# (qrcode-generator) that the shared UI imports; --ignore-scripts avoids
+# running postinstall hooks in the builder.
+COPY desktop/package.json desktop/package-lock.json ./
+RUN npm install --omit=dev --ignore-scripts
+
 # Copy shared TypeScript source + HTML/CSS
 COPY shared/web/ ./shared/web/
 # Copy web adapter
