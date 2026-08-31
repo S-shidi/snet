@@ -25,7 +25,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetEndpoint(joined.Token, "203.0.113.7:51821"); err != nil {
+	if err := s.SetEndpoint(joined.Token, "203.0.113.7:51821", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -203,7 +203,7 @@ func TestLastSeenTracking(t *testing.T) {
 	s := NewStore()
 	created, _ := s.CreateNetwork("qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=", "dev-owner", "", "", false)
 
-	if err := s.SetEndpoint(created.Token, "203.0.113.1:51820"); err != nil {
+	if err := s.SetEndpoint(created.Token, "203.0.113.1:51820", ""); err != nil {
 		t.Fatal(err)
 	}
 	peersResp, err := s.ListPeers(created.Token)

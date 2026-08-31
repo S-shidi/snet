@@ -35,10 +35,29 @@ func wrapNetGone(err error) error {
 // create a TUN device) until it comes up or is left/removed.
 const retryInterval = 30 * time.Second
 
+// directGraceSec is how long the daemon tries a peer's direct endpoint
+// (LAN/LocalEndpoint) before falling back to the network relay endpoint.
+const directGraceSec = 20
+
+// directRetrySec is how long the daemon stays on the relay endpoint for a
+// peer before re-attempting a direct path.
+const directRetrySec = 300
+
 // netRuntime holds the live tunnel + control loops for one joined network.
 type netRuntime struct {
 	tun  *Tunnel
 	stop chan struct{}
+	// peerDirect tracks the endpoint strategy per peer ("direct" vs
+	// "relay") so the daemon can attempt direct paths and fall back to the
+	// relay when a direct handshake does not complete in time.
+	peerDirect map[string]*peerDirect
+}
+
+// peerDirect records the endpoint strategy for a single peer.
+type peerDirect struct {
+	mode     string // "direct" or "relay"
+	dirSince int64  // unix seconds when the current direct attempt started
+	lastDir  string // direct endpoint last attempted
 }
 
 // Daemon coordinates the local tunnels and the coordination server for any
@@ -906,7 +925,7 @@ func (d *Daemon) bringUp(nid string) error {
 		return fmt.Errorf("tunnel: %w", err)
 	}
 	delete(d.netErrs, nid)
-	rt := &netRuntime{tun: t, stop: make(chan struct{})}
+	rt := &netRuntime{tun: t, stop: make(chan struct{}), peerDirect: make(map[string]*peerDirect)}
 	d.nets[nid] = rt
 
 	// Enable IP forwarding if this device advertises subnets.
@@ -920,7 +939,9 @@ func (d *Daemon) bringUp(nid string) error {
 	if err != nil {
 		log.Printf("endpoint detect failed: %v", err)
 	} else {
-		if err := d.apiLocked().SetEndpointFor(nid, nc.NodeID, nc.Token, endpoint); err != nil {
+		// Advertise the LAN/NAT-internal endpoint as the direct candidate so
+		// same-subnet peers can reach this device without the relay.
+		if err := d.apiLocked().SetEndpointFor(nid, nc.NodeID, nc.Token, endpoint, endpoint); err != nil {
 			log.Printf("set endpoint: %v", err)
 		}
 	}
@@ -997,6 +1018,103 @@ func (d *Daemon) localEndpointLocked(port int) (string, error) {
 		return "", err
 	}
 	return net.JoinHostPort(ip, fmt.Sprint(port)), nil
+}
+
+// resolvePeerEndpoints picks, per peer, the endpoint to use. With relay
+// enabled, a peer whose LocalEndpoint shares our LAN subnet is tried directly
+// first and falls back to the network relay endpoint when no WireGuard
+// handshake completes within directGraceSec; peers stay on the relay until
+// directRetrySec elapses, then retry the direct path. Without relay the
+// peer's self-advertised public endpoint is used as before.
+// Caller must hold no lock; the reply is a fresh slice.
+func (d *Daemon) resolvePeerEndpoints(rt *netRuntime, st protocol.PeersResp, localSubs []string) []protocol.Node {
+	out := make([]protocol.Node, len(st.Peers))
+	copy(out, st.Peers)
+	stats, _ := rt.tun.Stats()
+	now := time.Now().Unix()
+	for i := range out {
+		p := &out[i]
+		// Choose the best direct candidate for this peer.
+		direct := ""
+		if st.RelayEndpoint == "" {
+			direct = p.Endpoint
+		} else {
+			direct = endpointIfLocal(p, localSubs)
+		}
+		st2 := rt.peerDirect[p.ID]
+		if st2 == nil {
+			// First contact: prefer direct when a candidate exists.
+			st2 = &peerDirect{mode: "relay", lastDir: direct, dirSince: now}
+			if direct != "" {
+				st2.mode = "direct"
+			}
+			rt.peerDirect[p.ID] = st2
+		}
+		if st2.mode == "relay" {
+			// Periodically retry the direct path.
+			if st.RelayEndpoint != "" && direct != "" && now-st2.dirSince >= directRetrySec {
+				st2.mode = "direct"
+				st2.dirSince = now
+				st2.lastDir = direct
+			}
+		}
+		if st2.mode == "direct" {
+			switch {
+			case direct == "":
+				// Candidate disappeared; fall back to the relay.
+				st2.mode = "relay"
+				st2.dirSince = now
+			case st2.lastDir != direct:
+				// Direct candidate changed; restart the direct timer.
+				st2.lastDir = direct
+				st2.dirSince = now
+			default:
+				// Check whether a handshake completed while on direct.
+				hs := stats[p.PublicKey].LastHandshakeSec
+				if !(hs >= st2.dirSince) && now-st2.dirSince >= directGraceSec {
+					// No handshake within grace: fall back to the relay.
+					if st.RelayEndpoint != "" {
+						st2.mode = "relay"
+						st2.dirSince = now
+					}
+				}
+			}
+			if st2.mode == "direct" && direct != "" {
+				p.Endpoint = direct
+			}
+		}
+		if st2.mode == "relay" && st.RelayEndpoint != "" {
+			p.Endpoint = st.RelayEndpoint
+		}
+	}
+	return out
+}
+
+// endpointIfLocal returns the peer's local endpoint when its IP falls inside
+// one of our own private LAN subnets (same-segment direct path), and empty
+// otherwise.
+func endpointIfLocal(p *protocol.Node, localSubs []string) string {
+	if p.LocalEndpoint == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(p.LocalEndpoint)
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	for _, sub := range localSubs {
+		_, n, err := net.ParseCIDR(sub)
+		if err != nil {
+			continue
+		}
+		if n.Contains(ip) {
+			return p.LocalEndpoint
+		}
+	}
+	return ""
 }
 
 // pollIntervalFor returns the peer poll interval scaled by network count.
@@ -1104,7 +1222,8 @@ func (d *Daemon) pollLoop(nid string) {
 				log.Printf("save name %s: %v", nid, err)
 			}
 		}
-		if err := rt.tun.ApplyPeers(st.Peers, nc.Subnet); err != nil {
+		peers := d.resolvePeerEndpoints(rt, st, d.DetectLocalSubnets())
+		if err := rt.tun.ApplyPeers(peers, nc.Subnet, st.RelayEndpoint); err != nil {
 			log.Printf("apply peers %s: %v", nid, err)
 		}
 		d.mu.Unlock()
@@ -1118,6 +1237,7 @@ func (d *Daemon) probeLoop(nid string) {
 	ticker := time.NewTicker(protocol.ProbeIntervalSeconds * time.Second)
 	defer ticker.Stop()
 	lastIP := ""
+	lastLocal := ""
 	for {
 		select {
 		case <-ticker.C:
@@ -1138,21 +1258,23 @@ func (d *Daemon) probeLoop(nid string) {
 		port := nc.Port
 		d.mu.Unlock()
 
+		localEP, _ := d.localEndpointLocked(port)
 		ip, err := probePublicIP(serverProbeAddr(serverAddr), nid, nc.NodeID, nc.Token)
 		if err != nil {
 			log.Printf("probe public IP %s: %v", nid, err)
 			continue
 		}
-		if ip == lastIP {
+		if ip == lastIP && localEP == lastLocal {
 			continue
 		}
 		lastIP = ip
+		lastLocal = localEP
 		ep := net.JoinHostPort(ip, fmt.Sprint(port))
-		if err := newAPIClient(serverAddr, serverCA, d.ctx).SetEndpointFor(nid, nc.NodeID, nc.Token, ep); err != nil {
+		if err := newAPIClient(serverAddr, serverCA, d.ctx).SetEndpointFor(nid, nc.NodeID, nc.Token, ep, localEP); err != nil {
 			log.Printf("set public endpoint %s: %v", nid, err)
 			continue
 		}
-		log.Printf("public endpoint %s: %s", nid, ep)
+		log.Printf("public endpoint %s: %s (local %s)", nid, ep, localEP)
 	}
 }
 

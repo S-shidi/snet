@@ -202,9 +202,9 @@ func (c *apiClient) ResetCode(nid, token string) (string, error) {
 	return out.PairingCode, err
 }
 
-func (c *apiClient) SetEndpointFor(nid, nodeID, token, endpoint string) error {
+func (c *apiClient) SetEndpointFor(nid, nodeID, token, endpoint, localEndpoint string) error {
 	return c.do(http.MethodPut, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/endpoint",
-		token, protocol.SetEndpointReq{Endpoint: endpoint}, nil)
+		token, protocol.SetEndpointReq{Endpoint: endpoint, LocalEndpoint: localEndpoint}, nil)
 }
 
 func (c *apiClient) ListPeers(nid, token string) ([]protocol.Node, error) {

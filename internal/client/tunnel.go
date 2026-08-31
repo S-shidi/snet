@@ -60,7 +60,9 @@ func NewTunnel(privKeyHex, ip string, port int, mtu int) (*Tunnel, error) {
 // against the previous set to add/remove routes as peers join, leave, or
 // change their advertised subnets. subnet is the tunnel subnet (e.g.
 // "10.88.1.0/24") used to route peer-to-peer traffic through the interface.
-func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet string) error {
+// relayEP, when non-empty, is used as the fallback endpoint for peers that
+// have no direct endpoint or whose direct endpoint has not been established.
+func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -83,8 +85,14 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet string) error {
 		for _, sub := range p.AllowedSubnets {
 			sb.WriteString("allowed_ip=" + sub + "\n")
 		}
+		ep := ""
 		if p.Endpoint != "" {
-			sb.WriteString("endpoint=" + resolveEndpoint(p.Endpoint) + "\n")
+			ep = resolveEndpoint(p.Endpoint)
+		} else if relayEP != "" {
+			ep = resolveEndpoint(relayEP)
+		}
+		if ep != "" {
+			sb.WriteString("endpoint=" + ep + "\n")
 		}
 		sb.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", protocol.KeepaliveInterval))
 	}

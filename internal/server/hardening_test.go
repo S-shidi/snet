@@ -48,16 +48,16 @@ func TestSetEndpointValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetEndpoint(c.Token, "no-port-here"); err == nil {
+	if err := s.SetEndpoint(c.Token, "no-port-here", ""); err == nil {
 		t.Fatal("endpoint without port should be rejected")
 	}
-	if err := s.SetEndpoint(c.Token, "host.example.com:99999"); err == nil {
+	if err := s.SetEndpoint(c.Token, "host.example.com:99999", ""); err == nil {
 		t.Fatal("out-of-range port should be rejected")
 	}
-	if err := s.SetEndpoint(c.Token, "host.example.com:51820"); err != nil {
+	if err := s.SetEndpoint(c.Token, "host.example.com:51820", ""); err != nil {
 		t.Fatalf("valid endpoint rejected: %v", err)
 	}
-	if err := s.SetEndpoint(c.Token, ""); err != nil {
+	if err := s.SetEndpoint(c.Token, "", ""); err != nil {
 		t.Fatalf("empty endpoint should be allowed to clear: %v", err)
 	}
 }

@@ -298,7 +298,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		if err := s.SetEndpoint(tokenOf(r), req.Endpoint); err != nil {
+		if err := s.SetEndpoint(tokenOf(r), req.Endpoint, req.LocalEndpoint); err != nil {
 			handleStoreErr(w, err)
 			return
 		}

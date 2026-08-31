@@ -1046,8 +1046,11 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 	}, nil
 }
 
-func (s *Store) SetEndpoint(token, endpoint string) error {
+func (s *Store) SetEndpoint(token, endpoint, localEndpoint string) error {
 	if err := validateEndpoint(endpoint); err != nil {
+		return err
+	}
+	if err := validateEndpoint(localEndpoint); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -1065,6 +1068,7 @@ func (s *Store) SetEndpoint(token, endpoint string) error {
 		return ErrNotFound
 	}
 	n.Endpoint = endpoint
+	n.LocalEndpoint = localEndpoint
 	n.LastSeen = time.Now().Unix()
 	s.touchLocked(ns, time.Now())
 	return s.persistNode(te.NetworkID, n)
@@ -1103,18 +1107,14 @@ func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
 	for id, n := range ns.nodes {
 		if id != te.NodeID {
 			n2 := *n
-			if relayEP != "" {
-				n2.Endpoint = relayEP
-			}
+			// Keep the peer's self-advertised direct endpoint; the caller
+			// decides whether to use it or fall back to the relay endpoint.
 			peers = append(peers, n2)
 		}
 	}
 	var self *protocol.Node
 	if me := ns.nodes[te.NodeID]; me != nil {
 		m2 := *me
-		if relayEP != "" {
-			m2.Endpoint = relayEP
-		}
 		self = &m2
 	}
 	return protocol.PeersResp{
@@ -1123,6 +1123,7 @@ func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
 		Self:             self,
 		Subnet:           ns.n.Subnet,
 		ApprovalRequired: ns.n.ApprovalRequired,
+		RelayEndpoint:    relayEP,
 	}, nil
 }
 

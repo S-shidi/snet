@@ -36,6 +36,9 @@ type Node struct {
 	IP        string `json:"ip"`
 	PublicKey string `json:"publicKey"`
 	Endpoint  string `json:"endpoint"`
+	// LocalEndpoint is the node's LAN/NAT-internal address candidate.
+	// Nodes on the same subnet prefer this over the relay endpoint.
+	LocalEndpoint string `json:"localEndpoint,omitempty"`
 	LastSeen  int64  `json:"lastSeen,omitempty"`
 	DeviceID  string `json:"deviceId,omitempty"`
 	// DeviceName is the display name of the bound device (admin views only;
@@ -89,6 +92,10 @@ type JoinResp struct {
 
 type SetEndpointReq struct {
 	Endpoint string `json:"endpoint"`
+	// LocalEndpoint is the node's LAN/NAT-internal address candidate
+	// (host:port). Peers on the same subnet may connect to it directly to
+	// save relay bandwidth.
+	LocalEndpoint string `json:"localEndpoint,omitempty"`
 }
 
 type PeersResp struct {
@@ -98,6 +105,10 @@ type PeersResp struct {
 	Self             *Node  `json:"self,omitempty"`
 	Subnet           string `json:"subnet,omitempty"`
 	ApprovalRequired bool   `json:"approvalRequired,omitempty"`
+	// RelayEndpoint is the relay address for the network. Peers use it as a
+	// connectivity fallback when a direct (LAN/self-advertised) endpoint
+	// cannot be reached. Empty when relay mode is disabled.
+	RelayEndpoint string `json:"relayEndpoint,omitempty"`
 }
 
 // ClaimReq claims ownership of a legacy network. Requires the calling device
