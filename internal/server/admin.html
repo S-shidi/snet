@@ -262,6 +262,7 @@
   th { color:var(--dim); font-weight:600; font-size:11.5px; letter-spacing:.3px; background:var(--card2); white-space:nowrap; }
   tbody tr:hover { background:rgba(255,255,255,.025); }
   td.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  .subnet-route { display:inline-block; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; background:rgba(16,185,129,.12); color:var(--ok); border-radius:4px; padding:1px 6px; font-size:11.5px; cursor:default; }
 
   /* ── auth-code bound devices: expandable list in status cell ── */
   .pill-toggle { cursor:pointer; border:none; font:inherit; }
@@ -3571,14 +3572,16 @@ async function renderMembersModal(nid) {
     let rows = '';
     for (const nd of nodes) {
       const online = nd.lastSeen ? (now - nd.lastSeen) < 60 : false;
+      const subnets = (nd.allowedSubnets && nd.allowedSubnets.length) ? nd.allowedSubnets.join(', ') : '';
       rows += `<tr>
         <td class="mono" title="${esc(deviceLabel(nd.deviceName, nd.deviceId))}">${esc(deviceLabel(nd.deviceName, nd.deviceId))}</td>
         <td class="mono">${esc(nd.ip)}</td>
         <td><span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : (nd.lastSeen ? '离线' : '活跃（网络级）')}</span></td>
+        <td class="mono">${subnets ? `<span class="subnet-route" title="子网路由：${esc(subnets)}">${esc(subnets)}</span>` : '<span class="hint">-</span>'}</td>
         <td><button type="button" class="btn danger ghost sm" data-act="kick-node" data-nid="${esc(nid)}" data-node="${esc(nd.id)}">踢出</button></td>
       </tr>`;
     }
-    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>IP</th><th>状态</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>IP</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
   } catch (e) {
     box.innerHTML = '<p class="msg mb0">加载失败：' + esc(friendlyErr(e)) +
       '</p><div class="modal-foot"><button type="button" class="btn ghost" data-act="view-members" data-nid="' + esc(nid) + '">重试</button></div>';
