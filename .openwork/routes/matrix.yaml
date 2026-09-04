@@ -1,0 +1,86 @@
+# SNET 跨组路由矩阵
+# 用途：git post-commit 钩子读取此文件，决定哪个 BOT 应被通知
+# 格式：path_glob -> primary_bot[, cc_bot]
+
+version: 1
+project: snet (p_7ca5404b)
+
+routes:
+  # ─── 架构 ───
+  - match: "DESIGN.md"
+    primary: arch
+  - match: "internal/protocol/*.go"
+    primary: arch
+    cc: [backend]
+
+  # ─── 后端 ───
+  - match: "internal/server/*.go"
+    primary: backend
+    cc: [qa]
+  - match: "internal/client/*.go"
+    primary: backend
+    cc: [mobile, qa]
+  - match: "internal/protocol/*.go"
+    primary: arch
+    cc: [backend]
+  - match: "snetbind/*.go"
+    primary: mobile
+    cc: [backend]
+  - match: "cmd/**/*.go"
+    primary: backend
+
+  # ─── 前端 ───
+  - match: "desktop/src*"
+    primary: frontend
+  - match: "desktop/src-tauri/**/*.rs"
+    primary: frontend
+    cc: [backend]
+  - match: "shared/web/*"
+    primary: frontend
+    cc: [mobile]
+  - match: "shared/web/*"
+    primary: frontend
+    cc: [mobile]
+
+  # ─── 移动端 ───
+  - match: "android/**/*.kt"
+    primary: mobile
+    cc: [frontend]
+  - match: "android/src/*.ts"
+    primary: mobile
+    cc: [frontend]
+  - match: "snetbind/*.go"
+    primary: mobile
+    cc: [backend]
+
+  # ─── DevOps ───
+  - match: "deploy/**"
+    primary: devops
+    cc: [pm]
+  - match: "scripts/rollout*"
+    primary: devops
+    cc: [pm]
+  - match: "scripts/e2e*"
+    primary: qa
+    cc: [devops]
+  - match: ".github/workflows/**"
+    primary: devops
+  - match: "Dockerfile"
+    primary: devops
+
+  # ─── QA ───
+  - match: "**/*_test.go"
+    primary: qa
+    cc: [backend]
+
+  # ─── 团队配置 ───
+  - match: ".openwork/**"
+    primary: pm
+
+  # ─── Release 触发 ───
+  - match: "*.tag"  # 伪匹配：实际由 git tag 钩子触发
+    primary: pm
+    cc: [arch, backend, frontend, mobile, devops, qa]
+
+# 频率限制：同一文件路径 5 分钟内重复通知合并
+dedupe_window_minutes: 5

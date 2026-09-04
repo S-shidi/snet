@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""
+SNET post-commit 钩子
+- 列出本次 commit 改动文件
+- 调 routes/notifier.py 决定通知哪些 BOT
+- 写入 .openwork/logs/post-commit.log
+- 在终端打印人类可读摘要
+- 跨平台：纯 Python，无需额外依赖（除 PyYAML）
+"""
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+NOTIFIER = ROOT / "routes" / "notifier.py"
+LOG_DIR = ROOT / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "post-commit.log"
+
+BOT_DISPLAY = {
+    "pm": "@snet-pm-bot",
+    "arch": "@snet-arch-bot",
+    "backend": "@snet-backend-bot",
+    "frontend": "@snet-frontend-bot",
+    "mobile": "@snet-mobile-bot",
+    "devops": "@snet-devops-bot",
+    "qa": "@snet-qa-bot",
+}
+
+def get_changed_files():
+    try:
+        out = subprocess.check_output(
+            ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+            cwd=ROOT.parent, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return [l for l in out.splitlines() if l]
+    except subprocess.CalledProcessError:
+        return []
+
+def main():
+    files = get_changed_files()
+    if not files:
+        print("snet-hook: no changed files, skip")
+        return 0
+
+    try:
+        result = subprocess.check_output(
+            ["python3", str(NOTIFIER), *files],
+            cwd=ROOT.parent, stderr=subprocess.PIPE,
+        ).decode()
+        parsed = json.loads(result)
+    except subprocess.CalledProcessError as e:
+        print(f"snet-hook: notifier failed: {e.stderr.decode()}", file=sys.stderr)
+        return 0
+    except json.JSONDecodeError:
+        return 0
+
+    if not parsed.get("bots"):
+        return 0
+
+    now = datetime.now().isoformat(timespec="seconds")
+    commit = os.environ.get("SNET_COMMIT", "?")
+    print(f"\n📡 SNET route notification ({now}, commit {commit[:8]})")
+    for b in parsed["bots"]:
+        name = BOT_DISPLAY.get(b["bot"], b["bot"])
+        primary = b["primary_for"]
+        cc = b["cc_for"]
+        if primary:
+            print(f"  → {name}  (primary: {len(primary)} file(s))")
+            for f in primary[:3]:
+                print(f"      • {f}")
+            if len(primary) > 3:
+                print(f"      • ... +{len(primary)-3} more")
+        if cc:
+            print(f"  ↪ {name}  (cc: {len(cc)} file(s))")
+
+    # 写日志
+    with open(LOG_FILE, "a") as f:
+        f.write(f"--- {now} commit={commit} ---\n")
+        f.write(json.dumps(parsed, ensure_ascii=False) + "\n")
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
