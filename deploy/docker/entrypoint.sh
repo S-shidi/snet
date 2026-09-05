@@ -26,6 +26,13 @@ if [ -x "$DATA_DIR/snetctl" ]; then
     cp "$DATA_DIR/snetctl" /usr/local/bin/snetctl
 fi
 
+# snetctl finds the ctl-channel token next to the daemon config. The daemon
+# runtime dir may not be in snetctl's built-in candidate list (e.g. the Docker
+# image uses /data), so point it there explicitly.
+if [ -f "$DATA_DIR/ctl-token" ]; then
+    export SNET_CTL_TOKEN_FILE="$DATA_DIR/ctl-token"
+fi
+
 # ---- Helper: wait for snetd control API ----
 wait_for_ctl() {
     for i in $(seq 1 30); do
