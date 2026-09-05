@@ -280,12 +280,12 @@ func TestJoinViaLinkServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	link := protocol.BuildLink(created.NetworkID, created.PairingCode, ts.URL)
+	link := protocol.BuildLink(created.NetworkID, created.PairingCode, ts.URL, "")
 
 	// an unbound device joins the network named by the link, and ends up
 	// pointed at the link's server (non-enforcement server: no bind needed)
 	d2, _ := newTestDaemon(t)
-	nid, code, linkServer, err := protocol.ParseLink(link)
+	nid, code, linkServer, _, err := protocol.ParseLink(link)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,10 +326,10 @@ func TestJoinViaLinkServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	linkE := protocol.BuildLink(createdE.NetworkID, createdE.PairingCode, te.URL)
+	linkE := protocol.BuildLink(createdE.NetworkID, createdE.PairingCode, te.URL, "")
 
 	d4, _ := newTestDaemon(t)
-	nid, code, linkServer, err = protocol.ParseLink(linkE)
+	nid, code, linkServer, _, err = protocol.ParseLink(linkE)
 	if err != nil {
 		t.Fatal(err)
 	}

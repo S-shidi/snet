@@ -7,6 +7,11 @@ import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinR
 import { $, esc, SPIN, fmtBytes, onlineCount, toast, copyText, renderQR, loadQR, openModal, closeModal, confirmDialog, initTabs } from "./utils.js";
 import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 
+// Optional hook: a platform adapter (Android WebView) can call refresh from
+// native code after a background daemon op completes, to reconcile the
+// optimistic switch quickly instead of waiting for the next poll.
+(globalThis as any).snetRefresh = () => refresh();
+
 let backend: Backend;
 let status: DaemonStatus | null = null;
 let onboardingShown = false;
@@ -134,7 +139,7 @@ function renderHeader() {
 }
 
 /* ── Network cards ────────────────────────────────────────────── */
-function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[] }): string {
+function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: string; interface?: string; active?: boolean; owner?: boolean; serverState?: string; error?: string; peerStats?: Record<string, { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number }>; allowedSubnets?: string[]; visibility?: string; description?: string; tags?: string[]; role?: string }): string {
   const gone = n.serverState === "gone";
   const linked = !!n.interface;
   const state = gone ? "已删除" : linked ? "已链接" : n.active ? "未就绪" : "未链接";
@@ -147,6 +152,7 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
     ? (detail.nodes ?? []).filter((nd) => nd.online).length
     : onlineCount(n) + (linked ? 1 : 0);
   const pendingCount = detail?.pendingCount ?? detail?.pending?.length ?? 0;
+  const sharePill = (n.visibility === "shareable") ? `<span class="pill share" title="可被社区发现">shareable</span>` : "";
   const memberLine = gone
     ? `<span class="muted">已失效</span>`
     : memberTotal <= 1
@@ -161,7 +167,7 @@ function netCard(n: { networkId: string; name?: string; ip?: string; subnet?: st
   <div class="net" data-nid="${esc(n.networkId)}" data-owner="${n.owner ? "1" : "0"}" ${gone ? 'data-gone="1"' : ""}>
     <div class="net-row">
       <div class="net-main">
-        <div class="net-name">${esc(n.name || n.networkId)} ${n.owner ? `<span class="pill owner">owner</span>` : ""} ${pendingPill}</div>
+        <div class="net-name">${esc(n.name || n.networkId)} ${n.owner ? `<span class="pill owner">owner</span>` : ""} ${sharePill} ${pendingPill}</div>
         <div class="net-meta">
           <span>IP <code>${esc(n.ip ?? "-")}</code></span>
           <span>网段 <code>${esc(n.subnet ?? "-")}</code></span>
@@ -435,6 +441,10 @@ async function onToggle(card: HTMLElement, checked: boolean) {
   }
   input.disabled = true;
   card.classList.add("busy");
+  // Flip the switch optimistically so the UI responds instantly; the real
+  // state is reconciled by refresh() once the background op finishes (or
+  // reverts below on failure).
+  input.checked = checked;
   try {
     if (checked) await backend.rejoin(nid);
     else await backend.leave(nid);
@@ -541,6 +551,14 @@ async function openNetworkSettings(nid: string) {
       <div class="row"><label>网络名称</label><input id="s-name" type="text" value="${esc(curName)}" placeholder="留空保持不变" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "s-subnet", value: curSubnet, placeholder: "留空保持不变", emptyHint: "留空保持不变" })}</div>
       <div class="row"><label class="inline"><input id="s-approval" type="checkbox" ${detail.approvalRequired ? "checked" : ""} /> 新成员加入需创建者批准</label></div>
+      <div class="row"><label>描述</label><textarea id="s-desc" rows="2" placeholder="简短说明这个网络的用途（分享时展示）">${esc(detail.description || "")}</textarea></div>
+      <div class="row"><label>标签</label><input id="s-tags" type="text" value="${esc((detail.tags ?? []).join(", "))}" placeholder="逗号分隔，如 家庭, NAS, 异地" /></div>
+      <div class="row"><label>公开范围</label>
+        <select id="s-visibility">
+          <option value="">私密（不公开）</option>
+          <option value="shareable" ${detail.visibility === "shareable" ? "selected" : ""}>可被社区发现（shareable）</option>
+        </select>
+      </div>
       <p class="msg" id="s-warn" hidden>修改网段会重新分配所有成员 IP，已加入的 SNET 客户端会自动重连；但手机等外部 WireGuard 设备需手动重新导入新配置。</p>
       <p class="msg" id="s-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn">保存</button>`,
@@ -561,6 +579,10 @@ async function openNetworkSettings(nid: string) {
         }
         const subnet = chk.value;
         const approval = (body.querySelector("#s-approval") as HTMLInputElement).checked;
+        const desc = (body.querySelector("#s-desc") as HTMLTextAreaElement).value.trim();
+        const tags = (body.querySelector("#s-tags") as HTMLInputElement).value
+          .split(",").map((s) => s.trim()).filter(Boolean).slice(0, 8);
+        const visibility = (body.querySelector("#s-visibility") as HTMLSelectElement).value;
         const result = body.querySelector<HTMLElement>("#s-result")!;
         const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
         const origText = submit.textContent;
@@ -574,6 +596,9 @@ async function openNetworkSettings(nid: string) {
               name,
               subnet: subnet !== curSubnet ? subnet : "",
               approvalRequired: approval !== !!detail!.approvalRequired ? approval : null,
+              description: desc,
+              tags,
+              visibility,
             });
             return true;
           });
@@ -778,8 +803,9 @@ async function openInviteModal(nid: string) {
   }
   const netId = detail.id || detail.networkId;
   if (!netId) { toast("获取网络ID失败", "err"); return; }
-  const link = `snet://join?nid=${encodeURIComponent(netId)}&code=${encodeURIComponent(code)}`;
   const name = detail.name || netId;
+  let link = `snet://join?nid=${encodeURIComponent(netId)}&code=${encodeURIComponent(code)}`;
+  if (name) link += `&name=${encodeURIComponent(name)}`;
   openModal({
     title: `邀请加入 · ${name}`,
     wide: true,
@@ -852,6 +878,12 @@ async function showPending(nid: string) {
 }
 
 /* ── Members modal ────────────────────────────────────────────── */
+function roleLabel(role: string): string {
+  if (role === "owner") return "创建者";
+  if (role === "admin") return "管理员";
+  return "成员";
+}
+
 async function showMembers(nid: string) {
   const mine = (status?.networks ?? []).find((n) => n.networkId === nid);
   if (mine?.serverState === "gone") {
@@ -864,11 +896,19 @@ async function showMembers(nid: string) {
     ownerInfo[nid] = r;
     const rows = (r.nodes ?? []).map((nd) => {
       const online = nd.online ? '<span class="pill ok">在线</span>' : '<span class="pill off">离线</span>';
+      const isSelf = nd.ip === myIp || nd.deviceId === (status?.deviceId ?? "");
       const kick = nd.ip === myIp ? `<span class="muted">自己</span>` : `<button data-node="${esc(nd.id)}" class="btn danger ghost sm">踢出</button>`;
+      const role = nd.role || "member";
+      const roleCtl = isSelf || role === "owner"
+        ? `<span class="pill role-${esc(role)}">${roleLabel(role)}</span>`
+        : `<select data-role="${esc(nd.id)}" data-cur="${esc(role)}" class="role-select">
+             <option value="member" ${role === "member" ? "selected" : ""}>成员</option>
+             <option value="admin" ${role === "admin" ? "selected" : ""}>管理员</option>
+           </select>`;
       const subnets = (nd.allowedSubnets?.length ?? 0) > 0
         ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
         : `<span class="muted">-</span>`;
-      return `<tr><td class="mono">${esc(nd.ip)}</td><td>${nd.deviceId ? `<span class="muted mono">${esc(nd.deviceId.slice(0, 8))}</span>` : "-"}</td><td>${online}</td><td>${subnets}</td><td>${kick}</td></tr>`;
+      return `<tr><td class="mono">${esc(nd.ip)}</td><td>${nd.deviceId ? `<span class="muted mono">${esc(nd.deviceId.slice(0, 8))}</span>` : "-"}</td><td>${online}</td><td>${roleCtl}</td><td>${subnets}</td><td>${kick}</td></tr>`;
     }).join("");
     const pendingRows = (r.pending ?? []).map((p) => {
       return `<tr><td colspan="2"><span class="muted">设备</span> <code>${p.deviceId ? esc(p.deviceId.slice(0, 8)) + "…" : "-"}</code><span class="muted"> 公钥</span> <code>${esc(p.publicKey.slice(0, 12))}…</code></td><td><span class="pill warn">待批准</span></td><td>-</td><td><button data-pend="${esc(p.id)}" class="btn sm" style="background:var(--ok)">批准</button> <button data-pend="${esc(p.id)}" class="btn danger sm">拒绝</button></td></tr>`;
@@ -879,7 +919,7 @@ async function showMembers(nid: string) {
     openModal({
       title: `成员 · ${nid}`,
       wide: true,
-      body: `<div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>设备</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${pendingSection}`,
+      body: `<div class="tbl-wrap"><table class="members"><thead><tr><th>IP</th><th>设备</th><th>状态</th><th>角色</th><th>子网路由</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${pendingSection}`,
       onBody: (b) => {
         b.querySelectorAll<HTMLElement>("[data-node]").forEach((k) =>
           k.addEventListener("click", async () => {
@@ -898,6 +938,28 @@ async function showMembers(nid: string) {
               btn.disabled = false;
               btn.textContent = orig;
             }
+            await refresh();
+          }),
+        );
+        b.querySelectorAll<HTMLSelectElement>("[data-role]").forEach((sel) =>
+          sel.addEventListener("change", async () => {
+            if (!(await confirmDialog("修改角色", `将该成员设为「${roleLabel(sel.value as string)}」？`, true))) {
+              sel.value = sel.dataset.cur!;
+              return;
+            }
+            const origVal = sel.value;
+            sel.disabled = true;
+            try {
+              const r = await ctlOrClean(nid, "修改角色", () =>
+                backend.setRole!({ nid, nodeId: sel.dataset.role!, role: sel.value }));
+              if (r === null) { sel.disabled = false; sel.value = sel.dataset.cur!; return; }
+              sel.dataset.cur = origVal;
+              toast("角色已更新");
+            } catch (e) {
+              toast(String(e), "err");
+              sel.value = sel.dataset.cur!;
+            }
+            sel.disabled = false;
             await refresh();
           }),
         );
@@ -961,6 +1023,8 @@ function openCreateModal() {
     body: `${hint}
       <div class="row"><label>网络名称</label><input id="m-name" type="text" placeholder="例如：家庭网络" /></div>
       <div class="row"><label>网段</label>${subnetWidgetHTML({ id: "m-subnet", placeholder: "留空自动分配（如 10.88.0.0/24）", emptyHint: "留空自动分配，通常为 10.88.N.0/24" })}</div>
+      <div class="row"><label>描述（可选）</label><textarea id="m-desc" rows="2" placeholder="简短说明这个网络的用途"></textarea></div>
+      <div class="row"><label>标签（可选）</label><input id="m-tags" type="text" placeholder="逗号分隔，如 家庭, NAS" /></div>
       ${serverHint}
       <p class="msg" id="m-result"></p>`,
     footer: `<button data-close class="btn ghost">取消</button><button id="m-submit" class="btn" ${hasOwner || !srv ? "disabled" : ""}>创建</button>`,
@@ -978,10 +1042,13 @@ function openCreateModal() {
           const chk = subnetWidget.check();
           if (!chk.ok) throw new Error(`网段无效：${chk.error}`);
           const subnet = chk.value;
+          const description = (body.querySelector("#m-desc") as HTMLTextAreaElement).value.trim();
+          const tags = (body.querySelector("#m-tags") as HTMLInputElement).value
+            .split(",").map((s) => s.trim()).filter(Boolean).slice(0, 8);
           const server = currentServer();
           if (!name) throw new Error("请输入网络名称");
           if (!server) throw new Error("未连接服务器：请先在设置中链接服务器");
-          const r: CreateResp = await backend.create({ server, port: s.wgport, ca: s.ca, name, subnet, approvalRequired: false });
+          const r: CreateResp = await backend.create({ server, port: s.wgport, ca: s.ca, name, subnet, approvalRequired: false, description, tags, visibility: "" });
           const modalEl = body;
           const mBody = modalEl.querySelector<HTMLElement>(".modal-body")!;
           const mFoot = modalEl.querySelector<HTMLElement>(".modal-foot")!;
@@ -1033,7 +1100,11 @@ function openJoinModal() {
     : `<p class="msg">未连接服务器：请先在「设置」中链接服务器；或粘贴带有服务器地址的邀请链接后加入。</p>`;
   openModal({
     title: "加入网络",
-    body: `<div class="row"><label>邀请链接</label><input id="m-link" type="text" placeholder="snet://join?nid=...&code=..." /></div>
+    body: `<div class="row"><label>邀请链接</label>
+      <div class="subnet-input join-link-row">
+        <input class="join-link-input" id="m-link" type="text" placeholder="snet://join?nid=...&code=..." />
+        ${backend.scanQR ? '<button id="m-scan" class="btn ghost" type="button" title="扫描二维码加入">扫码</button>' : ""}
+      </div></div>
       <p class="hint" style="text-align:center">或手动输入</p>
       <div class="row"><label>网络ID</label><input id="m-nid" type="text" placeholder="6 位网络ID" /></div>
       <div class="row"><label>配对码</label><input id="m-code" type="text" placeholder="12 位配对码" /></div>
@@ -1045,6 +1116,29 @@ function openJoinModal() {
       const submit = body.querySelector<HTMLButtonElement>("#m-submit")!;
       const result = body.querySelector<HTMLElement>("#m-result")!;
       const authWrap = body.querySelector<HTMLElement>("#m-bind-auth")!;
+
+      const linkInput = body.querySelector<HTMLInputElement>("#m-link")!;
+      const scanBtn = body.querySelector<HTMLButtonElement>("#m-scan");
+      scanBtn?.addEventListener("click", async () => {
+        if (!backend.scanQR) return;
+        scanBtn.disabled = true;
+        scanBtn.textContent = "扫描中…";
+        try {
+          const text = (await backend.scanQR()).trim();
+          if (!/^snet:\/\/join\?/.test(text)) {
+            toast("不是有效的加入邀请链接", "err");
+            return;
+          }
+          linkInput.value = text;
+          toast("已读取邀请链接");
+          submit.focus();
+        } catch (e) {
+          toast(String(e), "err");
+        } finally {
+          scanBtn.disabled = false;
+          scanBtn.textContent = "扫码";
+        }
+      });
 
       const bindAndThen = (server: string, then: () => Promise<void>) => {
         authWrap.hidden = false;
@@ -1193,6 +1287,7 @@ function openSettingsModal() {
     onBody: (body) => {
       const msg = body.querySelector<HTMLElement>("#s-msg")!;
       const bindResult = body.querySelector<HTMLElement>("#s-bind-result")!;
+      const bindBtn = body.querySelector<HTMLButtonElement>("#s-bind");
 
       body.querySelector("#s-bind")?.addEventListener("click", async () => {
         const server = (body.querySelector("#s-server") as HTMLInputElement).value.trim();
@@ -1200,7 +1295,11 @@ function openSettingsModal() {
         const code = (body.querySelector("#s-code") as HTMLInputElement).value.trim();
         if (!server) { bindResult.className = "msg"; bindResult.textContent = "请输入服务器地址"; return; }
         if (!code) { bindResult.className = "msg"; bindResult.textContent = "请输入设备授权码"; return; }
-        bindResult.className = "msg"; bindResult.textContent = "正在链接…";
+        if (bindBtn) {
+          bindBtn.disabled = true;
+          bindBtn.innerHTML = `${SPIN} 正在链接…`;
+        }
+        bindResult.className = "msg"; bindResult.textContent = "正在链接服务器，请稍候…";
         try {
           await backend.bind({ server, ca, code });
           saveSettings({ ...loadSettings(), server, ca });
@@ -1212,6 +1311,10 @@ function openSettingsModal() {
           closeModal();
         } catch (e) {
           bindResult.className = "msg"; bindResult.textContent = `链接失败: ${e}`;
+          if (bindBtn) {
+            bindBtn.disabled = false;
+            bindBtn.textContent = "链接服务器";
+          }
         }
       });
 

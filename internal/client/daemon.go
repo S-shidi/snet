@@ -20,6 +20,21 @@ import (
 // indicating the network no longer exists on the server.
 var netGoneErr = errors.New("该网络在服务端已不存在")
 
+// shareOpt carries optional community-sharing metadata (description, tags,
+// visibility) for network create/settings operations. description and
+// visibility are pointers so "nil = leave unchanged" works for updates.
+type shareOpt struct {
+	description *string
+	tags        []string
+	visibility  *string
+}
+
+// ShareOpt builds a shareOpt for Create/UpdateSettings. Nil description or
+// visibility means "leave unchanged"; an empty-string pointer clears the value.
+func ShareOpt(description *string, tags []string, visibility *string) shareOpt {
+	return shareOpt{description: description, tags: tags, visibility: visibility}
+}
+
 // wrapNetGone converts a server 404 error into netGoneErr so callers can
 // present a clear "network gone" message to the user.
 func wrapNetGone(err error) error {
@@ -30,10 +45,32 @@ func wrapNetGone(err error) error {
 	return err
 }
 
-// retryInterval is how often the daemon re-attempts tunnel creation for a
-// network whose initial bring-up failed (e.g. insufficient privileges to
-// create a TUN device) until it comes up or is left/removed.
-const retryInterval = 30 * time.Second
+// retryInterval is the base interval between tunnel re-creation attempts for
+// a network whose initial bring-up failed (e.g. insufficient privileges to
+// create a TUN device). The actual delay grows exponentially with each
+// consecutive failure up to retryIntervalMax, so a server outage or
+// permission fix pending a user action does not flood the log every 30s.
+const (
+	retryInterval    = 30 * time.Second
+	retryIntervalMax = 30 * time.Minute
+)
+
+// nextRetryDelay returns the wait before the next attempt, doubling the
+// previous wait up to retryIntervalMax. Consecutive successes reset the
+// counter.
+func nextRetryDelay(attempts int) time.Duration {
+	if attempts < 0 {
+		attempts = 0
+	}
+	d := retryInterval
+	for i := 0; i < attempts; i++ {
+		d *= 2
+		if d >= retryIntervalMax {
+			return retryIntervalMax
+		}
+	}
+	return d
+}
 
 // directGraceSec is how long the daemon tries a peer's direct endpoint
 // (LAN/LocalEndpoint) before falling back to the network relay endpoint.
@@ -45,8 +82,7 @@ const directRetrySec = 300
 
 // netRuntime holds the live tunnel + control loops for one joined network.
 type netRuntime struct {
-	tun  *Tunnel
-	stop chan struct{}
+	tun *Tunnel
 	// peerDirect tracks the endpoint strategy per peer ("direct" vs
 	// "relay") so the daemon can attempt direct paths and fall back to the
 	// relay when a direct handshake does not complete in time.
@@ -100,6 +136,10 @@ type Daemon struct {
 	// loop retries them so transient failures (or a late privilege fix, e.g.
 	// installing the root LaunchDaemon) self-heal without a daemon restart.
 	retryPending map[string]struct{}
+	// retryAttempts tracks how many consecutive failed retry attempts per
+	// network, used to compute an exponential backoff. Cleared when a retry
+	// succeeds or the network is left/removed.
+	retryAttempts map[string]int
 	// retryStop signals the background retry loop to exit.
 	retryStop chan struct{}
 	// androidTunFD holds the TUN file descriptor from VpnService on Android.
@@ -122,6 +162,7 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		pendingRuns:  make(map[string]chan struct{}),
 		netErrs:      make(map[string]string),
 		retryPending: make(map[string]struct{}),
+		retryAttempts: make(map[string]int),
 		deviceIDFile: DefaultDeviceIDFile,
 		ctx:          ctx,
 		cancel:       cancel,
@@ -135,8 +176,34 @@ func (d *Daemon) SetDeviceIDFile(path string) {
 
 // SetAndroidTunFD stores the TUN file descriptor from VpnService so bringUp
 // can use NewTunnelFromFD instead of trying to create a TUN device directly.
+// If running under Android with no fd, tunnel creation returns a clean
+// "VPN TUN 未就绪" error and the retry loop waits for the fd. When the fd is
+// (re)provided, any pending networks are brought up immediately rather than
+// waiting for the next retry tick.
 func (d *Daemon) SetAndroidTunFD(fd int) {
+	d.mu.Lock()
+	hadFD := d.androidTunFD != 0
+	gotFD := fd != 0
 	d.androidTunFD = fd
+	// When the fd transitions from unavailable to available, bring up any
+	// active networks that were waiting (their previous bringUp failed with a
+	// clean "VPN TUN 未就绪" error and the fd is now ready).
+	if gotFD && !hadFD {
+		d.bringUpAllLocked()
+	}
+	d.mu.Unlock()
+}
+
+// bringUpAllLocked brings up tunnels for all active networks that do not yet
+// have a live tunnel. Caller must hold d.mu.
+func (d *Daemon) bringUpAllLocked() {
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active && d.nets[nid] == nil {
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("bring up %s on TUN ready: %v", nid, err)
+			}
+		}
+	}
 }
 
 func (d *Daemon) save() error {
@@ -289,7 +356,6 @@ func (d *Daemon) commitSwitchLocked(sw serverSwitch) {
 		if rt.tun != nil {
 			rt.tun.Close()
 		}
-		close(rt.stop)
 		delete(d.nets, nid)
 	}
 	for pid, stop := range d.pendingRuns {
@@ -298,6 +364,7 @@ func (d *Daemon) commitSwitchLocked(sw serverSwitch) {
 	}
 	d.netErrs = make(map[string]string)
 	d.retryPending = make(map[string]struct{})
+	d.retryAttempts = make(map[string]int)
 	d.serverState = make(map[string]*string)
 	if d.retryStop != nil {
 		close(d.retryStop)
@@ -418,9 +485,16 @@ func (d *Daemon) verifyBinding() bool {
 }
 
 // Create makes a new network on the server and joins this node as owner.
-func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approvalRequired bool) (protocol.CreateNetworkResp, error) {
+// Optional share metadata (description, tags, visibility) may be passed via
+// the variadic shareOpt, keeping existing callers source-compatible.
+func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approvalRequired bool, opts ...shareOpt) (protocol.CreateNetworkResp, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	var so shareOpt
+	if len(opts) > 0 {
+		so = opts[0]
+	}
 
 	if serverAddr == "" {
 		serverAddr = d.cfg.ServerAddr
@@ -446,7 +520,14 @@ func (d *Daemon) Create(serverAddr string, port int, name, subnet string, approv
 		return protocol.CreateNetworkResp{}, err
 	}
 	api := d.apiLocked()
-	resp, err := api.CreateNetwork(d.publicKeyLocked(), d.cfg.DeviceID, name, subnet, approvalRequired)
+	desc, vis := "", ""
+	if so.description != nil {
+		desc = *so.description
+	}
+	if so.visibility != nil {
+		vis = *so.visibility
+	}
+	resp, err := api.CreateNetwork(d.publicKeyLocked(), d.cfg.DeviceID, name, subnet, approvalRequired, desc, so.tags, vis)
 	if err != nil {
 		d.handleUnboundOpErrLocked(serverAddr, err)
 		d.rollbackSwitchLocked(sw)
@@ -906,7 +987,6 @@ func (d *Daemon) bringUp(nid string) error {
 			rt.tun.RemoveAllPeers()
 			rt.tun.Close()
 		}
-		close(rt.stop)
 		delete(d.nets, nid)
 	}
 	if nc.Port == 0 {
@@ -925,7 +1005,7 @@ func (d *Daemon) bringUp(nid string) error {
 		return fmt.Errorf("tunnel: %w", err)
 	}
 	delete(d.netErrs, nid)
-	rt := &netRuntime{tun: t, stop: make(chan struct{}), peerDirect: make(map[string]*peerDirect)}
+	rt := &netRuntime{tun: t, peerDirect: make(map[string]*peerDirect)}
 	d.nets[nid] = rt
 
 	// Enable IP forwarding if this device advertises subnets.
@@ -956,6 +1036,9 @@ func (d *Daemon) scheduleRetryLocked(nid string) {
 	if d.retryPending == nil {
 		d.retryPending = make(map[string]struct{})
 	}
+	if d.retryAttempts == nil {
+		d.retryAttempts = make(map[string]int)
+	}
 	d.retryPending[nid] = struct{}{}
 	if d.retryStop == nil {
 		stop := make(chan struct{})
@@ -965,51 +1048,85 @@ func (d *Daemon) scheduleRetryLocked(nid string) {
 }
 
 // retryLoop re-attempts tunnel creation for failed networks until they come up
-// or are left/removed; it stops itself once nothing remains to retry.
+// or are left/removed. The wait between attempts grows exponentially per
+// network (capped at retryIntervalMax) so a long server outage does not
+// flood logs. The loop stops itself once nothing remains to retry.
 func (d *Daemon) retryLoop(stop chan struct{}) {
-	ticker := time.NewTicker(retryInterval)
-	defer ticker.Stop()
 	for {
-		select {
-		case <-ticker.C:
-		case <-stop:
+		d.mu.Lock()
+		// Find the soonest next attempt time across pending networks.
+		var nextDelay time.Duration
+		hasPending := false
+		for nid := range d.retryPending {
+			delay := nextRetryDelay(d.retryAttempts[nid])
+			if !hasPending || delay < nextDelay {
+				nextDelay = delay
+				hasPending = true
+			}
+		}
+		if !hasPending {
+			// No pending networks: exit. Only close d.retryStop if we are
+			// still the registered loop (the stop channel is still set).
+			if d.retryStop != nil {
+				close(d.retryStop)
+				d.retryStop = nil
+			}
+			d.mu.Unlock()
 			return
 		}
+		d.mu.Unlock()
+
+		timer := time.NewTimer(nextDelay)
+		select {
+		case <-timer.C:
+		case <-stop:
+			timer.Stop()
+			return
+		}
+
 		d.mu.Lock()
 		for nid := range d.retryPending {
 			nc := d.cfg.Networks[nid]
 			if nc == nil || !nc.Active || d.nets[nid] != nil {
 				delete(d.retryPending, nid)
+				delete(d.retryAttempts, nid)
 				continue
 			}
 			if err := d.bringUp(nid); err != nil {
-				log.Printf("retry bring up %s: %v", nid, err)
+				d.retryAttempts[nid]++
+				log.Printf("retry bring up %s (attempt %d): %v", nid, d.retryAttempts[nid], err)
 			} else {
 				delete(d.retryPending, nid)
+				delete(d.retryAttempts, nid)
 			}
-		}
-		if len(d.retryPending) == 0 {
-			close(d.retryStop)
-			d.retryStop = nil
-			d.mu.Unlock()
-			return
 		}
 		d.mu.Unlock()
 	}
 }
 
 // pickPortLocked finds a free UDP port, preferring the configured base.
+//
+// The scan covers several contiguous 64-port bands so a client that is
+// co-located with the coordination server can still find a port even when the
+// server's relay pool (usually DefaultWGPort..DefaultWGPort+64, bound by the
+// relay) fully occupies the first band. Falling through to later bands keeps
+// the client's WireGuard port disjoint from the server's relay ports.
 func (d *Daemon) pickPortLocked() (int, error) {
 	base := d.cfg.WireguardPort
 	if base == 0 {
 		base = protocol.DefaultWGPort
 	}
-	for p := base; p < base+64; p++ {
-		if portFree(p) {
-			return p, nil
+	const band = 64
+	const bands = 4
+	for b := 0; b < bands; b++ {
+		start := base + b*band
+		for p := start; p < start+band; p++ {
+			if portFree(p) {
+				return p, nil
+			}
 		}
 	}
-	return 0, fmt.Errorf("no free UDP port in range %d-%d", base, base+63)
+	return 0, fmt.Errorf("no free UDP port in range %d-%d", base, base+bands*band-1)
 }
 
 func (d *Daemon) localEndpointLocked(port int) (string, error) {
@@ -1223,6 +1340,12 @@ func (d *Daemon) pollLoop(nid string) {
 			}
 		}
 		peers := d.resolvePeerEndpoints(rt, st, d.DetectLocalSubnets())
+		for i := range peers {
+			log.Printf("poll peers %s: peer %d id=%s pub=%s endpoint=%s local=%s online=%v", nid, i, peers[i].ID, peers[i].PublicKey, peers[i].Endpoint, peers[i].LocalEndpoint, peers[i].Online)
+		}
+		if len(peers) == 0 {
+			log.Printf("poll peers %s: got 0 peers", nid)
+		}
 		if err := rt.tun.ApplyPeers(peers, nc.Subnet, st.RelayEndpoint); err != nil {
 			log.Printf("apply peers %s: %v", nid, err)
 		}
@@ -1346,7 +1469,6 @@ func (d *Daemon) leaveLocked(nid string) {
 		if rt.tun != nil {
 			rt.tun.Close()
 		}
-		close(rt.stop)
 		delete(d.nets, nid)
 	}
 	if nc := d.cfg.Networks[nid]; nc != nil {
@@ -1354,6 +1476,7 @@ func (d *Daemon) leaveLocked(nid string) {
 	}
 	delete(d.netErrs, nid)
 	delete(d.retryPending, nid)
+	delete(d.retryAttempts, nid)
 }
 
 // Rejoin brings a network's tunnel back up.
@@ -1369,9 +1492,26 @@ func (d *Daemon) Rejoin(nid string) error {
 	currentState := d.serverState[nid]
 	d.mu.Unlock()
 	// Lazy probe: if the network was previously unknown or ok, check the server
-	// now so the user cannot accidentally re-join a deleted network.
+	// now so the user cannot accidentally re-join a deleted network. Run it in
+	// the background: over a slow/jittery physical link this HTTP round trip is
+	// the dominant latency of Rejoin, and blocking the caller (a UI thread on
+	// mobile) made the toggle feel unresponsive. The result lands in
+	// d.serverState and is re-checked below; if the probe is still in flight
+	// when we reach that check we optimistically proceed and re-check on the
+	// next status render.
 	if currentState == nil || *currentState == "ok" {
-		d.pingServerState(nid)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			d.pingServerState(nid)
+		}()
+		// Give the probe a bounded window so a slow network constrains the
+		// wait instead of the full HTTP client timeout. This keeps the toggle
+		// snappy while still catching a definitively-deleted network quickly.
+		select {
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -1415,7 +1555,17 @@ func (d *Daemon) Remove(nid string) error {
 		return fmt.Errorf("网络 %s 未找到", nid)
 	}
 	d.leaveLocked(nid)
-	_ = d.apiLocked().RemoveNode(nid, nc.NodeID, nc.Token)
+	if err := d.apiLocked().RemoveNode(nid, nc.NodeID, nc.Token); err != nil {
+		// 404: the node was already gone on the server (network deleted by owner).
+		// 401: the node was kicked and its token invalidated — server-side cleanup
+		// already happened. In either case proceed with local cleanup. Any other
+		// error (network unreachable, 403, 500, ...) means the server could not
+		// process the removal; keep the local config and surface the error so
+		// the caller can retry.
+		if se, ok := err.(*httpStatusErr); !ok || (se.code != 404 && se.code != 401) {
+			return fmt.Errorf("remove node %s from server: %w", nid, err)
+		}
+	}
 	delete(d.cfg.Networks, nid)
 	delete(d.serverState, nid)
 	return d.save()
@@ -1425,12 +1575,16 @@ func (d *Daemon) Remove(nid string) error {
 // requirement for a network this node owns. Changing the subnet re-allocates
 // every member's IP on the server; this node itself picks the new IP up via
 // the poll loop.
-func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool) error {
+func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool, opts ...shareOpt) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	nc := d.cfg.Networks[nid]
 	if nc == nil {
 		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	var so shareOpt
+	if len(opts) > 0 {
+		so = opts[0]
 	}
 	if subnet != "" && subnet != nc.Subnet {
 		for other, oc := range d.cfg.Networks {
@@ -1439,7 +1593,7 @@ func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool
 			}
 		}
 	}
-	if err := d.apiLocked().UpdateNetworkSettings(nid, nc.Token, name, subnet, approvalRequired); err != nil {
+	if err := d.apiLocked().UpdateNetworkSettings(nid, nc.Token, name, subnet, approvalRequired, so.description, so.tags, so.visibility); err != nil {
 		return wrapNetGone(err)
 	}
 	if name != "" {
@@ -1449,6 +1603,20 @@ func (d *Daemon) UpdateSettings(nid, name, subnet string, approvalRequired *bool
 		nc.Subnet = subnet
 	}
 	return d.save()
+}
+
+// SetNodeRole updates a peer node's role within a network this node owns.
+func (d *Daemon) SetNodeRole(nid, nodeID, role string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nc := d.cfg.Networks[nid]
+	if nc == nil {
+		return fmt.Errorf("网络 %s 未找到", nid)
+	}
+	if err := d.apiLocked().SetNodeRole(nid, nc.Token, nodeID, role); err != nil {
+		return wrapNetGone(err)
+	}
+	return nil
 }
 
 // UpdateSubnets replaces the CIDR subnets this device advertises for routing
@@ -1780,9 +1948,32 @@ func (d *Daemon) Close() {
 	}
 	d.netErrs = make(map[string]string)
 	d.retryPending = make(map[string]struct{})
+	d.retryAttempts = make(map[string]int)
 	d.serverState = make(map[string]*string)
 	for nid := range d.nets {
 		d.leaveLocked(nid)
+	}
+}
+
+// HaltTunnels tears down every tunnel but keeps the daemon and the configured
+// networks (including their Active flag) alive. Used on Android when the VPN
+// service is stopped: the state-bar indicator must disappear and the TUN must
+// be released, but the daemon stays resident so a subsequent toggle re-uses the
+// already-loaded config and bound server connection instead of a full cold
+// start. Unlike leaveLocked this leaves nc.Active untouched so BringUpActive
+// can restore exactly the tunnels that were up before the halt.
+func (d *Daemon) HaltTunnels() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for nid := range d.nets {
+		rt := d.nets[nid]
+		if rt != nil {
+			if rt.tun != nil {
+				rt.tun.RemoveAllPeers()
+				rt.tun.Close()
+			}
+			delete(d.nets, nid)
+		}
 	}
 }
 

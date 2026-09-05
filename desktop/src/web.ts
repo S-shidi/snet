@@ -48,7 +48,7 @@ async function checkAuth(): Promise<"no_password" | "needs_login" | "authenticat
     if (resp.authenticated) return "authenticated";
     return "needs_login";
   } catch {
-    return "authenticated";
+    return "needs_login";
   }
 }
 
@@ -84,10 +84,11 @@ const backend: Backend = {
     try { return await api("/status"); } catch { return null; }
   },
 
-  async create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean }): Promise<CreateResp> {
+  async create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp> {
     return api("/create", jsonPost("/create", {
       name: params.name, subnet: params.subnet, port: params.port,
       ca: params.ca, approvalRequired: params.approvalRequired,
+      description: params.description ?? "", tags: params.tags ?? [], visibility: params.visibility ?? "",
     }));
   },
 
@@ -109,10 +110,15 @@ const backend: Backend = {
   async netinfo(nid: string): Promise<NetInfoDetail> { return api("/netinfo?nid=" + encodeURIComponent(nid)); },
   async peers(nid: string): Promise<PeersResp> { return api("/peers?nid=" + encodeURIComponent(nid)); },
 
-  async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void> {
+  async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null; description?: string; tags?: string[]; visibility?: string }): Promise<void> {
     await api("/settings", jsonPost("/settings", {
       nid: params.nid, name: params.name, subnet: params.subnet, approvalRequired: params.approvalRequired,
+      description: params.description ?? "", tags: params.tags ?? [], visibility: params.visibility ?? "",
     }));
+  },
+
+  async setRole(params: { nid: string; nodeId: string; role: string }): Promise<void> {
+    await api("/role", jsonPost("/role", { nid: params.nid, nodeId: params.nodeId, role: params.role }));
   },
 
   async updateSubnets(params: { nid: string; subnets: string[] }): Promise<void> {

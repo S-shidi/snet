@@ -24,7 +24,11 @@ func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
 	}
 
 	log.Printf("snetd daemon control API on %s", ctlAddr)
-	if err := client.ServeCtl(d, ctlAddr, func(_ *http.Server) { os.Exit(0) }); err != nil {
+	ctlToken, err := client.LoadOrCreateCtlToken(client.CtlTokenPath(configPath))
+	if err != nil {
+		log.Fatalf("ctl token: %v", err)
+	}
+	if err := client.ServeCtl(d, ctlToken, ctlAddr, func(_ *http.Server) { os.Exit(0) }); err != nil {
 		log.Fatal(err)
 	}
 }

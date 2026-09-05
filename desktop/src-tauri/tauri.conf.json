@@ -32,11 +32,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "resources": {
-      "../../build/windows-amd64/snetd.exe": "snetd.exe",
-      "../../build/windows-amd64/wintun.dll": "wintun.dll",
-      "../../build/windows-amd64/LICENSE-wintun.txt": "LICENSE-wintun.txt"
-    }
+    ]
   }
 }

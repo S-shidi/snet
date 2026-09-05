@@ -16,7 +16,7 @@ const backend: Backend = {
     }
   },
 
-  async create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean }): Promise<CreateResp> {
+  async create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp> {
     return call<CreateResp>("create_network", {
       server: params.server,
       port: params.port,
@@ -24,6 +24,9 @@ const backend: Backend = {
       name: params.name,
       subnet: params.subnet,
       approvalRequired: params.approvalRequired,
+      description: params.description ?? "",
+      tags: params.tags ?? [],
+      visibility: params.visibility ?? "",
     });
   },
 
@@ -53,13 +56,20 @@ const backend: Backend = {
     return call<PeersResp>("peers", { nid });
   },
 
-  async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void> {
+  async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null; description?: string; tags?: string[]; visibility?: string }): Promise<void> {
     await call("update_settings", {
       nid: params.nid,
       name: params.name,
       subnet: params.subnet,
       approvalRequired: params.approvalRequired,
+      description: params.description ?? "",
+      tags: params.tags ?? [],
+      visibility: params.visibility ?? "",
     });
+  },
+
+  async setRole(params: { nid: string; nodeId: string; role: string }): Promise<void> {
+    await call("set_role", { nid: params.nid, nodeId: params.nodeId, role: params.role });
   },
 
   async updateSubnets(params: { nid: string; subnets: string[] }): Promise<void> {

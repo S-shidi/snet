@@ -8,7 +8,47 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 )
+
+// ctlTokenPathCandidates lists the known daemon config dirs so snetctl can
+// find the ctl-token shared secret the daemon wrote next to its config:
+// an explicit SNET_CTL_TOKEN_FILE override first, then the installed service
+// config dirs (root daemon on macOS / LocalSystem service on Windows), then
+// the current user's config dir (manual foreground daemons).
+func ctlTokenPathCandidates() []string {
+	var cands []string
+	if p := os.Getenv("SNET_CTL_TOKEN_FILE"); p != "" {
+		cands = append(cands, p)
+	}
+	if runtime.GOOS == "windows" {
+		cands = append(cands, `C:\ProgramData\SNET\ctl-token`)
+	}
+	if runtime.GOOS == "darwin" {
+		cands = append(cands, "/usr/local/snet/ctl-token")
+	}
+	if user, err := os.UserConfigDir(); err == nil {
+		cands = append(cands, filepath.Join(user, "virtual-net", "ctl-token"))
+	}
+	return cands
+}
+
+// ctlToken reads the ctl-channel shared secret the daemon persisted next to
+// its config. Empty string when the file is absent (legacy daemons without
+// token auth); the request then carries no header and legacy servers accept
+// it.
+func ctlToken() string {
+	for _, p := range ctlTokenPathCandidates() {
+		if b, err := os.ReadFile(p); err == nil {
+			if s := strings.TrimSpace(string(b)); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
 
 type ctlClient struct {
 	addr string
@@ -28,12 +68,18 @@ func (c *ctlClient) do(method, path string, body any, out any) error {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if tok := ctlToken(); tok != "" {
+		req.Header.Set("X-Ctl-Token", tok)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("ctl 401: daemon rejected the ctl token (file missing or stale); restart snetd or remove %s to regenerate", strings.Join(ctlTokenPathCandidates(), ", "))
+	}
 	if resp.StatusCode >= 400 {
 		var e map[string]string
 		_ = json.Unmarshal(data, &e)

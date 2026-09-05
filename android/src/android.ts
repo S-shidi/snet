@@ -18,6 +18,7 @@ declare global {
       updateSettings(params: string): string;
       updateSubnets(params: string): string;
       kick(params: string): string;
+      setRole(params: string): string;
       approve(params: string): string;
       deny(params: string): string;
       cancelPending(pendingId: string): string;
@@ -27,7 +28,10 @@ declare global {
       startVpn(): string;
       stopVpn(): string;
       getDeviceId(): string;
+      scanQRCode(): string;
     };
+    /** One-shot callback invoked by the native scanner with the decoded text. */
+    __snetScanResolve?: (text: string | null, err?: string) => void;
   }
 }
 
@@ -48,7 +52,7 @@ const backend: Backend = {
     }
   },
 
-  async create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean }): Promise<CreateResp> {
+  async create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp> {
     return call<CreateResp>("create", JSON.stringify({
       server: params.server,
       port: params.port,
@@ -56,6 +60,9 @@ const backend: Backend = {
       name: params.name,
       subnet: params.subnet,
       approvalRequired: params.approvalRequired,
+      description: params.description ?? "",
+      tags: params.tags ?? [],
+      visibility: params.visibility ?? "",
     }));
   },
 
@@ -89,12 +96,23 @@ const backend: Backend = {
     return call<PeersResp>("peers", nid);
   },
 
-  async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void> {
+  async updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null; description?: string; tags?: string[]; visibility?: string }): Promise<void> {
     call("updateSettings", JSON.stringify({
       nid: params.nid,
       name: params.name,
       subnet: params.subnet,
       approvalRequired: params.approvalRequired,
+      description: params.description ?? "",
+      tags: params.tags ?? [],
+      visibility: params.visibility ?? "",
+    }));
+  },
+
+  async setRole(params: { nid: string; nodeId: string; role: string }): Promise<void> {
+    call("setRole", JSON.stringify({
+      nid: params.nid,
+      nodeId: params.nodeId,
+      role: params.role,
     }));
   },
 
@@ -140,6 +158,18 @@ const backend: Backend = {
 
   async ensureDaemon(): Promise<void> {
     call("ensureDaemon");
+  },
+
+  async scanQR(): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      window.__snetScanResolve = (text, err) => {
+        window.__snetScanResolve = undefined;
+        if (err) reject(new Error(err));
+        else if (text) resolve(text);
+        else reject(new Error("扫码已取消"));
+      };
+      call("scanQRCode");
+    });
   },
 };
 

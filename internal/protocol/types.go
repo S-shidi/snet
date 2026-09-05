@@ -28,6 +28,12 @@ type Network struct {
 	PendingCount     int    `json:"pendingCount,omitempty"`
 	// Managed 标记服务端直接创建的网络:无网主、不受僵尸清理、客户端不可认领。
 	Managed bool `json:"managed,omitempty"`
+	// Description 是网络的简短描述（分享时展示给潜在加入者）。
+	Description string `json:"description,omitempty"`
+	// Tags 是网络的分类标签。
+	Tags []string `json:"tags,omitempty"`
+	// Visibility 标记网络的公开性："shareable" 表示可在社区目录中被发现。
+	Visibility string `json:"visibility,omitempty"`
 }
 
 type Node struct {
@@ -48,14 +54,19 @@ type Node struct {
 	// AllowedSubnets lists CIDR subnets this node advertises for routing.
 	// Other peers route traffic for these subnets through this node's tunnel.
 	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
+	// Role 是节点在网络中的角色："owner" | "admin" | "member"。
+	Role string `json:"role,omitempty"`
 }
 
 type CreateNetworkReq struct {
-	PublicKey        string `json:"publicKey"`
-	DeviceID         string `json:"deviceId,omitempty"`
-	Name             string `json:"name,omitempty"`
-	Subnet           string `json:"subnet,omitempty"`
-	ApprovalRequired bool   `json:"approvalRequired,omitempty"`
+	PublicKey        string   `json:"publicKey"`
+	DeviceID         string   `json:"deviceId,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	Subnet           string   `json:"subnet,omitempty"`
+	ApprovalRequired bool     `json:"approvalRequired,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Visibility       string   `json:"visibility,omitempty"`
 }
 
 type CreateNetworkResp struct {
@@ -124,9 +135,12 @@ type SetNodeDeviceReq struct {
 // NetworkSettingsReq updates a network's name, subnet and/or join-approval
 // setting. Empty name/subnet keep the current value; a nil approval keeps it.
 type NetworkSettingsReq struct {
-	Name             string `json:"name"`
-	Subnet           string `json:"subnet"`
-	ApprovalRequired *bool  `json:"approvalRequired"`
+	Name             string   `json:"name"`
+	Subnet           string   `json:"subnet"`
+	ApprovalRequired *bool    `json:"approvalRequired"`
+	Description      *string  `json:"description,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Visibility       *string  `json:"visibility,omitempty"`
 }
 
 // UpdateSubnetsReq sets the CIDR subnets a node advertises for routing.
@@ -207,9 +221,12 @@ type AdminNetworksResp struct {
 // AdminCreateNetworkReq creates a server-managed network. Managed networks
 // have no client owner, are exempt from zombie reaping and cannot be claimed.
 type AdminCreateNetworkReq struct {
-	Name             string `json:"name,omitempty"`
-	Subnet           string `json:"subnet,omitempty"`
-	ApprovalRequired bool   `json:"approvalRequired,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	Subnet           string   `json:"subnet,omitempty"`
+	ApprovalRequired bool     `json:"approvalRequired,omitempty"`
+	Description      string   `json:"description,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Visibility       string   `json:"visibility,omitempty"`
 }
 
 type AdminCreateNetworkResp struct {
@@ -333,4 +350,10 @@ type DeviceNetworksResp struct {
 type UpdateNodePublicKeyReq struct {
 	PublicKey string `json:"publicKey"`
 	DeviceID  string `json:"deviceId"`
+}
+
+// SetNodeRoleReq sets a node's role within a network. Only the owner may
+// change roles; valid roles are "admin" and "member".
+type SetNodeRoleReq struct {
+	Role string `json:"role"`
 }

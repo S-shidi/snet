@@ -4,8 +4,8 @@ package client
 
 import (
 	"fmt"
-	"os"
 
+	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -30,16 +30,19 @@ func removeSubnetRoute(_, _ string) error { return nil }
 func enableIPForwarding() error { return nil }
 
 // NewTunnelFromFD creates a WireGuard tunnel from a TUN file descriptor
-// provided by Android's VpnService. The fd is owned by the caller (VpnService)
-// and must not be closed by the Tunnel.
+// provided by Android's VpnService. The fd is owned by the caller (VpnService,
+// via a ParcelFileDescriptor) and must never be touched by Go: wrapping a
+// PFD-owned fd in os.NewFile attaches a finalizer that closes it on GC, which
+// trips Android's fdsan ownership check and SIGABRTs the process. We therefore
+// take an independent duplicate that Go owns for the tunnel's entire lifetime.
 func NewTunnelFromFD(fd int, privKeyHex, ip string, port, mtu int) (*Tunnel, error) {
-	f := os.NewFile(uintptr(fd), "tun")
-	if f == nil {
-		return nil, fmt.Errorf("invalid TUN fd: %d", fd)
-	}
-	t, name, err := tun.CreateUnmonitoredTUNFromFD(fd)
+	gofd, err := unix.Dup(fd)
 	if err != nil {
-		f.Close()
+		return nil, fmt.Errorf("dup tun fd %d: %w", fd, err)
+	}
+	t, name, err := tun.CreateUnmonitoredTUNFromFD(gofd)
+	if err != nil {
+		unix.Close(gofd)
 		return nil, fmt.Errorf("create tun from fd: %w", err)
 	}
 	_ = name // Android doesn't need the interface name for routing

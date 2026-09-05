@@ -16,9 +16,41 @@ fn ctl_err(msg: &str) -> String {
     msg.to_string()
 }
 
+/// Daemon config path per platform; the ctl token file lives in the same
+/// directory next to it. Mirrors cmd/client/snetd and the service modules.
+fn ctl_token_path() -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        std::path::PathBuf::from(r"C:\ProgramData\SNET\ctl-token")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::path::PathBuf::from("/usr/local/snet/ctl-token")
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        std::path::PathBuf::from("ctl-token")
+    }
+}
+
+/// Read the ctl-channel shared secret written by the daemon (0600). Returns an
+/// empty string when absent — legacy daemons that predate token auth accept and
+/// ignore the header, and a missing token must not block the health probe.
+fn ctl_token() -> String {
+    std::fs::read_to_string(ctl_token_path())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 pub(crate) fn ctl(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
     let url = format!("{CTL_DEFAULT}{path}");
+    let token = ctl_token();
     let req = ureq::request(method, &url);
+    let req = if token.is_empty() {
+        req
+    } else {
+        req.set("X-Ctl-Token", &token)
+    };
     let req = match &body {
         Some(b) => req.send_json(b.clone()),
         None => req.send_string(""),
@@ -104,14 +136,20 @@ pub async fn stop_daemon() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn create_network(server: String, port: u16, ca: String, name: String, subnet: String, approval_required: Option<bool>) -> Result<Value, String> {
+pub async fn create_network(server: String, port: u16, ca: String, name: String, subnet: String, approval_required: Option<bool>, description: Option<String>, tags: Option<Vec<String>>, visibility: Option<String>) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let approval = approval_required.unwrap_or(false);
-        let resp = ctl(
-            "POST",
-            "/ctl/create",
-            Some(json!({ "server": server, "port": port, "name": name, "subnet": subnet, "approvalRequired": approval, "ca": ca })),
-        )?;
+        let mut body = json!({ "server": server, "port": port, "name": name, "subnet": subnet, "approvalRequired": approval, "ca": ca });
+        if let Some(d) = description {
+            body["description"] = json!(d);
+        }
+        if let Some(t) = tags {
+            body["tags"] = json!(t);
+        }
+        if let Some(v) = visibility {
+            body["visibility"] = json!(v);
+        }
+        let resp = ctl("POST", "/ctl/create", Some(body))?;
         // an invite link carries the network's server so unbound joiners can
         // target it directly; keep the parameter absent for legacy servers
         let mut link = format!("snet://join?nid={}&code={}", resp["networkId"], resp["pairingCode"]);
@@ -195,13 +233,32 @@ pub async fn rename_nid(nid: String, name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn update_settings(nid: String, name: String, subnet: String, approval_required: Option<bool>) -> Result<(), String> {
+pub async fn update_settings(nid: String, name: String, subnet: String, approval_required: Option<bool>, description: Option<String>, tags: Option<Vec<String>>, visibility: Option<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut body = json!({ "nid": nid, "name": name, "subnet": subnet });
         if let Some(v) = approval_required {
             body["approvalRequired"] = json!(v);
         }
+        if let Some(d) = description {
+            body["description"] = json!(d);
+        }
+        if let Some(t) = tags {
+            body["tags"] = json!(t);
+        }
+        if let Some(v) = visibility {
+            body["visibility"] = json!(v);
+        }
         ctl("POST", "/ctl/settings", Some(body))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_role(nid: String, node_id: String, role: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ctl("POST", "/ctl/role", Some(json!({ "nid": nid, "nodeId": node_id, "role": role })))?;
         Ok(())
     })
     .await

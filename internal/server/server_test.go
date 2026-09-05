@@ -193,24 +193,33 @@ func TestExternalNodeAdmin(t *testing.T) {
 
 func TestLinkFormat(t *testing.T) {
 	nid, code := "ABC12345", "k7x9-2mqz-4rtf"
-	link := protocol.BuildLink(nid, code, "")
-	gotN, gotC, gotS, err := protocol.ParseLink(link)
+	link := protocol.BuildLink(nid, code, "", "")
+	gotN, gotC, gotS, gotName, err := protocol.ParseLink(link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotN != nid || gotC != "K7X92MQZ4RTF" || gotS != "" {
-		t.Fatalf("parse = %s %s %q", gotN, gotC, gotS)
+	if gotN != nid || gotC != "K7X92MQZ4RTF" || gotS != "" || gotName != "" {
+		t.Fatalf("parse = %s %s %q %q", gotN, gotC, gotS, gotName)
 	}
 	// a link carrying its server address round-trips the server
-	withSrv := protocol.BuildLink(nid, code, "https://snet.example:8090")
-	gotN, gotC, gotS, err = protocol.ParseLink(withSrv)
+	withSrv := protocol.BuildLink(nid, code, "https://snet.example:8090", "")
+	gotN, gotC, gotS, gotName, err = protocol.ParseLink(withSrv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotN != nid || gotC != "K7X92MQZ4RTF" || gotS != "https://snet.example:8090" {
-		t.Fatalf("parse server link = %s %s %q", gotN, gotC, gotS)
+	if gotN != nid || gotC != "K7X92MQZ4RTF" || gotS != "https://snet.example:8090" || gotName != "" {
+		t.Fatalf("parse server link = %s %s %q %q", gotN, gotC, gotS, gotName)
 	}
-	if _, _, _, err := protocol.ParseLink("garbage"); err == nil {
+	// a link carrying a name round-trips the name
+	withName := protocol.BuildLink(nid, code, "", "家庭NAS")
+	_, _, _, gotName, err = protocol.ParseLink(withName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "家庭NAS" {
+		t.Fatalf("parse name link name = %q, want 家庭NAS", gotName)
+	}
+	if _, _, _, _, err := protocol.ParseLink("garbage"); err == nil {
 		t.Fatal("expected error for garbage")
 	}
 }

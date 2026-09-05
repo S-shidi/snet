@@ -169,6 +169,33 @@ func (c *SnetCore) Stop() {
 	}
 }
 
+// HaltTunnels tears down all tunnels but keeps the daemon and its config (and
+// each network's Active flag) alive. Used on Android when the VPN service is
+// stopped so the status-bar indicator disappears while the daemon stays warm;
+// the next Start(fd) with the new TUN descriptor restores the tunnels quickly
+// instead of a full cold start.
+func (c *SnetCore) HaltTunnels() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.daemon != nil {
+		c.daemon.HaltTunnels()
+	}
+}
+
+// ServerAddr returns the configured coordination server address (e.g.
+// "snet.uizhi.eu.org:8090"). Used by SnetVpnService to exclude the server
+// IP from VPN routes so daemon HTTP API calls can reach the server via the
+// physical network rather than being routed through the tun0 tunnel (which
+// has no peers yet at that point).
+func (c *SnetCore) ServerAddr() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.daemon == nil {
+		return ""
+	}
+	return c.daemon.Config().ServerAddr
+}
+
 // Status returns the daemon status as a JSON string.
 func (c *SnetCore) Status() string {
 	c.mu.Lock()
@@ -199,15 +226,23 @@ func (c *SnetCore) JoinNetwork(nid string, code string, serverAddr string, port 
 	return string(b)
 }
 
-// CreateNetwork creates a new network.
-func (c *SnetCore) CreateNetwork(name string, subnet string, approvalRequired bool, serverAddr string, port int) string {
+// CreateNetwork creates a new network. description, tagsJSON and visibility
+// are optional community-sharing metadata; pass empty values to skip them.
+// tagsJSON, when non-empty, is a JSON array of tag strings.
+func (c *SnetCore) CreateNetwork(name string, subnet string, approvalRequired bool, serverAddr string, port int, description string, tagsJSON string, visibility string) string {
 	c.mu.Lock()
 	d, err := c.ensureDaemon()
 	c.mu.Unlock()
 	if err != nil {
 		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
-	resp, err := d.Create(serverAddr, port, name, subnet, approvalRequired)
+	var tags []string
+	if tagsJSON != "" {
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			return fmt.Sprintf(`{"error":%q}`, fmt.Errorf("parse tags: %w", err).Error())
+		}
+	}
+	resp, err := d.Create(serverAddr, port, name, subnet, approvalRequired, client.ShareOpt(&description, tags, &visibility))
 	if err != nil {
 		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
@@ -352,15 +387,46 @@ func (c *SnetCore) Rejoin(nid string) error {
 	return d.Rejoin(nid)
 }
 
-// UpdateSettings updates network settings (name, subnet, approval).
-func (c *SnetCore) UpdateSettings(nid string, name string, subnet string, approvalRequired bool) error {
+// UpdateSettings updates network settings (name, subnet, approval and
+// optional community-sharing metadata). description, tagsJSON and visibility
+// are optional; pass empty values to leave them unchanged (nil semantics are
+// preserved internally for updates).
+func (c *SnetCore) UpdateSettings(nid string, name string, subnet string, approvalRequired bool, description string, tagsJSON string, visibility string) error {
 	c.mu.Lock()
 	d, err := c.ensureDaemon()
 	c.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return d.UpdateSettings(nid, name, subnet, &approvalRequired)
+	var tags []string
+	if tagsJSON != "" {
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			return fmt.Errorf("parse tags: %w", err)
+		}
+	}
+	var desc, vis *string
+	if description != "" {
+		desc = &description
+	}
+	if visibility != "" {
+		vis = &visibility
+	}
+	return d.UpdateSettings(nid, name, subnet, &approvalRequired, client.ShareOpt(desc, tags, vis))
+}
+
+// SetNodeRole sets a peer node's role ("admin" or "member") within a network
+// this device owns.
+func (c *SnetCore) SetNodeRole(nid string, nodeID string, role string) string {
+	c.mu.Lock()
+	d, err := c.ensureDaemon()
+	c.mu.Unlock()
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+	if err := d.SetNodeRole(nid, nodeID, role); err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+	return `{"ok":true}`
 }
 
 // DeleteNetwork removes a network from the server and local config (owner only).

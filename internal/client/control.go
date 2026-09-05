@@ -111,10 +111,12 @@ func (c *apiClient) do(method, path string, token string, body any, out any) err
 	return nil
 }
 
-func (c *apiClient) CreateNetwork(publicKey, deviceID, name, subnet string, approvalRequired bool) (protocol.CreateNetworkResp, error) {
+func (c *apiClient) CreateNetwork(publicKey, deviceID, name, subnet string, approvalRequired bool,
+	description string, tags []string, visibility string) (protocol.CreateNetworkResp, error) {
 	var out protocol.CreateNetworkResp
 	err := c.do(http.MethodPost, "/api/v1/networks", "",
-		protocol.CreateNetworkReq{PublicKey: publicKey, DeviceID: deviceID, Name: name, Subnet: subnet, ApprovalRequired: approvalRequired}, &out)
+		protocol.CreateNetworkReq{PublicKey: publicKey, DeviceID: deviceID, Name: name, Subnet: subnet,
+			ApprovalRequired: approvalRequired, Description: description, Tags: tags, Visibility: visibility}, &out)
 	return out, err
 }
 
@@ -170,9 +172,16 @@ func (c *apiClient) NetworkExists(nid, token string) (bool, error) {
 	return out.Exists, err
 }
 
-func (c *apiClient) UpdateNetworkSettings(nid, token, name, subnet string, approvalRequired *bool) error {
+func (c *apiClient) UpdateNetworkSettings(nid, token, name, subnet string, approvalRequired *bool,
+	description *string, tags []string, visibility *string) error {
 	return c.do(http.MethodPatch, "/api/v1/networks/"+nid, token,
-		protocol.NetworkSettingsReq{Name: name, Subnet: subnet, ApprovalRequired: approvalRequired}, nil)
+		protocol.NetworkSettingsReq{Name: name, Subnet: subnet, ApprovalRequired: approvalRequired,
+			Description: description, Tags: tags, Visibility: visibility}, nil)
+}
+
+func (c *apiClient) SetNodeRole(nid, token, nodeID, role string) error {
+	return c.do(http.MethodPut, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/role", token,
+		protocol.SetNodeRoleReq{Role: role}, nil)
 }
 
 func (c *apiClient) UpdateSubnets(nid, token string, subnets []string) error {

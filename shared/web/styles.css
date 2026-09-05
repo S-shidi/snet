@@ -336,6 +336,11 @@ input[type=number] { width: 120px; }
 .subnet-wrap { margin-top: 4px; }
 .subnet-input { display: flex; gap: 8px; align-items: stretch; }
 .subnet-input .subnet-base { flex: 1; }
+
+/* ── join link row: text input + scan button ── */
+.join-link-row { display: flex; gap: 8px; align-items: stretch; }
+.join-link-input { flex: 1; min-width: 0; }
+.join-link-row .btn { flex-shrink: 0; white-space: nowrap; }
 .subnet-prefix {
   width: 84px; flex-shrink: 0; background: var(--bg); border: 1px solid var(--border);
   border-radius: var(--radius-s); color: var(--text); padding: 8px 6px; font-size: 13px; outline: none; cursor: pointer;

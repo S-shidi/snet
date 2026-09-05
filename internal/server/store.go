@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"sort"
@@ -142,6 +143,20 @@ type networkRecord struct {
 	LastActivityAt   int64     `json:"lastActivityAt,omitempty"`
 	ApprovalRequired bool      `json:"approvalRequired,omitempty"`
 	Managed          bool      `json:"managed,omitempty"`
+	Description      string    `json:"description,omitempty"`
+	Tags             []string  `json:"tags,omitempty"`
+	Visibility       string    `json:"visibility,omitempty"`
+}
+
+// networkShareOpts carries the optional community-sharing metadata for a
+// network. description/visibility are pointers so "nil = leave unchanged"
+// works for updates; tags as a slice is interpreted the same way (nil keeps
+// existing, an empty slice clears). Passing it as a variadic keeps the common
+// signed params stable for existing callers.
+type networkShareOpts struct {
+	description *string
+	tags        []string
+	visibility  *string
 }
 
 type deviceRecord struct {
@@ -277,6 +292,9 @@ func (s *Store) load() error {
 						LastActivityAt:   lastAct,
 						ApprovalRequired: r.ApprovalRequired,
 						Managed:          r.Managed,
+						Description:      r.Description,
+						Tags:             r.Tags,
+						Visibility:       r.Visibility,
 					},
 					pairing: &pairing{
 						codeHash:    r.CodeHash,
@@ -430,6 +448,9 @@ func (s *Store) persistNetwork(ns *networkState) error {
 		LastActivityAt:   ns.lastActivityAt,
 		ApprovalRequired: ns.n.ApprovalRequired,
 		Managed:          ns.n.Managed,
+		Description:      ns.n.Description,
+		Tags:             ns.n.Tags,
+		Visibility:       ns.n.Visibility,
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
@@ -484,6 +505,22 @@ func (s *Store) persistToken(tok string, te tokenEntry) error {
 			return err
 		}
 		return tx.Bucket(bktTokens).Put([]byte(hashToken(tok)), b)
+	})
+}
+
+func (s *Store) persistTokenByHash(h string, te tokenEntry) error {
+	if s.db == nil {
+		return nil
+	}
+	b, err := json.Marshal(te)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktTokens).Put([]byte(h), b)
 	})
 }
 
@@ -735,9 +772,21 @@ func (s *Store) ensureRelayPort(ns *networkState) error {
 
 // ---- public API ----
 
-func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approvalRequired bool) (protocol.CreateNetworkResp, error) {
+func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approvalRequired bool, shareOpts ...networkShareOpts) (protocol.CreateNetworkResp, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var so networkShareOpts
+	if len(shareOpts) > 0 {
+		so = shareOpts[0]
+	}
+	description, tags, visibility := "", so.tags, ""
+	if so.description != nil {
+		description = *so.description
+	}
+	if so.visibility != nil {
+		visibility = *so.visibility
+	}
 
 	if s.requireDeviceAuth && !s.deviceBoundLocked(deviceID) {
 		return protocol.CreateNetworkResp{}, ErrUnauthorized
@@ -747,6 +796,21 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 	}
 	if err := validatePublicKey(publicKey); err != nil {
 		return protocol.CreateNetworkResp{}, err
+	}
+	// 校验分享元数据：visibility 只允许 "shareable" 或 ""，描述与标签需净化。
+	if visibility != "" && visibility != "shareable" && visibility != "private" {
+		return protocol.CreateNetworkResp{}, errors.New("invalid visibility")
+	}
+	if len(description) > 500 {
+		return protocol.CreateNetworkResp{}, errors.New("description too long")
+	}
+	if len(tags) > 8 {
+		return protocol.CreateNetworkResp{}, errors.New("too many tags")
+	}
+	for _, tg := range tags {
+		if len(tg) > 20 {
+			return protocol.CreateNetworkResp{}, errors.New("tag too long")
+		}
 	}
 	if deviceID != "" {
 		for _, other := range s.networks {
@@ -805,6 +869,9 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 			OwnerDeviceID:    deviceID,
 			LastActivityAt:   now.Unix(),
 			ApprovalRequired: approvalRequired,
+			Description:      description,
+			Tags:             tags,
+			Visibility:       visibility,
 		},
 		pairing: &pairing{
 			codeHash:  hashCode(code),
@@ -829,6 +896,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		PublicKey: publicKey,
 		DeviceID:  deviceID,
 		LastSeen:  now.Unix(),
+		Role:      "owner",
 	}
 	s.networks[nid] = ns
 	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: nid, NodeID: nodeID}
@@ -939,7 +1007,9 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 			p.lockedUntil = now.Add(lockWindow)
 			p.failCount = 0
 		}
-		_ = s.persistNetwork(ns)
+		if err := s.persistNetwork(ns); err != nil {
+			log.Printf("persist brute-force lockout: %v", err)
+		}
 		return protocol.JoinResp{}, ErrCodeInvalid
 	}
 	if !p.expiresAt.IsZero() && now.After(p.expiresAt) {
@@ -1104,16 +1174,25 @@ func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
 		relayEP = net.JoinHostPort(s.relayHost, fmt.Sprint(ns.relayPort))
 	}
 	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
+	me := ns.nodes[te.NodeID]
+	isOwnerAdmin := me != nil && (me.Role == "owner" || me.Role == "admin")
 	for id, n := range ns.nodes {
 		if id != te.NodeID {
 			n2 := *n
+			// 普通成员只看到对端设备名、IP 与在线状态，不暴露 deviceId 与角色。
+			if !isOwnerAdmin {
+				n2.DeviceID = ""
+				n2.Role = ""
+				n2.AllowedSubnets = nil
+				n2.PublicKey = ""
+			}
 			// Keep the peer's self-advertised direct endpoint; the caller
 			// decides whether to use it or fall back to the relay endpoint.
 			peers = append(peers, n2)
 		}
 	}
 	var self *protocol.Node
-	if me := ns.nodes[te.NodeID]; me != nil {
+	if me != nil {
 		m2 := *me
 		self = &m2
 	}
@@ -1329,10 +1408,14 @@ func (s *Store) requireOwnerLocked(ns *networkState, nodeID string) error {
 // Changing the subnet re-allocates every node's IP on the new range and
 // resets the IPAM cursor; clients detect the change via the self IP in
 // ListPeers and reconfigure themselves.
-func (s *Store) UpdateNetworkSettings(token, name, subnet string, approvalRequired *bool) error {
+func (s *Store) UpdateNetworkSettings(token, name, subnet string, approvalRequired *bool, shareOpts ...networkShareOpts) error {
 	name = strings.TrimSpace(name)
 	if name != "" && len(name) > 64 {
 		return errors.New("invalid network name (max 64 chars)")
+	}
+	var so networkShareOpts
+	if len(shareOpts) > 0 {
+		so = shareOpts[0]
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1343,12 +1426,13 @@ func (s *Store) UpdateNetworkSettings(token, name, subnet string, approvalRequir
 	if err := s.requireOwnerLocked(ns, meID); err != nil {
 		return err
 	}
-	return s.updateNetworkLocked(ns, name, subnet, approvalRequired)
+	return s.updateNetworkLocked(ns, name, subnet, approvalRequired, so.description, so.tags, so.visibility)
 }
 
-// updateNetworkLocked applies name/subnet/approval changes without owner
-// checks. Callers must hold s.mu.
-func (s *Store) updateNetworkLocked(ns *networkState, name, subnet string, approvalRequired *bool) error {
+// updateNetworkLocked applies name/subnet/approval/share changes without
+// owner checks. Callers must hold s.mu.
+func (s *Store) updateNetworkLocked(ns *networkState, name, subnet string, approvalRequired *bool,
+	description *string, tags []string, visibility *string) error {
 	changed := false
 	if name != "" && name != ns.n.Name {
 		ns.n.Name = name
@@ -1364,18 +1448,48 @@ func (s *Store) updateNetworkLocked(ns *networkState, name, subnet string, appro
 		ns.n.ApprovalRequired = *approvalRequired
 		changed = true
 	}
+	if description != nil && *description != ns.n.Description {
+		if len(*description) > 500 {
+			return errors.New("description too long")
+		}
+		ns.n.Description = *description
+		changed = true
+	}
+	if tags != nil {
+		if len(tags) > 8 {
+			return errors.New("too many tags")
+		}
+		for _, tg := range tags {
+			if len(tg) > 20 {
+				return errors.New("tag too long")
+			}
+		}
+		ns.n.Tags = tags
+		changed = true
+	}
+	if visibility != nil && *visibility != ns.n.Visibility {
+		if *visibility != "" && *visibility != "shareable" && *visibility != "private" {
+			return errors.New("invalid visibility")
+		}
+		ns.n.Visibility = *visibility
+		changed = true
+	}
 	if !changed {
 		return nil
 	}
 	return s.persistNetwork(ns)
 }
 
-// AdminUpdateNetwork updates any network's name/subnet/approval setting,
+// AdminUpdateNetwork updates any network's name/subnet/approval/share setting,
 // bypassing the owner requirement.
-func (s *Store) AdminUpdateNetwork(nid, name, subnet string, approvalRequired *bool) error {
+func (s *Store) AdminUpdateNetwork(nid, name, subnet string, approvalRequired *bool, shareOpts ...networkShareOpts) error {
 	name = strings.TrimSpace(name)
 	if name != "" && len(name) > 64 {
 		return errors.New("invalid network name (max 64 chars)")
+	}
+	var so networkShareOpts
+	if len(shareOpts) > 0 {
+		so = shareOpts[0]
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1383,7 +1497,7 @@ func (s *Store) AdminUpdateNetwork(nid, name, subnet string, approvalRequired *b
 	if ns == nil {
 		return ErrNotFound
 	}
-	return s.updateNetworkLocked(ns, name, subnet, approvalRequired)
+	return s.updateNetworkLocked(ns, name, subnet, approvalRequired, so.description, so.tags, so.visibility)
 }
 
 // reassignIPsLocked validates a new subnet and re-allocates all node IPs.
@@ -1411,6 +1525,39 @@ func (s *Store) reassignIPsLocked(ns *networkState, subnet string) error {
 	// allocIP increments ns.ipam before use, so the cursor is the node count.
 	ns.ipam = len(ns.nodes)
 	return nil
+}
+
+// SetNodeRole sets a peer node's role within a network. Only the owner device
+// may change roles, and only between "admin" and "member" (the owner keeps
+// its own role; the target must never be the owner node).
+func (s *Store) SetNodeRole(token, targetNodeID, role string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ns, meID, err := s.nodeFromTokenLocked(token)
+	if err != nil {
+		return err
+	}
+	if err := s.requireOwnerLocked(ns, meID); err != nil {
+		return err
+	}
+	if role != "admin" && role != "member" {
+		return errors.New("invalid role (must be admin or member)")
+	}
+	if targetNodeID == "" || targetNodeID == ns.n.OwnerNodeID {
+		return errors.New("cannot change the owner's role")
+	}
+	target := ns.nodes[targetNodeID]
+	if target == nil {
+		return ErrNotFound
+	}
+	if target.DeviceID == ns.n.OwnerDeviceID {
+		return errors.New("cannot change the owner's role")
+	}
+	if target.Role == role {
+		return nil
+	}
+	target.Role = role
+	return s.persistNode(ns.n.ID, target)
 }
 
 // ---- pending joins ----
@@ -1915,13 +2062,39 @@ func (s *Store) SweepZombies(ttl time.Duration) ([]string, error) {
 // AdminCreateNetwork creates a server-managed network with no owner node.
 // Managed networks get unlimited, non-expiring pairing codes and are exempt
 // from zombie reaping. Returns the network ID and code for distribution.
-func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool) (protocol.AdminCreateNetworkResp, error) {
+func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, shareOpts ...networkShareOpts) (protocol.AdminCreateNetworkResp, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var so networkShareOpts
+	if len(shareOpts) > 0 {
+		so = shareOpts[0]
+	}
+	description, tags, visibility := "", so.tags, ""
+	if so.description != nil {
+		description = *so.description
+	}
+	if so.visibility != nil {
+		visibility = *so.visibility
+	}
 
 	name = strings.TrimSpace(name)
 	if name != "" && len(name) > 64 {
 		return protocol.AdminCreateNetworkResp{}, errors.New("invalid network name (max 64 chars)")
+	}
+	if visibility != "" && visibility != "shareable" && visibility != "private" {
+		return protocol.AdminCreateNetworkResp{}, errors.New("invalid visibility")
+	}
+	if len(description) > 500 {
+		return protocol.AdminCreateNetworkResp{}, errors.New("description too long")
+	}
+	if len(tags) > 8 {
+		return protocol.AdminCreateNetworkResp{}, errors.New("too many tags")
+	}
+	for _, tg := range tags {
+		if len(tg) > 20 {
+			return protocol.AdminCreateNetworkResp{}, errors.New("tag too long")
+		}
 	}
 	sub := subnet
 	if sub == "" {
@@ -1961,6 +2134,9 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool) (
 			LastActivityAt:   now.Unix(),
 			ApprovalRequired: approvalRequired,
 			Managed:          true,
+			Description:      description,
+			Tags:             tags,
+			Visibility:       visibility,
 		},
 		pairing: &pairing{
 			codeHash:  hashCode(code),
@@ -2257,7 +2433,9 @@ func (s *Store) DeviceNetworkDetails(deviceID string) ([]protocol.DeviceNetworkD
 					return nil, err
 				}
 				// Remove old token mapping and register the new one.
-				s.rotateNodeTokenLocked(ns.n.ID, n.ID, tok)
+				if err := s.rotateNodeTokenLocked(ns.n.ID, n.ID, tok); err != nil {
+					return nil, err
+				}
 				c := protocol.DeviceNetworkDetail{
 					Network:   ns.n,
 					NodeID:    n.ID,
@@ -2279,17 +2457,41 @@ func (s *Store) DeviceNetworkDetails(deviceID string) ([]protocol.DeviceNetworkD
 }
 
 // rotateNodeTokenLocked removes the old token mapping for a node and registers
-// a new one. Callers must hold s.mu.
-func (s *Store) rotateNodeTokenLocked(netID, nodeID, newToken string) {
+// a new one. Callers must hold s.mu. On persist failure the in-memory map is
+// rolled back so the cached state does not diverge from disk: a subsequent
+// restart would otherwise restore the old token mapping and lose the new one,
+// silently locking the client out.
+func (s *Store) rotateNodeTokenLocked(netID, nodeID, newToken string) error {
+	var oldHash string
+	var oldEntry tokenEntry
 	for h, te := range s.byToken {
 		if te.NetworkID == netID && te.NodeID == nodeID {
+			oldHash = h
+			oldEntry = te
 			delete(s.byToken, h)
-			_ = s.deleteTokenByHash(h)
+			if err := s.deleteTokenByHash(h); err != nil {
+				// Rollback: restore the old mapping so the in-memory state
+				// matches disk.
+				s.byToken[h] = oldEntry
+				return fmt.Errorf("delete old token: %w", err)
+			}
 			break
 		}
 	}
-	s.byToken[hashToken(newToken)] = tokenEntry{NetworkID: netID, NodeID: nodeID}
-	_ = s.persistToken(newToken, tokenEntry{NetworkID: netID, NodeID: nodeID})
+	newHash := hashToken(newToken)
+	s.byToken[newHash] = tokenEntry{NetworkID: netID, NodeID: nodeID}
+	if err := s.persistToken(newToken, tokenEntry{NetworkID: netID, NodeID: nodeID}); err != nil {
+		// Rollback both the new mapping and the old deletion.
+		delete(s.byToken, newHash)
+		if oldHash != "" {
+			s.byToken[oldHash] = oldEntry
+			if rbErr := s.persistTokenByHash(oldHash, oldEntry); rbErr != nil {
+				log.Printf("rollback old token persist: %v", rbErr)
+			}
+		}
+		return fmt.Errorf("persist new token: %w", err)
+	}
+	return nil
 }
 
 // GenerateDeviceToken creates (or rotates) a device-level bearer token that

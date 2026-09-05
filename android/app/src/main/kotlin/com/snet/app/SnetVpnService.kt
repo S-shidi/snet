@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.IpPrefix
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -12,6 +13,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
 
 class SnetVpnService : VpnService() {
@@ -22,14 +24,40 @@ class SnetVpnService : VpnService() {
         private const val KEEPALIVE_INTERVAL = 30_000L
         private const val STATUS_CHECK_INTERVAL = 5_000L
 
+        /** Static host->IP fallback for the coordination server. Map a configured
+         *  host to its (stable) public IP so we can exclude the server's route
+         *  even when the device's DNS resolver is unhealthy or fails during VPN
+         *  establishment. Value is the physical-network-proven server IP. */
+        private val knownServerHosts = mapOf(
+            "snet.uizhi.eu.org" to "66.187.6.46",
+        )
+
+        @Volatile
         var instance: SnetVpnService? = null
             private set
 
+        @Volatile
         var tunFd: ParcelFileDescriptor? = null
             private set
 
+        @Volatile
         var isRunning = false
             private set
+
+        /** Server address set by WebBridge before VPN starts; used for route exclusion. */
+        @Volatile
+        var serverAddr: String = ""
+
+        /** Daemon config directory (set by SnetBridge.init); serverAddr can also
+         *  be recovered from configDir/daemon.json after process restart. */
+        @Volatile
+        var configDir: String = ""
+
+        /** Pre-resolved server IPv4 addresses (set by WebBridge while the physical
+         *  network is still reachable), used as fallback when DNS fails during
+         *  VPN establishment. */
+        @Volatile
+        var serverIps: List<String> = emptyList()
 
         private val statusCallbacks = mutableListOf<(String) -> Unit>()
 
@@ -50,6 +78,9 @@ class SnetVpnService : VpnService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val started = AtomicBoolean(false)
+
+    /** Set on the start worker thread, read on the main-thread status reporter. */
+    @Volatile
     private var vpnStartTime = 0L
 
     private val tunHealthCheck = object : Runnable {
@@ -91,7 +122,12 @@ class SnetVpnService : VpnService() {
                     return START_STICKY
                 }
                 startForeground(NOTIFICATION_ID, buildNotification("正在连接..."))
-                startVpn()
+                // Do the heavy lifting (DNS resolution during exclusion, route
+                // setup, Builder.establish) on a worker thread. Running it on
+                // the main thread caused the UI to freeze ("点不动") whenever
+                // the DNS lookup hung — notably on devices whose resolver is
+                // unhealthy while the tunnel is coming up.
+                Thread { startVpn() }.start()
                 return START_STICKY
             }
         }
@@ -104,27 +140,155 @@ class SnetVpnService : VpnService() {
             return
         }
 
+        // Load persisted server address/IPs (written by WebBridge when the user
+        // binds/joins a network) so route exclusion survives process restarts.
+        try {
+            val prefs = getSharedPreferences("snet_prefs", MODE_PRIVATE)
+            if (serverAddr.isEmpty()) serverAddr = prefs.getString("server_addr", "") ?: ""
+            if (serverAddr.isEmpty() && configDir.isNotEmpty()) {
+                // Third source: daemon's persisted config (contains ServerAddr
+                // even before the daemon is started / bound this session).
+                try {
+                    val f = java.io.File(configDir, "daemon.json")
+                    if (f.exists()) {
+                        val obj = org.json.JSONObject(f.readText())
+                        serverAddr = obj.optString("ServerAddr", "")
+                        if (serverAddr.isEmpty()) serverAddr = obj.optString("serverAddr", "")
+                    }
+                } catch (_: Exception) {}
+            }
+            val savedIps = prefs.getStringSet("server_ips", null)
+            if (savedIps != null) {
+                val merged = (serverIps + savedIps).toMutableSet()
+                serverIps = merged.toList()
+            } else if (serverIps.isEmpty() && serverAddr.isNotEmpty()) {
+                // No cached IPs — resolve now before entering the tunnel.
+                val host = if (serverAddr.contains("://"))
+                    android.net.Uri.parse(serverAddr).host ?: ""
+                    else serverAddr.substringBeforeLast(":")
+                if (host.isNotEmpty() && host != "localhost" && host != "127.0.0.1") {
+                    // Prefer resolving on the physical network (the default
+                    // network may already be re-routed into the tunnel, which
+                    // makes InetAddress.getAllByName fail or hang). Bind to the
+                    // active network explicitly — Network.getAllByName routes
+                    // the lookup through that network's DNS servers regardless
+                    // of the current default network.
+                    try {
+                        val resolved = mutableListOf<String>()
+                        val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                        val active = cm.activeNetwork
+                        val addrs = if (active != null) {
+                            try { active.getAllByName(host) } catch (_: Exception) { null }
+                                ?: InetAddress.getAllByName(host)
+                        } else {
+                            InetAddress.getAllByName(host)
+                        }
+                        for (a in addrs) {
+                            val aStr = a.hostAddress ?: continue
+                            if (!aStr.contains(":") && !resolved.contains(aStr)) resolved.add(aStr)
+                        }
+                        if (resolved.isNotEmpty()) serverIps = resolved
+                    } catch (e: Exception) {
+                        Log.w(TAG, "pre-VPN DNS resolve failed for $host: ${e.message}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to load server prefs: ${e.message}")
+        }
+        Log.d(TAG, "startVpn: serverAddr=$serverAddr serverIps=$serverIps")
+
         try {
             val builder = Builder()
                 .setSession("SNET")
                 .setMtu(1420)
                 .addAddress("10.0.0.2", 32)
-                .addRoute("0.0.0.0", 0)
+                // Route ONLY the virtual mesh range through the tunnel. A
+                // 0.0.0.0/0 catch-all made every app lose Internet once the
+                // tunnel was up (the virtual LAN has no public NAT exit). By
+                // routing just the mesh subnet, physical-network traffic (web,
+                // IM, mobile data, ...) keeps working and only peer-to-peer
+                // virtual-LAN destinations (10.x) go through WireGuard.
+                .addRoute("10.0.0.0", 8)
                 .setBlocking(true)
 
-            // Exclude local subnets so LAN access and DNS resolution to local
-            // servers continue to work. These ranges are excluded from the VPN
-            // tunnel and route through the physical interface instead.
+            // Exclude LAN routes so local access keeps working. NOTE: we must
+            // NOT exclude 10.0.0.0/8 here — the tunnel subnet and this VPN
+            // interface's own address (10.0.0.2) live inside that range, so
+            // VpnService rejects the exclusion ("Bad address") and the TUN fd
+            // is never created. 10.x is the tunneled mesh range and must stay
+            // routed through the VPN (see addRoute("10.0.0.0", 8) above).
             val localSubnets = listOf(
                 "192.168.0.0" to 16,
-                "10.0.0.0" to 8,
                 "172.16.0.0" to 12,
                 "169.254.0.0" to 16,  // link-local
                 "127.0.0.0" to 8      // loopback
             )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 for ((addr, prefix) in localSubnets) {
-                    builder.excludeRoute(java.net.InetNetwork(addr, prefix))
+                    // Best-effort only: a single incompatible excludeRoute must
+                    // never abort VPN establishment (that would leave the TUN
+                    // fd un-created and the network stuck on "未就绪"). Skip
+                    // exclusions the device rejects.
+                    try {
+                        builder.excludeRoute(IpPrefix(InetAddress.getByName(addr), prefix))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "skip excludeRoute $addr/$prefix: ${e.message}")
+                    }
+                }
+
+                // Exclude the coordination server IP so daemon HTTP API calls
+                // (poll peers, set endpoint, probe on ProbePort) can reach the
+                // server via the physical network instead of being routed
+                // through the tun0 tunnel which has no WireGuard peers yet.
+                // probePublicIP uses the same host (only the port differs), so
+                // excluding the resolved /32 covers both API and probe traffic.
+                //
+                // We only use concrete IPv4 addresses — never resolve DNS here,
+                // because the lookup races TUN establishment and gets routed
+                // into the tunnel itself (chicken-and-egg). Sources of IPs:
+                //   1. serverIps — captured while the physical network was up
+                //      and cached in prefs by WebBridge.rememberServer.
+                //   2. Any IPv4 literal embedded in serverAddr (some setups use
+                //      a numeric server address directly).
+                //   3. A static host->IP fallback table (see knownServerHosts)
+                //      for hosts whose A record is stable, used when the
+                //      device's DNS is unhealthy but the physical network is
+                //      still reachable to that IP (proven reachable earlier).
+                try {
+                    if (serverIps.isEmpty()) {
+                        val host = if (serverAddr.contains("://"))
+                            android.net.Uri.parse(serverAddr).host ?: ""
+                            else serverAddr.substringBeforeLast(":")
+                        val fallback = knownServerHosts[host] ?: knownServerHosts[host.removePrefix("www.")]
+                        if (fallback != null) {
+                            Log.d(TAG, "using known fallback IP $fallback for host $host")
+                            serverIps = listOf(fallback)
+                        }
+                    }
+
+                    // Collect candidate IPs: cached serverIps + any IPv4 literal
+                    // in serverAddr (covers the numeric-address case).
+                    val excluded = mutableSetOf<String>()
+                    val ipSource = (serverIps + serverAddr).toMutableList()
+
+                    val ipv4 = Regex("""\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b""")
+                    for (token in ipSource) {
+                        ipv4.findAll(token).forEach { m ->
+                            val ip = m.value
+                            if (excluded.contains(ip)) return@forEach
+                            try {
+                                val addr = InetAddress.getByName(ip)
+                                builder.excludeRoute(IpPrefix(addr, 32))
+                                excluded.add(ip)
+                                Log.d(TAG, "excluded server IP $ip from VPN routes")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "skip excludeRoute server IP $ip: ${e.message}")
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "failed to exclude server address: ${e.message}")
                 }
             }
 

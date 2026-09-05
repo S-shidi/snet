@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -37,13 +38,35 @@ type CtlReq struct {
 
 // ServeCtl exposes the local control API for snetctl and the Tauri UI.
 // The listener is bound to 127.0.0.1 only (no network exposure).
+// ctlToken is a shared secret written by the daemon to a 0644 file (readable
+// by the desktop GUI which runs as a different privilege domain than the root
+// / LocalSystem daemon) and read by all clients; every operational /ctl/*
+// request (except /ctl/auth/*) must carry it via the X-Ctl-Token header. Auth
+// endpoints (/ctl/auth/*) are protected by their own session mechanism.
 // onShutdown is invoked (with the running server) shortly after the
 // /ctl/shutdown handler has flushed its response; the caller decides how to
 // terminate: a foreground daemon exits the process, while a Windows service
 // stops the HTTP server so the service control manager sees a clean stop.
-func ServeCtl(d *Daemon, addr string, onShutdown func(*http.Server)) error {
+func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) error {
 	var srv *http.Server
 	mux := http.NewServeMux()
+
+	// ctlAuthMiddleware gates all /ctl/* requests (except /ctl/auth/*) with
+	// a shared-secret token so local unprivileged processes cannot manipulate the
+	// VPN without possessing the secret.
+	ctlAuthMux := http.NewServeMux()
+	ctlAuthMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/ctl/auth/") {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		got := r.Header.Get("X-Ctl-Token")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(ctlToken)) != 1 {
+			writeCtlErr(w, http.StatusUnauthorized, errors.New("missing or invalid ctl token"))
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 
 	mux.HandleFunc("POST /ctl/create", func(w http.ResponseWriter, r *http.Request) {
 		var req CtlReq
@@ -80,7 +103,7 @@ func ServeCtl(d *Daemon, addr string, onShutdown func(*http.Server)) error {
 		linkServer := ""
 		if req.Link != "" {
 			var err error
-			nid, code, linkServer, err = protocol.ParseLink(req.Link)
+			nid, code, linkServer, _, err = protocol.ParseLink(req.Link)
 			if err != nil {
 				writeCtlErr(w, 400, err)
 				return
@@ -371,7 +394,7 @@ func ServeCtl(d *Daemon, addr string, onShutdown func(*http.Server)) error {
 	mux.HandleFunc("GET /ctl/auth/check", auth.handleCheck)
 	mux.HandleFunc("POST /ctl/auth/password", auth.handlePassword)
 
-	srv = &http.Server{Addr: addr, Handler: mux}
+	srv = &http.Server{Addr: addr, Handler: ctlAuthMux}
 	return srv.ListenAndServe()
 }
 

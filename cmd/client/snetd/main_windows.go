@@ -47,7 +47,17 @@ func (s *daemonService) Execute(args []string, req <-chan svc.ChangeRequest, sta
 			log.Printf("start: %v", err)
 		}
 		log.Printf("snetd daemon control API on %s", s.ctlAddr)
-		if err := client.ServeCtl(d, s.ctlAddr, func(srv *http.Server) {
+		ctlToken, err := client.LoadOrCreateCtlToken(client.CtlTokenPath(s.configPath))
+		if err != nil {
+			log.Printf("ctl token: %v", err)
+			select {
+			case <-failed:
+			default:
+				close(failed)
+			}
+			return
+		}
+		if err := client.ServeCtl(d, ctlToken, s.ctlAddr, func(srv *http.Server) {
 			_ = srv.Shutdown(context.Background())
 			select {
 			case <-stop:
@@ -106,7 +116,11 @@ func runDaemon(cfg *client.Config, configPath, ctlAddr, deviceIDFile string) {
 		log.Printf("start: %v", err)
 	}
 	log.Printf("snetd daemon control API on %s", ctlAddr)
-	if err := client.ServeCtl(d, ctlAddr, func(_ *http.Server) { os.Exit(0) }); err != nil {
+	ctlToken, err := client.LoadOrCreateCtlToken(client.CtlTokenPath(configPath))
+	if err != nil {
+		log.Fatalf("ctl token: %v", err)
+	}
+	if err := client.ServeCtl(d, ctlToken, ctlAddr, func(_ *http.Server) { os.Exit(0) }); err != nil {
 		log.Fatal(err)
 	}
 }

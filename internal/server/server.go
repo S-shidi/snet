@@ -45,12 +45,13 @@ type Options struct {
 }
 
 const (
-	defaultCreatePerHour  = 50
-	defaultJoinPerMinute  = 60
-	defaultBindPerMinute  = 20
-	defaultRegisterPerMin = 30
-	sessionTTL            = 24 * time.Hour
-	limiterPruneInterval  = time.Minute
+	defaultCreatePerHour    = 50
+	defaultJoinPerMinute    = 60
+	defaultBindPerMinute    = 20
+	defaultRegisterPerMin   = 30
+	defaultPendingPollsPerMin = 10
+	sessionTTL              = 24 * time.Hour
+	limiterPruneInterval    = time.Minute
 )
 
 type sessionEntry struct {
@@ -58,13 +59,14 @@ type sessionEntry struct {
 }
 
 type handler struct {
-	s         *Store
-	opts      Options
-	creates   *rateLimiter
-	joins     *rateLimiter
-	binds     *rateLimiter
-	logins    *rateLimiter
-	registers *rateLimiter
+	s           *Store
+	opts        Options
+	creates     *rateLimiter
+	joins       *rateLimiter
+	binds       *rateLimiter
+	logins      *rateLimiter
+	registers   *rateLimiter
+	pendingPolls *rateLimiter
 
 	// adminMu guards adminUser and adminPassHash, which are rotated while
 	// the server is serving (bootstrap wizard, password change).
@@ -93,14 +95,15 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		joinPerMinute = defaultJoinPerMinute
 	}
 	h := &handler{
-		s:         s,
-		opts:      opts,
-		creates:   newRateLimiter(createPerHour, time.Hour),
-		joins:     newRateLimiter(joinPerMinute, time.Minute),
-		binds:     newRateLimiter(defaultBindPerMinute, time.Minute),
-		logins:    newRateLimiter(5, time.Minute),
-		registers: newRateLimiter(defaultRegisterPerMin, time.Minute),
-		sessions:  make(map[string]sessionEntry),
+		s:           s,
+		opts:        opts,
+		creates:     newRateLimiter(createPerHour, time.Hour),
+		joins:       newRateLimiter(joinPerMinute, time.Minute),
+		binds:       newRateLimiter(defaultBindPerMinute, time.Minute),
+		logins:      newRateLimiter(5, time.Minute),
+		registers:   newRateLimiter(defaultRegisterPerMin, time.Minute),
+		pendingPolls: newRateLimiter(defaultPendingPollsPerMin, time.Minute),
+		sessions:    make(map[string]sessionEntry),
 	}
 	if opts.RequireDeviceAuth {
 		s.SetRequireDeviceAuth(true)
@@ -128,7 +131,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		t := time.NewTicker(limiterPruneInterval)
 		defer t.Stop()
 		for range t.C {
-			for _, rl := range []*rateLimiter{h.creates, h.joins, h.binds, h.logins, h.registers} {
+			for _, rl := range []*rateLimiter{h.creates, h.joins, h.binds, h.logins, h.registers, h.pendingPolls} {
 				rl.prune()
 			}
 		}
@@ -149,7 +152,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		resp, err := s.CreateNetwork(req.PublicKey, req.DeviceID, req.Name, req.Subnet, req.ApprovalRequired)
+		resp, err := s.CreateNetwork(req.PublicKey, req.DeviceID, req.Name, req.Subnet, req.ApprovalRequired,
+			networkShareOpts{description: &req.Description, tags: req.Tags, visibility: &req.Visibility})
 		if err != nil {
 			if writeEnrollmentErr(w, err) {
 				return
@@ -391,7 +395,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		if err := s.UpdateNetworkSettings(tokenOf(r), req.Name, req.Subnet, req.ApprovalRequired); err != nil {
+		if err := s.UpdateNetworkSettings(tokenOf(r), req.Name, req.Subnet, req.ApprovalRequired,
+			networkShareOpts{description: req.Description, tags: req.Tags, visibility: req.Visibility}); err != nil {
 			handleStoreErr(w, err)
 			return
 		}
@@ -401,6 +406,10 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	// Public pending-join status: the joining client polls this until the
 	// owner approves/denies its request (or it expires).
 	mux.HandleFunc("GET /api/v1/pending/{pendingID}", func(w http.ResponseWriter, r *http.Request) {
+		if h.pendingPolls.blocked(h.clientIP(r)) {
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
+			return
+		}
 		status, err := s.PendingStatus(r.PathValue("pendingID"))
 		if err != nil {
 			handleStoreErr(w, err)
@@ -453,6 +462,23 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		if err := s.KickNode(tokenOf(r), r.PathValue("nodeID")); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	// Set a peer's role (owner-only). Body carries the target role.
+	mux.HandleFunc("PUT /api/v1/networks/{nid}/nodes/{nodeID}/role", requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if !ownerNID(w, r) {
+			return
+		}
+		var req protocol.SetNodeRoleReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		if err := s.SetNodeRole(tokenOf(r), r.PathValue("nodeID"), req.Role); err != nil {
 			handleStoreErr(w, err)
 			return
 		}
@@ -514,7 +540,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		resp, err := s.AdminCreateNetwork(req.Name, req.Subnet, req.ApprovalRequired)
+		resp, err := s.AdminCreateNetwork(req.Name, req.Subnet, req.ApprovalRequired,
+			networkShareOpts{description: &req.Description, tags: req.Tags, visibility: &req.Visibility})
 		if err != nil {
 			handleStoreErr(w, err)
 			return
@@ -543,7 +570,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		if err := s.AdminUpdateNetwork(r.PathValue("nid"), req.Name, req.Subnet, req.ApprovalRequired); err != nil {
+		if err := s.AdminUpdateNetwork(r.PathValue("nid"), req.Name, req.Subnet, req.ApprovalRequired,
+			networkShareOpts{description: req.Description, tags: req.Tags, visibility: req.Visibility}); err != nil {
 			handleStoreErr(w, err)
 			return
 		}

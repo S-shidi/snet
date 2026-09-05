@@ -2,14 +2,75 @@ package com.snet.app
 
 import android.util.Log
 import android.webkit.JavascriptInterface
+import java.net.InetAddress
 
 /**
  * JavaScript interface for the WebView-based UI.
  * Exposes Go/SnetBridge functions to JavaScript as window.WebBridge.*
  */
 class WebBridge(private val activity: MainActivity) {
+    /** Serial executor for toggle-class operations (rejoin/leave/remove/…).
+     *  These do heavy Go/JNI work that must not block the Android UI thread
+     *  (which is where @JavascriptInterface methods run). Serializing keeps
+     *  ordering guarantees (e.g. leave after rejoin) without UI stalls. */
+    private val bgExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** Pushes a refresh to the WebView UI after a background toggle op finishes,
+     *  so the optimistic switch state reconciles without waiting the 5s poll. */
+    private fun notifyUi() {
+        try {
+            activity.runOnUiThread {
+                activity.refreshWebView()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "notifyUi failed", e)
+        }
+    }
+
     private companion object {
         const val TAG = "WebBridge"
+
+        fun rememberServer(server: String) {
+            if (server.isEmpty()) return
+            SnetVpnService.serverAddr = server
+            // Persist so SnetVpnService can read it even after process restart.
+            saveServerPrefs(server, null)
+            // Resolve while the physical network is still reachable (VPN not
+            // established yet), so route exclusion can use concrete IPs later.
+            val hosts = listOf(server, server.replaceFirst("^[a-z]+://".toRegex(), ""))
+                .mapNotNull { s ->
+                    if (s.contains("://")) android.net.Uri.parse(s).host
+                    else s.substringBeforeLast(":")
+                }.filter { it.isNotEmpty() && it != "localhost" && it != "127.0.0.1" }
+            val ips = mutableListOf<String>()
+            for (h in hosts) {
+                try {
+                    InetAddress.getAllByName(h).forEach { a ->
+                        if (a.hostAddress != null && a !is java.net.Inet6Address)
+                            if (!ips.contains(a.hostAddress)) ips.add(a.hostAddress)
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "rememberServer resolve $h failed: ${e.message}")
+                }
+                if (ips.isNotEmpty()) break
+            }
+            SnetVpnService.serverIps = ips
+            // Persist resolved IPs for the same reason.
+            saveServerPrefs(server, ips)
+            Log.d(TAG, "rememberServer: addr=$server ips=$ips")
+        }
+
+        private fun saveServerPrefs(server: String, ips: List<String>?) {
+            try {
+                val ctx = SnetBridge.app
+                    ?: SnetVpnService.instance
+                    ?: return
+                val ed = ctx.getSharedPreferences("snet_prefs", android.content.Context.MODE_PRIVATE)
+                    .edit().putString("server_addr", server)
+                if (ips != null) ed.putStringSet("server_ips", ips.toSet())
+                ed.apply()
+            } catch (_: Exception) {}
+        }
     }
 
     @JavascriptInterface
@@ -36,7 +97,11 @@ class WebBridge(private val activity: MainActivity) {
             val server = p.optString("server", "")
             val port = p.optInt("port", 51820)
             val ca = p.optString("ca", "")
-            SnetBridge.createNetwork(name, subnet, approvalRequired, server, port)
+            val description = p.optString("description", "")
+            val tags = p.optJSONArray("tags")?.toString() ?: "[]"
+            val visibility = p.optString("visibility", "")
+            rememberServer(server)
+            SnetBridge.createNetwork(name, subnet, approvalRequired, server, port, description, tags, visibility)
         } catch (e: Exception) {
             Log.e(TAG, "create failed", e)
             """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
@@ -51,6 +116,7 @@ class WebBridge(private val activity: MainActivity) {
             val server = p.optString("server", "")
             val port = p.optInt("port", 51820)
             val ca = p.optString("ca", "")
+            rememberServer(server)
             // Extract nid and code from link or from direct params
             var nid = p.optString("nid", "")
             var code = p.optString("code", "")
@@ -68,6 +134,13 @@ class WebBridge(private val activity: MainActivity) {
                 }
             }
             Log.d(TAG, "join nid=$nid server=$server port=$port")
+            // Ensure VPN service (and thus the TUN fd) is running before
+            // joining, routing through VPN permission so establish() can obtain
+            // the fd (first time shows the system consent dialog).
+            if (!SnetVpnService.isRunning) {
+                Log.d(TAG, "VPN not running, requesting before join")
+                activity.requestVpnPermission()
+            }
             SnetBridge.joinNetwork(nid, code, server, port)
         } catch (e: Exception) {
             Log.e(TAG, "join failed", e)
@@ -82,6 +155,7 @@ class WebBridge(private val activity: MainActivity) {
             val server = p.optString("server", "")
             val ca = p.optString("ca", "")
             val code = p.optString("code", "")
+            rememberServer(server)
             SnetBridge.bind(server, ca, code)
         } catch (e: Exception) {
             Log.e(TAG, "bind failed", e)
@@ -91,52 +165,87 @@ class WebBridge(private val activity: MainActivity) {
 
     @JavascriptInterface
     fun rejoin(nid: String): String {
-        return try {
-            // Ensure VPN service (and daemon) is running before rejoin
-            if (!SnetVpnService.isRunning) {
-                Log.d(TAG, "VPN not running, starting before rejoin")
-                val intent = android.content.Intent(activity, SnetVpnService::class.java)
-                intent.action = "START"
-                activity.startForegroundService(intent)
-                // Non-blocking: start VPN and attempt rejoin immediately.
-                // If the daemon is not yet ready, rejoin will fail gracefully
-                // and the UI should retry on next refresh/poll.
+        // Heavy Go/JNI work must NOT run on the WebView JS bridge thread: it is
+        // the UI thread on Android, and blocking it for the daemon to cold-start
+        // made the toggle unresponsive for seconds. Schedule the real work on a
+        // background executor and return immediately; the shared UI finishes the
+        // interaction optimistically and its periodic refresh() reflects the
+        // real outcome a moment later.
+        bgExecutor.execute {
+            try {
+                if (!SnetVpnService.isRunning) {
+                    Log.d(TAG, "VPN not running, requesting before rejoin")
+                    activity.requestVpnPermission()
+                }
+                waitForCoreReady()
+                SnetBridge.rejoin(nid)
+                notifyUi()
+            } catch (e: Exception) {
+                Log.e(TAG, "rejoin($nid) bg failed", e)
+                notifyUi()
             }
-            SnetBridge.rejoin(nid)
-            """{"ok":true}"""
-        } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
         }
+        return """{"ok":true}"""
+    }
+
+    /** Blocks until the Go daemon finished starting. Bounded so a broken
+     *  startup cannot hang the (background) caller forever. */
+    private fun waitForCoreReady() {
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            if (SnetVpnService.isRunning && SnetBridge.isStarted()) return
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+        Log.w(TAG, "waitForCoreReady timed out")
     }
 
     @JavascriptInterface
     fun leave(nid: String): String {
-        return try {
-            SnetBridge.leaveNetwork(nid)
-            """{"ok":true}"""
-        } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
+        bgExecutor.execute {
+            try {
+                SnetBridge.leaveNetwork(nid)
+                checkIfAllLeftStopVpn()
+                notifyUi()
+            } catch (e: Exception) {
+                Log.e(TAG, "leave($nid) bg failed", e)
+                notifyUi()
+            }
         }
+        return """{"ok":true}"""
     }
 
     @JavascriptInterface
     fun remove(nid: String): String {
-        return try {
-            SnetBridge.removeNetwork(nid)
-            """{"ok":true}"""
-        } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
+        bgExecutor.execute {
+            try {
+                SnetBridge.removeNetwork(nid)
+                checkIfAllLeftStopVpn()
+                notifyUi()
+            } catch (e: Exception) {
+                Log.e(TAG, "remove($nid) bg failed", e)
+                notifyUi()
+            }
         }
+        return """{"ok":true}"""
     }
 
     @JavascriptInterface
     fun deleteNet(nid: String): String {
-        return try {
-            SnetBridge.deleteNetwork(nid)
-            """{"ok":true}"""
-        } catch (e: Exception) {
-            """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
+        bgExecutor.execute {
+            try {
+                SnetBridge.deleteNetwork(nid)
+                notifyUi()
+            } catch (e: Exception) {
+                Log.e(TAG, "deleteNet($nid) bg failed", e)
+                notifyUi()
+            }
         }
+        return """{"ok":true}"""
     }
 
     @JavascriptInterface
@@ -165,7 +274,23 @@ class WebBridge(private val activity: MainActivity) {
             val name = p.optString("name", "")
             val subnet = p.optString("subnet", "")
             val approvalRequired = p.optBoolean("approvalRequired", false)
-            SnetBridge.updateSettings(nid, name, subnet, approvalRequired)
+            val description = p.optString("description", "")
+            val tags = p.optJSONArray("tags")?.toString() ?: "[]"
+            val visibility = p.optString("visibility", "")
+            SnetBridge.updateSettings(nid, name, subnet, approvalRequired, description, tags, visibility)
+        } catch (e: Exception) {
+            """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
+        }
+    }
+
+    @JavascriptInterface
+    fun setRole(params: String): String {
+        return try {
+            val p = org.json.JSONObject(params)
+            val nid = p.optString("nid", "")
+            val nodeId = p.optString("nodeId", "")
+            val role = p.optString("role", "")
+            SnetBridge.setNodeRole(nid, nodeId, role)
         } catch (e: Exception) {
             """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
         }
@@ -261,11 +386,24 @@ class WebBridge(private val activity: MainActivity) {
     }
 
     @JavascriptInterface
+    fun scanQRCode(): String {
+        // Starts a native QR scan; the decoded text is delivered back to JS
+        // asynchronously via window.__snetScanResolve (see MainActivity.safeScanResolve).
+        return try {
+            activity.startScanQR()
+            """{"ok":true}"""
+        } catch (e: Exception) {
+            Log.e(TAG, "scanQRCode failed", e)
+            """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
+        }
+    }
+
+    @JavascriptInterface
     fun startVpn(): String {
         return try {
-            val intent = android.content.Intent(activity, SnetVpnService::class.java)
-            intent.action = "START"
-            activity.startForegroundService(intent)
+            // Route through VPN permission so VpnService.establish() can
+            // obtain a TUN fd (first time shows the system consent dialog).
+            activity.requestVpnPermission()
             """{"ok":true}"""
         } catch (e: Exception) {
             """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
@@ -281,6 +419,33 @@ class WebBridge(private val activity: MainActivity) {
             """{"ok":true}"""
         } catch (e: Exception) {
             """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
+        }
+    }
+
+    /** Stops the VpnService once the last member network has been left, so the
+     *  status-bar VPN indicator disappears. Reads active network count from the
+     *  daemon status. */
+    private fun checkIfAllLeftStopVpn() {
+        if (!SnetVpnService.isRunning) return
+        try {
+            val raw = SnetBridge.statusRaw()
+            val obj = org.json.JSONObject(raw)
+            val nets = obj.optJSONArray("networks")
+            var active = 0
+            if (nets != null) {
+                for (i in 0 until nets.length()) {
+                    val net = nets.getJSONObject(i)
+                    if (net.optBoolean("active", false)) active++
+                }
+            }
+            if (active == 0) {
+                Log.d(TAG, "No active networks left, stopping VPN")
+                val intent = android.content.Intent(activity, SnetVpnService::class.java)
+                intent.action = "STOP"
+                activity.startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "checkIfAllLeftStopVpn failed", e)
         }
     }
 

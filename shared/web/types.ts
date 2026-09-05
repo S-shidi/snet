@@ -14,6 +14,10 @@ export type NetInfo = {
   peerStats?: Record<string, PeerStats>;
   allowedSubnets?: string[];
   joinedAt?: string;
+  description?: string;
+  tags?: string[];
+  visibility?: string;
+  role?: string;
 };
 export type PendingJoin = {
   pendingId: string;
@@ -39,20 +43,24 @@ export type NetInfoDetail = {
   pendingCount?: number;
   nodeCount?: number;
   pairingCode?: string;
-  pending?: Array<{ id: string; publicKey: string; deviceId?: string; createdAt?: string }>;
-  nodes?: Array<{ id: string; ip: string; deviceId?: string; online?: boolean; allowedSubnets?: string[] }>;
+  description?: string;
+  tags?: string[];
+  visibility?: string;
+  pending?: Array<{ id: string; publicKey: string; deviceId?: string; createdAt?: string; deviceName?: string }>;
+  nodes?: Array<{ id: string; ip: string; deviceId?: string; online?: boolean; allowedSubnets?: string[]; role?: string; publicKey?: string }>;
 };
-export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; online?: boolean; allowedSubnets?: string[] };
+export type NetNode = { id: string; ip: string; publicKey?: string; deviceId?: string; online?: boolean; allowedSubnets?: string[]; role?: string };
 export type PeersResp = { peers?: NetNode[]; self?: NetNode; subnet?: string; approvalRequired?: boolean };
-export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };
+export type CreateResp = { networkId: string; ip: string; pairingCode: string; link: string };  
 export type JoinResp = { ip?: string; networkId?: string; status?: string; pendingId?: string };
+export type ShareMeta = { description?: string; tags?: string[]; visibility?: string };
 
 /* ── Backend interface: platform adapters implement this ──────── */
 export interface Backend {
   /** Get daemon status (returns null on failure) */
   status(): Promise<DaemonStatus | null>;
   /** Create a network */
-  create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean }): Promise<CreateResp>;
+  create(params: { server: string; port: number; ca: string; name: string; subnet: string; approvalRequired: boolean; description?: string; tags?: string[]; visibility?: string }): Promise<CreateResp>;
   /** Join a network */
   join(params: { server: string; port: number; ca: string; link: string }): Promise<JoinResp>;
   /** Bind device to server */
@@ -70,7 +78,9 @@ export interface Backend {
   /** Get peers for a network */
   peers(nid: string): Promise<PeersResp>;
   /** Update network settings (owner only) */
-  updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null }): Promise<void>;
+  updateSettings(params: { nid: string; name: string; subnet: string; approvalRequired: boolean | null; description?: string; tags?: string[]; visibility?: string }): Promise<void>;
+  /** Set a peer node's role (owner only) */
+  setRole?(params: { nid: string; nodeId: string; role: string }): Promise<void>;
   /** Update subnets for a network */
   updateSubnets(params: { nid: string; subnets: string[] }): Promise<void>;
   /** Kick a node from a network */
@@ -87,6 +97,8 @@ export interface Backend {
   detectLocalSubnets(): Promise<string[]>;
   /** Ensure daemon is running (Desktop only, Web returns error) */
   ensureDaemon(): Promise<void>;
+  /** Scan a QR code and return the decoded text (Android native only) */
+  scanQR?(): Promise<string>;
   /** Whether the backend supports daemon lifecycle management */
   hasDaemonControl: boolean;
 }

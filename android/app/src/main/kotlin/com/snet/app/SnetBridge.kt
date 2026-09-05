@@ -15,9 +15,12 @@ object SnetBridge {
     @Volatile private var lastServerAddr = ""
     @Volatile private var lastServerCA = ""
 
+    val app: Context? get() = appContext
+
     fun init(ctx: Context, dir: String) {
         appContext = ctx.applicationContext
         configDir = dir
+        SnetVpnService.configDir = dir
         try {
             core = SnetCore("$dir")
             core?.setDeviceIDFile("$dir/device.key")
@@ -80,10 +83,16 @@ object SnetBridge {
     }
 
     fun stop() {
-        if (started.compareAndSet(true, false)) core?.stop()
+        if (started.compareAndSet(true, false)) core?.haltTunnels()
     }
 
     fun isStarted(): Boolean = started.get()
+
+    /** Returns the configured coordination server address, or "" if the daemon isn't started yet. */
+    fun serverAddr(): String {
+        val c = core ?: return ""
+        return try { c.serverAddr() ?: "" } catch (e: Exception) { "" }
+    }
 
     fun bind(serverAddr: String, serverCA: String, code: String): String {
         val c = core ?: return """{"error":"core not initialized"}"""
@@ -142,10 +151,10 @@ object SnetBridge {
         }
     }
 
-    fun createNetwork(name: String, subnet: String, approvalRequired: Boolean, serverAddr: String, port: Int): String {
+    fun createNetwork(name: String, subnet: String, approvalRequired: Boolean, serverAddr: String, port: Int, description: String, tagsJSON: String, visibility: String): String {
         val c = core ?: return """{"error":"core not initialized"}"""
         return try {
-            c.createNetwork(name, subnet, approvalRequired, serverAddr, port.toLong())
+            c.createNetwork(name, subnet, approvalRequired, serverAddr, port.toLong(), description, tagsJSON, visibility)
         } catch (e: Exception) {
             """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
         }
@@ -187,10 +196,20 @@ object SnetBridge {
         }
     }
 
-    fun updateSettings(nid: String, name: String, subnet: String, approvalRequired: Boolean): String {
+    fun updateSettings(nid: String, name: String, subnet: String, approvalRequired: Boolean, description: String, tagsJSON: String, visibility: String): String {
         val c = core ?: return """{"error":"core not initialized"}"""
         return try {
-            c.updateSettings(nid, name, subnet, approvalRequired)
+            c.updateSettings(nid, name, subnet, approvalRequired, description, tagsJSON, visibility)
+            """{"ok":true}"""
+        } catch (e: Exception) {
+            """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
+        }
+    }
+
+    fun setNodeRole(nid: String, nodeId: String, role: String): String {
+        val c = core ?: return """{"error":"core not initialized"}"""
+        return try {
+            c.setNodeRole(nid, nodeId, role)
             """{"ok":true}"""
         } catch (e: Exception) {
             """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
