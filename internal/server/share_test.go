@@ -192,7 +192,8 @@ func TestSetNodeRoleHTTP(t *testing.T) {
 }
 
 // TestListPeersRoleScoping verifies members never see peer deviceId/role/
-// publicKey/subnets, while owners and admins see full peer details.
+// subnets (publicKey is kept so members can build WireGuard tunnels), while
+// owners and admins see full peer details.
 func TestListPeersRoleScoping(t *testing.T) {
 	s := NewStore()
 	created, err := s.CreateNetwork(testKey(1), "dev-owner", "office", "192.168.63.0/24", false)
@@ -212,14 +213,19 @@ func TestListPeersRoleScoping(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// plain member's view of peers must be scrubbed
+	// plain member's view of peers: deviceId/role/subnets scrubbed, but the
+	// WireGuard publicKey must remain so the member can build tunnels (hidden
+	// keys would make every peer unreachable by WG).
 	peers, err := s.ListPeers(member.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range peers.Peers {
-		if p.DeviceID != "" || p.Role != "" || p.PublicKey != "" || len(p.AllowedSubnets) != 0 {
+		if p.DeviceID != "" || p.Role != "" || len(p.AllowedSubnets) != 0 {
 			t.Fatalf("member leaky peer view: %+v", p)
+		}
+		if p.PublicKey == "" {
+			t.Fatalf("member peer missing publicKey (must be able to build tunnels): %+v", p)
 		}
 	}
 

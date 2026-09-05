@@ -4009,7 +4009,10 @@ function renderCodes() {
         }).join('')}</div>`
       : `<span class="pill free">未绑定 0/${max}</span>`;
     rows += `<tr>
-      <td class="mono">${esc(c.code)}</td>
+      <td class="mono" style="white-space:nowrap">
+        <span class="code" style="cursor:pointer" data-act="copy" data-copy="${esc(c.code)}" title="点击复制">${esc(c.code)}</span>
+        <button type="button" class="btn icon sm" data-act="copy" data-copy="${esc(c.code)}" title="复制授权码">${icon('copy')}</button>
+      </td>
       <td>${statusCell}</td>
       <td>${fmtTime(c.createdAt)}</td>
       <td style="white-space:nowrap">

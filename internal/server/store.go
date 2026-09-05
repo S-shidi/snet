@@ -1180,11 +1180,12 @@ func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
 		if id != te.NodeID {
 			n2 := *n
 			// 普通成员只看到对端设备名、IP 与在线状态，不暴露 deviceId 与角色。
+			// 注意：publicKey 必须保留——WireGuard 直连/中继都依赖对端公钥建立
+			// 隧道，隐藏它会让成员端无法配置任何 peer。
 			if !isOwnerAdmin {
 				n2.DeviceID = ""
 				n2.Role = ""
 				n2.AllowedSubnets = nil
-				n2.PublicKey = ""
 			}
 			// Keep the peer's self-advertised direct endpoint; the caller
 			// decides whether to use it or fall back to the relay endpoint.

@@ -27,3 +27,10 @@ android/app/src/main/jniLibs/
 /server
 /snetd
 /snetctl
+
+# OpenWork hook runtime logs (regenerated on each commit)
+.openwork/logs/*.log
+
+# OpenCode local tooling config (Slack plugin skills/commands)
+.opencode/commands/
+.opencode/skills/

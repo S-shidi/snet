@@ -74,9 +74,13 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 	// Build WireGuard IPC configuration.
 	var sb strings.Builder
 	for _, p := range peers {
+		// Skip peers without a usable public key: a coordination server may
+		// withhold peer keys (member-scoped views), and writing an empty key
+		// would make wireguard-go reject the whole config. Such peers simply
+		// cannot be reached directly and stay relay-only.
 		pub, err := pubToHex(p.PublicKey)
-		if err != nil {
-			return err
+		if err != nil || pub == "" {
+			continue
 		}
 		sb.WriteString("public_key=" + pub + "\n")
 		// Always accept packets from the peer's tunnel IP (needed for replies).
