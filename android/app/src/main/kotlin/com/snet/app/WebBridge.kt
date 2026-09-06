@@ -27,6 +27,33 @@ class WebBridge(private val activity: MainActivity) {
         }
     }
 
+    /** Marks a network as desired for auto-connect on process restart / boot.
+     *  Consumed by MainActivity.maybeAutoConnect() and BootReceiver. */
+    private fun setAutoConnect(enabled: Boolean) {
+        try {
+            val ed = activity.getSharedPreferences("snet_prefs", android.content.Context.MODE_PRIVATE).edit()
+            ed.putBoolean("auto_connect", enabled)
+            ed.apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "setAutoConnect failed", e)
+        }
+    }
+
+    /** True when the Go daemon still reports at least one active joined network. */
+    private fun hasActiveNetwork(): Boolean {
+        return try {
+            val raw = SnetBridge.statusRaw()
+            val obj = org.json.JSONObject(raw)
+            val arr = obj.optJSONArray("networks") ?: return false
+            for (i in 0 until arr.length()) {
+                if (arr.getJSONObject(i).optBoolean("active", false)) return true
+            }
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private companion object {
         const val TAG = "WebBridge"
 
@@ -142,6 +169,8 @@ class WebBridge(private val activity: MainActivity) {
                 activity.requestVpnPermission()
             }
             SnetBridge.joinNetwork(nid, code, server, port)
+            setAutoConnect(true)
+            """{"ok":true}"""
         } catch (e: Exception) {
             Log.e(TAG, "join failed", e)
             """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
@@ -157,6 +186,8 @@ class WebBridge(private val activity: MainActivity) {
             val code = p.optString("code", "")
             rememberServer(server)
             SnetBridge.bind(server, ca, code)
+            setAutoConnect(true)
+            """{"ok":true}"""
         } catch (e: Exception) {
             Log.e(TAG, "bind failed", e)
             """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
@@ -179,6 +210,7 @@ class WebBridge(private val activity: MainActivity) {
                 }
                 waitForCoreReady()
                 SnetBridge.rejoin(nid)
+                setAutoConnect(true)
                 notifyUi()
             } catch (e: Exception) {
                 Log.e(TAG, "rejoin($nid) bg failed", e)
@@ -209,6 +241,7 @@ class WebBridge(private val activity: MainActivity) {
         bgExecutor.execute {
             try {
                 SnetBridge.leaveNetwork(nid)
+                setAutoConnect(hasActiveNetwork())
                 checkIfAllLeftStopVpn()
                 notifyUi()
             } catch (e: Exception) {
@@ -224,6 +257,7 @@ class WebBridge(private val activity: MainActivity) {
         bgExecutor.execute {
             try {
                 SnetBridge.removeNetwork(nid)
+                setAutoConnect(hasActiveNetwork())
                 checkIfAllLeftStopVpn()
                 notifyUi()
             } catch (e: Exception) {

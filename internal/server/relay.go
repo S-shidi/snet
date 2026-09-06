@@ -7,10 +7,12 @@ import (
 	"time"
 )
 
-// Relay pairs UDP endpoints per port and forwards packets between the two,
-// allowing WireGuard to traverse symmetric NAT on both sides. Each network is
-// assigned one port; the two peers that send keepalives on that port are
-// linked and every packet from one is relayed to the other.
+// Relay forwards UDP packets among the active endpoints of a network port,
+// letting WireGuard traverse symmetric NAT on both sides. Each network is
+// assigned one port; every endpoint that sends a keepalive on that port is
+// remembered, and a data packet from one endpoint is forwarded to all the
+// others (fan-out), so networks with more than two members still reach each
+// other through the relay.
 type Relay struct {
 	base  int
 	count int
@@ -26,9 +28,9 @@ type relayPair struct {
 	hook     func(port int)
 	lastHook time.Time
 	mu       sync.Mutex
-	seen     map[string]time.Time
-	a        string // first known endpoint ("ip:port")
-	b        string // second known endpoint
+	// seen tracks the last traffic time per relay endpoint ("ip:port") so
+	// stale NAT mappings can be evicted and current ones retained.
+	seen map[string]time.Time
 }
 
 // NewRelay builds a relay covering the port range [base, base+count).
@@ -106,44 +108,30 @@ func (p *relayPair) handle(addr string, data []byte) {
 		p.hook(p.port)
 	}
 
-	switch addr {
-	case p.a:
-		p.seen[p.a] = now
-	case p.b:
-		p.seen[p.b] = now
-	default:
-		if p.a == "" {
-			p.a = addr
-		} else if p.b == "" {
-			p.b = addr
-		} else {
-			// both slots taken: evict the stale endpoint so a re-mapped
-			// NAT address (new keepalive source) can take over.
-			if p.seen[p.a].After(p.seen[p.b]) {
-				delete(p.seen, p.b)
-				p.b = addr
-			} else {
-				delete(p.seen, p.a)
-				p.a = addr
-			}
+	p.seen[addr] = now
+
+	// Evict endpoints idle for over a minute so a re-mapped NAT address stops
+	// receiving stale forwards and new members get a slot.
+	const stale = 60 * time.Second
+	for ep, t := range p.seen {
+		if now.Sub(t) >= stale {
+			delete(p.seen, ep)
 		}
-		p.seen[addr] = now
 	}
 
-	var to string
-	if addr == p.a {
-		to = p.b
-	} else {
-		to = p.a
-	}
-	if to == "" {
-		return
-	}
-	dst, err := net.ResolveUDPAddr("udp", to)
-	if err != nil {
-		return
-	}
-	if _, err := p.conn.WriteToUDP(data, dst); err != nil {
-		log.Printf("relay: write to %s: %v", to, err)
+	// Fan out to every other live endpoint.
+	for ep := range p.seen {
+		if ep == addr {
+			continue
+		}
+		dst, err := net.ResolveUDPAddr("udp", ep)
+		if err != nil {
+			delete(p.seen, ep)
+			continue
+		}
+		if _, err := p.conn.WriteToUDP(data, dst); err != nil {
+			delete(p.seen, ep)
+			log.Printf("relay: write to %s: %v", ep, err)
+		}
 	}
 }

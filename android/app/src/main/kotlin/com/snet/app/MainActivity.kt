@@ -128,6 +128,11 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(WebBridge(this), "WebBridge")
         webView.loadUrl("file:///android_asset/web/index.html")
 
+        // Self-heal: if a network was previously joined (auto_connect pref or a
+        // persisted active network), bring the VPN back up on app start so the
+        // mesh address is re-registered without requiring a manual tap.
+        maybeAutoConnect()
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) webView.goBack() else isEnabled = false
@@ -172,6 +177,34 @@ class MainActivity : AppCompatActivity() {
                 startIntent.action = "START"
                 startForegroundService(startIntent)
             }
+        }
+    }
+
+    /** Re-establishes the VPN after a process restart / fresh launch when a
+     *  network was previously joined (auto_connect pref, or a persisted active
+     *  network in daemon.json). startVpn() reads daemon.json, so the persisted
+     *  mesh IP (e.g. 10.88.1.5) is added to tun0 automatically. */
+    private fun maybeAutoConnect() {
+        val prefs = getSharedPreferences("snet_prefs", MODE_PRIVATE)
+        val auto = prefs.getBoolean("auto_connect", false)
+        if (auto || hasActiveNetwork()) {
+            Log.d(TAG, "auto-connect: starting VPN")
+            requestVpnPermission()
+        }
+    }
+
+    /** True when the Go daemon reports at least one active joined network. */
+    private fun hasActiveNetwork(): Boolean {
+        return try {
+            val raw = SnetBridge.statusRaw()
+            val obj = org.json.JSONObject(raw)
+            val arr = obj.optJSONArray("networks") ?: return false
+            for (i in 0 until arr.length()) {
+                if (arr.getJSONObject(i).optBoolean("active", false)) return true
+            }
+            false
+        } catch (e: Exception) {
+            false
         }
     }
 

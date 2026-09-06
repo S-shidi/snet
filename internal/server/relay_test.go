@@ -69,6 +69,79 @@ func TestRelayPairing(t *testing.T) {
 	}
 }
 
+// TestRelayFanout verifies that a third member of a network receives packets
+// relayed from either of the other two (a network with >2 members). The old
+// pairwise relay could not deliver to a 3rd endpoint at all.
+func TestRelayFanout(t *testing.T) {
+	lc, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := lc.LocalAddr().(*net.UDPAddr).Port
+	lc.Close()
+
+	r := NewRelay(port, 1)
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	a := dialUDP(t, port)
+	b := dialUDP(t, port)
+	c := dialUDP(t, port)
+	defer a.Close()
+	defer b.Close()
+	defer c.Close()
+
+	relay := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+	// Register all three endpoints (first packet identifies the sender).
+	mustWrite := func(c *net.UDPConn, msg string) {
+		if _, err := c.WriteToUDP([]byte(msg), relay); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(a, "reg-a")
+	mustWrite(b, "reg-b")
+	mustWrite(c, "reg-c")
+
+	// Now a real data packet from a must reach both b and c.
+	mustWrite(a, "fanout-abc")
+
+	_ = a.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	buf := make([]byte, 256)
+	gotB := ""
+	for {
+		n, _, err := b.ReadFromUDP(buf)
+		if err != nil {
+			break
+		}
+		gotB = string(buf[:n])
+		if gotB == "fanout-abc" {
+			break
+		}
+	}
+	if gotB != "fanout-abc" {
+		t.Fatalf("b got %q, want fanout-abc", gotB)
+	}
+	gotC := ""
+	for {
+		n, _, err := c.ReadFromUDP(buf)
+		if err != nil {
+			break
+		}
+		gotC = string(buf[:n])
+		if gotC == "fanout-abc" {
+			break
+		}
+	}
+	if gotC != "fanout-abc" {
+		t.Fatalf("c got %q, want fanout-abc", gotC)
+	}
+}
+
 func dialUDP(t *testing.T, relayPort int) *net.UDPConn {
 	t.Helper()
 	c, err := net.ListenUDP("udp", nil)

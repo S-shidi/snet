@@ -199,10 +199,44 @@ class SnetVpnService : VpnService() {
         Log.d(TAG, "startVpn: serverAddr=$serverAddr serverIps=$serverIps")
 
         try {
+            // Register this device's virtual mesh IP(s) on the interface.
+            // VpnService.Builder.addAddress makes the kernel treat them as
+            // local addresses; without this, incoming tunnel packets addressed
+            // to e.g. 10.88.1.5 hit a kernel with no local address for them and
+            // are dropped (or re-routed back into the tunnel by the 10.0.0.0/8
+            // route), so peers can handshake but never exchange traffic.
+            val addedAddresses = mutableSetOf("10.0.0.2")
+            try {
+                val f = java.io.File(configDir, "daemon.json")
+                if (f.exists()) {
+                    val obj = org.json.JSONObject(f.readText())
+                    val nets = obj.optJSONObject("networks")
+                    if (nets != null) {
+                        val it = nets.keys()
+                        while (it.hasNext()) {
+                            val key = it.next()
+                            val net = nets.optJSONObject(key) ?: continue
+                            val ip = net.optString("ip", "")
+                            if (ip.isNotEmpty() && net.optBoolean("active", false)) {
+                                addedAddresses.add(ip)
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+
             val builder = Builder()
                 .setSession("SNET")
                 .setMtu(1420)
-                .addAddress("10.0.0.2", 32)
+            for (ip in addedAddresses) {
+                try {
+                    builder.addAddress(ip, 32)
+                    Log.d(TAG, "registered address $ip/32 on VPN interface")
+                } catch (e: Exception) {
+                    Log.w(TAG, "skip addAddress $ip: ${e.message}")
+                }
+            }
+            builder
                 // Route ONLY the virtual mesh range through the tunnel. A
                 // 0.0.0.0/0 catch-all made every app lose Internet once the
                 // tunnel was up (the virtual LAN has no public NAT exit). By
