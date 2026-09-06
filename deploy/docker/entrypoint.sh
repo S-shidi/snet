@@ -112,6 +112,19 @@ fi
 
 # Start nginx in foreground (keeps container alive)
 echo "[entrypoint] Starting nginx on port 8080 (HTTP) + 8443 (HTTPS)..."
+
+# Inject the ctl-channel token into the nginx reverse-proxy config so the
+# Web UI (/ctl/* proxied to snetd) authenticates. Without it the browser
+# cannot carry the local shared secret and every ctl call 401s.
+if [ -f "$DATA_DIR/ctl-token" ]; then
+    CTL_TOKEN=$(cat "$DATA_DIR/ctl-token")
+    sed -i "s/__CTL_TOKEN__/$CTL_TOKEN/g" /etc/nginx/http.d/default.conf
+    echo "[entrypoint] Injected ctl token into nginx proxy config"
+else
+    sed -i "s/__CTL_TOKEN__//g" /etc/nginx/http.d/default.conf
+    echo "[entrypoint] WARN: no ctl-token yet; nginx will proxy /ctl without auth (legacy)"
+fi
+
 nginx -g "daemon off;" &
 NGINX_PID=$!
 
