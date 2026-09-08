@@ -228,6 +228,7 @@ function buildNetMenu(nid: string, isOwner: boolean, gone: boolean): HTMLElement
   } else {
     menu.innerHTML = `
       <button type="button" data-act="subnets" data-nid="${esc(nid)}">${iconSubnets} 子网路由</button>
+      <button type="button" data-act="members" data-nid="${esc(nid)}">${iconMembers} 查看成员</button>
       <hr/>
       <button type="button" data-act="remove" data-nid="${esc(nid)}" class="danger">${iconExit} 退出网络</button>`;
   }
@@ -884,6 +885,17 @@ function roleLabel(role: string): string {
   return "成员";
 }
 
+/* ── Members modal ────────────────────────────────────────────── */
+// deviceLabel renders "设备名称 (短ID)"; falls back to whichever part is present.
+function deviceLabel(nd: { deviceName?: string; deviceId?: string }): string {
+  const name = nd.deviceName?.trim();
+  const id = nd.deviceId ? nd.deviceId.slice(0, 8) : "";
+  if (name && id) return `${esc(name)} <span class="muted mono">(${esc(id)})</span>`;
+  if (name) return esc(name);
+  if (id) return `<span class="muted mono">${esc(id)}</span>`;
+  return "-";
+}
+
 async function showMembers(nid: string) {
   const mine = (status?.networks ?? []).find((n) => n.networkId === nid);
   if (mine?.serverState === "gone") {
@@ -908,7 +920,7 @@ async function showMembers(nid: string) {
       const subnets = (nd.allowedSubnets?.length ?? 0) > 0
         ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
         : `<span class="muted">-</span>`;
-      return `<tr><td class="mono">${esc(nd.ip)}</td><td>${nd.deviceId ? `<span class="muted mono">${esc(nd.deviceId.slice(0, 8))}</span>` : "-"}</td><td>${online}</td><td>${roleCtl}</td><td>${subnets}</td><td>${kick}</td></tr>`;
+      return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${roleCtl}</td><td>${subnets}</td><td>${kick}</td></tr>`;
     }).join("");
     const pendingRows = (r.pending ?? []).map((p) => {
       return `<tr><td colspan="2"><span class="muted">设备</span> <code>${p.deviceId ? esc(p.deviceId.slice(0, 8)) + "…" : "-"}</code><span class="muted"> 公钥</span> <code>${esc(p.publicKey.slice(0, 12))}…</code></td><td><span class="pill warn">待批准</span></td><td>-</td><td><button data-pend="${esc(p.id)}" class="btn sm" style="background:var(--ok)">批准</button> <button data-pend="${esc(p.id)}" class="btn danger sm">拒绝</button></td></tr>`;
@@ -998,7 +1010,7 @@ async function showMembers(nid: string) {
     const subnets = (nd.allowedSubnets?.length ?? 0) > 0
         ? `<span class="pill subnet-route" title="子网路由：${esc(nd.allowedSubnets!.join(", "))}">${esc(nd.allowedSubnets!.join(", "))}</span>`
         : `<span class="muted">-</span>`;
-    return `<tr><td class="mono">${esc(nd.ip)}</td><td>${nd.deviceId ? `<span class="muted mono">${esc(nd.deviceId.slice(0, 8))}</span>` : "-"}</td><td>${online}</td><td>${subnets}</td><td>${isSelf ? `<span class="muted">自己</span>` : ""}</td></tr>`;
+    return `<tr><td class="mono">${esc(nd.ip)}</td><td>${deviceLabel(nd)}</td><td>${online}</td><td>${subnets}</td><td>${isSelf ? `<span class="muted">自己</span>` : ""}</td></tr>`;
   }).join("");
   openModal({
     title: `成员 · ${nid}`,

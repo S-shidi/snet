@@ -191,9 +191,9 @@ func TestSetNodeRoleHTTP(t *testing.T) {
 	}
 }
 
-// TestListPeersRoleScoping verifies members never see peer deviceId/role/
-// subnets (publicKey is kept so members can build WireGuard tunnels), while
-// owners and admins see full peer details.
+// TestListPeersRoleScoping verifies members see peer device/online info but
+// never peer role/subnets (publicKey is kept so members can build WireGuard
+// tunnels), while owners and admins see full peer details.
 func TestListPeersRoleScoping(t *testing.T) {
 	s := NewStore()
 	created, err := s.CreateNetwork(testKey(1), "dev-owner", "office", "192.168.63.0/24", false)
@@ -212,21 +212,38 @@ func TestListPeersRoleScoping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, reg := range []struct{ id, name string }{{"dev-owner", "办公室 Mac"}, {"dev-member", "成员手机"}} {
+		if err := s.RegisterDevice(reg.id, testKey(4), reg.name); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	// plain member's view of peers: deviceId/role/subnets scrubbed, but the
-	// WireGuard publicKey must remain so the member can build tunnels (hidden
-	// keys would make every peer unreachable by WG).
+	// plain member's view of peers: role/subnets scrubbed, but deviceId,
+	// deviceName (from the device registry) and live online status are shown;
+	// the WireGuard publicKey must remain so the member can build tunnels
+	// (hidden keys would make every peer unreachable by WG).
 	peers, err := s.ListPeers(member.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
+	seen := map[string]protocol.Node{}
 	for _, p := range peers.Peers {
-		if p.DeviceID != "" || p.Role != "" || len(p.AllowedSubnets) != 0 {
+		seen[p.DeviceID+"|"+p.IP] = p
+		if p.Role != "" || len(p.AllowedSubnets) != 0 {
 			t.Fatalf("member leaky peer view: %+v", p)
 		}
 		if p.PublicKey == "" {
 			t.Fatalf("member peer missing publicKey (must be able to build tunnels): %+v", p)
 		}
+	}
+	if o := seen["dev-owner|192.168.63.1"]; o.DeviceName != "办公室 Mac" {
+		t.Fatalf("member peer missing deviceName, got %+v", o)
+	}
+	if peers.Self == nil || peers.Self.DeviceID != "dev-member" {
+		t.Fatalf("member missing self identity: %+v", peers.Self)
+	}
+	if peers.Self == nil || !peers.Self.Online {
+		t.Fatalf("member self should be online (LastSeen refreshed on poll): %+v", peers.Self)
 	}
 
 	// admin view shows full details

@@ -1205,20 +1205,30 @@ func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
 	if s.relayEnabled() {
 		relayEP = net.JoinHostPort(s.relayHost, fmt.Sprint(ns.relayPort))
 	}
+	now := time.Now().Unix()
 	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
 	me := ns.nodes[te.NodeID]
 	isOwnerAdmin := me != nil && (me.Role == "owner" || me.Role == "admin")
+	fillNodeView := func(n2 *protocol.Node) {
+		// Live online status: online within the same TTL the owner view uses.
+		n2.Online = now-n2.LastSeen < int64(lastSeenTTL/time.Second)
+		// The node record stores only the device id; attach the human-readable
+		// device name from the device registry when available.
+		if d := s.devices[n2.DeviceID]; d != nil {
+			n2.DeviceName = d.Name
+		}
+	}
 	for id, n := range ns.nodes {
 		if id != te.NodeID {
 			n2 := *n
-			// 普通成员只看到对端设备名、IP 与在线状态，不暴露 deviceId 与角色。
+			// 普通成员只看到对端设备名、IP、在线状态与设备 ID，不暴露角色。
 			// 注意：publicKey 必须保留——WireGuard 直连/中继都依赖对端公钥建立
 			// 隧道，隐藏它会让成员端无法配置任何 peer。
 			if !isOwnerAdmin {
-				n2.DeviceID = ""
 				n2.Role = ""
 				n2.AllowedSubnets = nil
 			}
+			fillNodeView(&n2)
 			// Keep the peer's self-advertised direct endpoint; the caller
 			// decides whether to use it or fall back to the relay endpoint.
 			peers = append(peers, n2)
@@ -1227,6 +1237,7 @@ func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
 	var self *protocol.Node
 	if me != nil {
 		m2 := *me
+		fillNodeView(&m2)
 		self = &m2
 	}
 	return protocol.PeersResp{
@@ -1875,6 +1886,9 @@ func (s *Store) networkInfoLocked(ns *networkState) protocol.NetworkInfoResp {
 	for _, nd := range ns.nodes {
 		c := *nd
 		c.Online = now-c.LastSeen < int64(lastSeenTTL/time.Second)
+		if d := s.devices[c.DeviceID]; d != nil {
+			c.DeviceName = d.Name
+		}
 		nodes = append(nodes, c)
 	}
 	pending := make([]protocol.PendingNode, 0, len(ns.pending))
