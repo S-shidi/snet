@@ -12,6 +12,20 @@ const (
 	ProbePort            = 8091
 )
 
+// APIVersion is the coordination API major version. Clients send it on every
+// request via VersionHeader; servers advertise it on every response. A major
+// mismatch is rejectable server-side (426) and surfaced client-side as a
+// compatibility warning, so protocol changes never fail silently.
+const APIVersion = 1
+
+// ServerVersion is the human-readable server build version, advertised in
+// /healthz and as X-Snet-Server-Version.
+const ServerVersion = "0.10.0"
+
+// VersionHeader names the request/response header carrying the API major
+// version. Absent header (legacy clients/servers) means "no enforcement".
+const VersionHeader = "X-Snet-Api-Version"
+
 type Network struct {
 	ID               string `json:"id"`
 	PairingCode      string `json:"pairingCode"`

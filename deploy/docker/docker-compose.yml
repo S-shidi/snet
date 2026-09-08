@@ -11,8 +11,8 @@ services:
     ports:
       # Web UI
       - "8080:8080"
-      # WireGuard UDP: 每个网络占用一个端口 (51900起)
-      - "51900-51963:51900-51963/udp"
+      # WireGuard UDP: 每个网络占用一个端口 (52100起，避开服务端 relay 池 51820-52075)
+      - "52100-52163:52100-52163/udp"
     volumes:
       - snet-data:/data
     environment:

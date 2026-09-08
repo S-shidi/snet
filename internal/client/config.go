@@ -51,7 +51,14 @@ type Config struct {
 	DeviceID      string                  `json:"deviceId,omitempty"`
 	ServerCAPath  string                  `json:"serverCaPath,omitempty"`
 	Networks      map[string]*NetworkCfg  `json:"networks,omitempty"`     // key = network ID
-	PendingJoins  map[string]*PendingJoin `json:"pendingJoins,omitempty"` // key = pending ID
+	PendingJoins  map[string]*PendingJoin `json:"pendingJoins,omitempty"` // key = pending ID`
+
+	// KeyRotationDays is the interval in days between automatic WireGuard key
+	// rotations (0 disables rotation). LastKeyRotatedAt is the unix second of
+	// the last rotation (or of daemon startup when unset) used to schedule the
+	// next one; both persist so a restart cannot reset the clock.
+	KeyRotationDays  int   `json:"keyRotationDays,omitempty"`
+	LastKeyRotatedAt int64 `json:"lastKeyRotatedAt,omitempty"`
 
 	// BoundServer is the normalized address this device bound to. The device
 	// is considered bound only when BoundServer is non-empty and matches the

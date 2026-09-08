@@ -11,7 +11,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"snet/internal/protocol"
@@ -30,6 +32,13 @@ type apiClient struct {
 	server string
 	http   *http.Client
 	ctx    context.Context
+
+	// smu guards serverMajor, the API major version reported by the server on
+	// its latest response. 0 means the server did not advertise a version
+	// (legacy server).
+	smu         sync.Mutex
+	serverMajor int
+	warned      bool
 }
 
 // newAPIClient builds an HTTP client for the coordination server. For https
@@ -94,11 +103,13 @@ func (c *apiClient) do(method, path string, token string, body any, out any) err
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	req.Header.Set(protocol.VersionHeader, fmt.Sprint(protocol.APIVersion))
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	c.noteServerVersion(resp.Header.Get(protocol.VersionHeader))
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		var e protocol.ErrResp
@@ -109,6 +120,36 @@ func (c *apiClient) do(method, path string, token string, body any, out any) err
 		return json.Unmarshal(data, out)
 	}
 	return nil
+}
+
+// noteServerVersion records the API major version the server advertises and
+// logs a one-time warning when it is incompatible with this client, so a
+// mismatch surfaces instead of silently misbehaving. A missing header means a
+// legacy server without version negotiation: nothing to check.
+func (c *apiClient) noteServerVersion(v string) {
+	if v == "" {
+		return
+	}
+	major, err := strconv.Atoi(v)
+	if err != nil {
+		return
+	}
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	c.serverMajor = major
+	if major == protocol.APIVersion || c.warned {
+		return
+	}
+	c.warned = true
+	log.Printf("warn: server %s runs api version %d, this client speaks %d; upgrade one side", c.server, major, protocol.APIVersion)
+}
+
+// ServerAPIVersion reports the API major version advertised by the server.
+// The bool is false when no version was advertised (unknown/legacy server).
+func (c *apiClient) ServerAPIVersion() (int, bool) {
+	c.smu.Lock()
+	defer c.smu.Unlock()
+	return c.serverMajor, c.serverMajor != 0
 }
 
 func (c *apiClient) CreateNetwork(publicKey, deviceID, name, subnet string, approvalRequired bool,
@@ -294,4 +335,13 @@ func (c *apiClient) UpdateNodePublicKey(nid, nodeID, deviceID, deviceToken, publ
 		return &httpStatusErr{code: resp.StatusCode, msg: e.Error}
 	}
 	return nil
+}
+
+// UpdateNodePublicKeyByToken rotates a node's WireGuard public key under the
+// node's own bearer token. Used by the daemon's periodic key rotation, which
+// must work without a persisted device token.
+func (c *apiClient) UpdateNodePublicKeyByToken(nid, nodeID, token, publicKey string) error {
+	path := fmt.Sprintf("/api/v1/networks/%s/nodes/%s/publickey", nid, nodeID)
+	body := protocol.UpdateNodePublicKeyReq{PublicKey: publicKey}
+	return c.do(http.MethodPost, path, token, body, nil)
 }

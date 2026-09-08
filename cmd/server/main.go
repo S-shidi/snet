@@ -28,7 +28,7 @@ func main() {
 	tlsKey := flag.String("tls-key", "", "TLS key file (PEM)")
 	relayHost := flag.String("relay-host", "", "public relay host (IP) advertised to peers; enables UDP relay mode")
 	relayBase := flag.Int("relay-base", protocol.DefaultWGPort, "base UDP relay port (one per network)")
-	relayCount := flag.Int("relay-count", 64, "number of assignable UDP relay ports")
+	relayCount := flag.Int("relay-count", 256, "number of assignable UDP relay ports (bound lazily per active network)")
 	requireDeviceAuth := flag.Bool("require-device-auth", os.Getenv("SNET_REQUIRE_DEVICE_AUTH") == "1", "only allow devices that bound an admin-generated authorization code to create/join networks (env SNET_REQUIRE_DEVICE_AUTH=1)")
 	adminReset := flag.Bool("admin-reset", false, "force-reset admin password from env/admin-pass and exit")
 	flag.Parse()
@@ -56,11 +56,12 @@ func main() {
 	if *relayHost != "" {
 		relay = server.NewRelay(*relayBase, *relayCount)
 		relay.SetActivityHook(store.MarkRelayActivity)
-		if err := relay.Start(); err != nil {
-			log.Fatalf("relay: %v", err)
-		}
+		// Lazy binding: a network's relay port is bound on first use instead
+		// of binding the whole pool at startup. Decouples the relay's port
+		// footprint from the assignable pool size.
+		store.SetRelayEnsure(relay.Ensure)
 		defer relay.Close()
-		log.Printf("relay: %d UDP ports from %d via %s", *relayCount, *relayBase, *relayHost)
+		log.Printf("relay: %d assignable UDP ports from %d via %s (lazy binding)", *relayCount, *relayBase, *relayHost)
 	}
 
 	if *zombieTTL > 0 {

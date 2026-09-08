@@ -142,6 +142,83 @@ func TestRelayFanout(t *testing.T) {
 	}
 }
 
+// TestRelayEnsureLazy verifies that a relay created without Start (the lazy
+// production path) binds its advertised port only when Ensure is first called,
+// and that Ensure is a cheap no-op on repeat calls.
+func TestRelayEnsureLazy(t *testing.T) {
+	// grab a free port
+	lc, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := lc.LocalAddr().(*net.UDPAddr).Port
+	lc.Close()
+
+	r := NewRelay(port, 1)
+	// No Start(): the port must be free until Ensure is invoked.
+	if err := assertPortFree(t, port); err != nil {
+		t.Fatalf("relay bound eagerly: %v", err)
+	}
+	if err := r.Ensure(port); err != nil {
+		t.Fatalf("Ensure(advertised) failed: %v", err)
+	}
+	if err := r.Ensure(port); err != nil {
+		t.Fatalf("second Ensure failed (should be no-op): %v", err)
+	}
+	defer r.Close()
+
+	a := dialUDP(t, port)
+	b := dialUDP(t, port)
+	defer a.Close()
+	defer b.Close()
+
+	relay := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+	// register both, then cross-deliver like TestRelayPairing
+	if _, err := a.WriteToUDP([]byte("reg-a"), relay); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.WriteToUDP([]byte("reg-b"), relay); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.WriteToUDP([]byte("from-a2"), relay); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.WriteToUDP([]byte("from-b2"), relay); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = a.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	buf := make([]byte, 256)
+	var gotB string
+	for {
+		n, _, err := b.ReadFromUDP(buf)
+		if err != nil {
+			break
+		}
+		gotB = string(buf[:n])
+		if gotB == "from-a2" {
+			break
+		}
+	}
+	if gotB != "from-a2" {
+		t.Fatalf("b got %q, want from-a2", gotB)
+	}
+}
+
+// assertPortFree reports whether a UDP listener can bind the given port on
+// 127.0.0.1 (i.e. the relay has not bound it eagerly).
+func assertPortFree(t *testing.T, port int) error {
+	t.Helper()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		return err
+	}
+	conn.Close()
+	return nil
+}
+
 func dialUDP(t *testing.T, relayPort int) *net.UDPConn {
 	t.Helper()
 	c, err := net.ListenUDP("udp", nil)

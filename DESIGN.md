@@ -83,7 +83,14 @@ NAT 穿透 / 中继回退 → WireGuard 隧道建立 → 资源互通
 → 300s 后重试直连
 ```
 
-per-peer 状态机：`direct → relay → retry direct`
+per-peer 状态机：`direct → relay → retry direct`（v0.10 起每 peer 的当前
+路径、直连候选进度对 `/ctl/status` 可见，见 `peerPaths`）。
+
+**对称 NAT 候选盲投**：probe 观测到的公网端口常与对端 WireGuard socket 实际
+端口差几个号（对称 NAT 按目标分配连续端口）。direct 模式下 daemon 以
+`buildCandidates` 生成「观测端口 + ±1..±8 交错」的 17 个候选，每候选探测
+`candProbeSec`（4s），握手成功即锁定该候选，不再切换；预算耗尽仍未握手则
+回到 relay。私网段地址（家宽同一 LAN）不做端口扫描，直接单候选。
 
 ### 2.5 子网路由
 
@@ -367,7 +374,7 @@ interface Backend {
 
 - snetd + nginx 反代，web 端口 8080
 - `--network host` + `--cap-add NET_ADMIN` + `--device /dev/net/tun`
-- WG 端口需在 51900+（避免与服务端 relay 冲突）
+- WG 端口需避开中继池 51820-52075（建议 52100+）
 
 ---
 
@@ -386,12 +393,12 @@ interface Backend {
 
 ### 已知局限
 
-- 协调服务器无集群/同步，单点故障
-- 本地 /ctl/* API 无认证
-- relay 端口池有限（最多 64 网络）
-- 协议无版本号，升级兼容性风险
-- daemon.go 过大（~1935 行），职责过重
-- 密钥无轮换机制
+- 协调服务器无集群/同步，单点故障（云盘快照备份 `snet.db`）
+- daemon.go 过大（~2200 行），职责过重
+- 中继二次加密暂无（自托管可信部署，WG 已端到端加密；多租户公服再启用）
+
+> 已解决：`/ctl/*` token 认证、relay 端口池扩大（64→256 + 懒绑定）、
+> 协议版本协商、密钥轮换——见「迭代记录」。
 
 ---
 
@@ -422,8 +429,8 @@ cd desktop && npm install && npm run tauri dev
 |------|------|------|
 | 协调 API | 8090 | HTTPS/TCP |
 | UDP 探测 | 8091 | UDP |
-| 中继 | 51820-51883 | UDP |
-| Docker 客户端 WG | 51900+ | UDP |
+| 中继池 | 51820-52075 | UDP（懒绑定，仅绑活跃网络端口） |
+| Docker 客户端 WG | 52100+ | UDP（避开中继池） |
 | 本地控制 | 19432 | HTTP/loopback |
 
 ### 配置文件路径
@@ -479,3 +486,12 @@ snet://join?nid=xxx&code=yyy&name=家庭NAS共享[&server=xxx]
 7. **平台适配器扩展**：desktop.ts、android.ts、Rust、Kotlin
 
 详细执行计划见项目执行记录。
+
+---
+
+## 11. 迭代记录
+
+| 版本 | 内容 |
+|------|------|
+| v0.10.0 | **中继懒绑定 + 池扩容**：relay 端口按网络首次需求才 bind（`Ensure`），池 64→256；启动零 socket 开销，占用失败自动跳下一候选。<br>**协议/API 版本协商**：客户端请求带 `X-Snet-Api-Version`，服务端不匹配回 426（拒绝响应也盖章），无头老客户端兼容；`/healthz` 暴露 `apiVersion/serverVersion`。<br>**路径遥测**：每 peer 的 direct/relay 路径、候选进度暴露到 `/ctl/status`（`peerPaths`）并记录切换日志——同 LAN 直连是否生效一目了然。<br>**对称 NAT 候选盲投**：`buildCandidates` ±1..±8 交错 17 候选轮询，握手锁定。<br>**密钥定期轮换**：`RotateKeys()` 全有或全无（任一网络推送新公钥失败则本地 key 不动），`keyRotationDays>0` 启每日调度；服务端 publickey 端点支持节点 token 双认证。 |
+| v0.9.x | `/ctl/*` token + bcrypt 认证；Android VPN 线程安全；mesh IP 上报修正、中继 fan-out（>2 成员可达）、Android 冷启动自动重连。 |

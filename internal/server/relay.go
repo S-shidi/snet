@@ -47,6 +47,42 @@ func (r *Relay) SetActivityHook(fn func(port int)) {
 	r.onActivity = fn
 }
 
+// Ensure lazily binds a single relay port if it is not already bound and
+// spawns its read loop. Use in production instead of Start(): only ports of
+// networks that actually need relaying are ever bound, so a large port pool
+// costs no sockets and no boot time. Returns nil when the port is already
+// listening.
+func (r *Relay) Ensure(port int) error {
+	r.mu.Lock()
+	if _, ok := r.conns[port]; ok {
+		r.mu.Unlock()
+		return nil
+	}
+	hook := r.onActivity
+	r.mu.Unlock()
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
+	if err != nil {
+		return err
+	}
+	p := &relayPair{conn: conn, port: port, hook: hook, seen: make(map[string]time.Time)}
+
+	r.mu.Lock()
+	// Another goroutine may have bound the same port while we were listening.
+	if existing, ok := r.conns[port]; ok {
+		r.mu.Unlock()
+		conn.Close()
+		_ = existing
+		return nil
+	}
+	r.conns[port] = p
+	r.mu.Unlock()
+
+	go p.serve()
+	log.Printf("relay: listening on udp :%d (lazy)", port)
+	return nil
+}
+
 // Start binds every port in the range and spawns a read loop per port.
 func (r *Relay) Start() error {
 	for i := 0; i < r.count; i++ {

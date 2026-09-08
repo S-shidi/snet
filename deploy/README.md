@@ -1,10 +1,10 @@
 # Snet 服务器部署
 
 已部署：Hostodo VPS `us-tpa01-8304f360`（66.187.6.46，Debian 13 x86_64，root + systemd）。
-对外服务：`https://snet.uizhi.eu.org:8090`（HTTPS 协调）+ `udp://snet.uizhi.eu.org:51820..51883`（对称 NAT 中继）。
+对外服务：`https://snet.uizhi.eu.org:8090`（HTTPS 协调）+ `udp://snet.uizhi.eu.org:51820..52075`（对称 NAT 中继池，懒绑定按需占用）。
 
 > 原目标 45.202.246.18 因 IP 被墙弃用。域名 `snet.uizhi.eu.org` A 记录指向 66.187.6.46。
-> 协调端口 8090/tcp（HTTPS）、探测 8091/udp、中继 51820..51883/udp 均已放行并验证。
+> 协调端口 8090/tcp（HTTPS）、探测 8091/udp、中继池 51820..52075/udp（可配置 `-relay-count`）均已放行并验证。
 
 ## 1. 上传二进制
 
@@ -63,15 +63,19 @@ ExecStart=/usr/local/snet/bin/server -addr 0.0.0.0:8090 \
   -db /var/lib/snet/snet.db \
   -tls-cert /usr/local/snet/certs/server.pem \
   -tls-key /usr/local/snet/certs/server-key.pem \
-  -relay-host snet.uizhi.eu.org -relay-base 51820 -relay-count 64 \
+  -relay-host snet.uizhi.eu.org -relay-base 51820 -relay-count 256 \
   -zombie-ttl 72h
 ```
 
 > 服务器参数：`-tls-cert/-tls-key` 启用 HTTPS；`-relay-host/-relay-base/-relay-count`
-> 启用 UDP 中继（每网络分配一个端口）。`-behind-proxy` 供反代场景读取 X-Forwarded-For。
+> 启用 UDP 中继（每网络分配一个端口，**懒绑定**：只有活跃网络的端口才 bind；池内
+> 端口被占用时自动跳下一候选，故 `-relay-count` 可取较大值 256 而零启动开销）。
+> `-behind-proxy` 供反代场景读取 X-Forwarded-For。
 > `-zombie-ttl`：任何网络（含 owner 网络）连续 N 时间无设备在线即自动删除；默认 72h，`0` 关闭。
 > **服务端直接创建的网络（管理页「创建网络」）不受清理限制**，且无网主、客户端无法认领。
 > 在线判定 = 客户端 HTTP 轮询（LastActivityAt）+ 中继收包（每端口 5s 节流）双来源。
+> 协议/API 版本协商：客户端请求带 `X-Snet-Api-Version`，不匹配时回 426（响应头
+> `X-Snet-Api-Version` / `X-Snet-Server-Version` 供诊断）；无版本头的旧客户端兼容。
 
 ### 可选：强制设备授权（-require-device-auth）
 
@@ -99,10 +103,10 @@ VNET_REQUIRE_DEVICE_AUTH=1
 ```bash
 iptables -A INPUT -p tcp --dport 8090 -j ACCEPT   # HTTPS 协调
 iptables -A INPUT -p udp --dport 8091 -j ACCEPT   # 公网 IP 探测回显
-iptables -A INPUT -p udp --dport 51820:51883 -j ACCEPT  # UDP 中继池
+iptables -A INPUT -p udp --dport 51820:52075 -j ACCEPT  # UDP 中继池
 ```
 
-> 若 VPS 还有云平台安全组，同样放行 tcp 8090 / udp 8091 / udp 51820-51883。
+> 若 VPS 还有云平台安全组，同样放行 tcp 8090 / udp 8091 / udp 51820-52075。
 
 ## 5. 客户端接入
 
@@ -362,7 +366,7 @@ docker exec snetd snetctl -ctl 127.0.0.1:19432 peers <network-id>
 | `cap_add: NET_ADMIN` | TUN 设备和 WireGuard 必需 |
 | `devices: /dev/net/tun` | 内核 TUN 设备 |
 | `ports: 8080:8080` | Web 控制台（nginx） |
-| `ports: 51900-51963/udp` | WireGuard 数据面（每个网络一个端口） |
+| `ports: 52100-52163/udp` | WireGuard 数据面（每个网络一个端口） |
 | `volumes: snet-data:/data` | 持久化 device.id + daemon.json |
 | `sysctls: net.ipv4.ip_forward=1` | IP 转发（容器内子网路由需要） |
 | `restart: unless-stopped` | 崩溃/重启自动恢复 |
@@ -370,7 +374,7 @@ docker exec snetd snetctl -ctl 127.0.0.1:19432 peers <network-id>
 ### 注意事项
 
 - Web GUI 通过 nginx 代理 snetd 控制 API（127.0.0.1:19432），仅容器内部可访问
-- WireGuard 端口范围 51900-51963（51820-51883 被服务器中继占用）
+- WireGuard 端口范围 52100-52163（避开服务端 relay 池 51820-52075）
 - 容器内 snetd 以 root 运行（TUN 设备创建需要 root 权限）
 - 容器内 nginx 以 nobody 运行，仅提供静态文件和 API 代理
 
@@ -477,9 +481,9 @@ SNET_BIND_CODE=你的设备授权码
    |--------|------|------|
    | 8080 | 8080 | TCP |
    | 8443 | 8443 | TCP |
-   | 51900 | 51900 | UDP |
-   | 51901 | 51901 | UDP |
-   | 51902 | 51902 | UDP |
+   | 52100 | 52100 | UDP |
+   | 52101 | 52101 | UDP |
+   | 52102 | 52102 | UDP |
 4. **存储空间**：
    | 宿主机路径 | 容器路径 | 权限 |
    |-----------|---------|------|
@@ -523,7 +527,7 @@ echo 'mkdir -p /dev/net && mknod /dev/net/tun c 10 200 && chmod 600 /dev/net/tun
 
 - **8080/tcp**：Web UI（HTTP）
 - **8443/tcp**：Web UI（HTTPS）
-- **51900-51963/udp**：WireGuard 数据面
+- **52100-52163/udp**：WireGuard 数据面（避开服务端 relay 池 51820-52075）
 
 ### 验证部署
 

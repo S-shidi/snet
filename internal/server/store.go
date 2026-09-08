@@ -216,6 +216,9 @@ type Store struct {
 	relayHost  string
 	relayBase  int
 	relayCount int
+	// relayEnsure lazily binds a single relay UDP port. Set via SetRelayEnsure;
+	// read under s.mu in ensureRelayPort.
+	relayEnsure func(port int) error
 }
 
 // NewStore returns a purely in-memory store (no persistence). Used by tests
@@ -733,7 +736,9 @@ func (ns *networkState) allocIP() (string, error) {
 
 // SetRelay configures relay mode: relayHost is the public relay address
 // advertised to peers and relayBase/relayCount define the assignable UDP port
-// range. Callers must hold no locks.
+// range. Callers must hold no locks. The relay socket for a network's port is
+// bound lazily (via SetRelayEnsure) the first time the port is needed, so a
+// large relayCount costs nothing at startup.
 func (s *Store) SetRelay(relayHost string, relayBase, relayCount int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -742,19 +747,39 @@ func (s *Store) SetRelay(relayHost string, relayBase, relayCount int) {
 	s.relayCount = relayCount
 }
 
+// SetRelayEnsure registers the function that lazily binds a single relay UDP
+// port. It is called under s.mu from ensureRelayPort; it must not call back
+// into the store without an external goroutine.
+func (s *Store) SetRelayEnsure(fn func(port int) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayEnsure = fn
+}
+
 // relayEnabled reports whether relay mode is on.
 func (s *Store) relayEnabled() bool {
 	return s.relayHost != "" && s.relayCount > 0
 }
 
 // ensureRelayPort assigns a free relay port to the network if it does not
-// already have one. Callers must hold s.mu.
+// already have one, physically binding it through s.relayEnsure. Callers must
+// hold s.mu.
 func (s *Store) ensureRelayPort(ns *networkState) error {
 	if ns.relayPort != 0 {
+		// Re-bind after a restart that left the network with a persisted port.
+		if s.relayEnsure != nil {
+			return s.relayEnsure(ns.relayPort)
+		}
 		return nil
 	}
-	for i := 0; i < s.relayCount; i++ {
-		candidate := s.relayBase + i
+	if s.relayCount <= 0 {
+		return errors.New("no relay ports configured")
+	}
+	// Try each port in the pool; skip ports already taken by another network
+	// or ports that fail to bind (in use by a foreign process). The pool is
+	// scanned a few times so a sparse but busy range still yields a free slot.
+	for i := 0; i < s.relayCount*8; i++ {
+		candidate := s.relayBase + (i % s.relayCount)
 		used := false
 		for _, other := range s.networks {
 			if other.relayPort == candidate {
@@ -763,6 +788,13 @@ func (s *Store) ensureRelayPort(ns *networkState) error {
 			}
 		}
 		if !used {
+			// Bind lazily; on failure (port taken by a foreign process) skip
+			// to the next candidate rather than failing the network.
+			if s.relayEnsure != nil {
+				if err := s.relayEnsure(candidate); err != nil {
+					continue
+				}
+			}
 			ns.relayPort = candidate
 			return s.persistNetwork(ns)
 		}
@@ -2552,6 +2584,36 @@ func (s *Store) UpdateNodePublicKey(deviceID, networkID, nodeID, publicKey strin
 	}
 	if n.DeviceID != deviceID {
 		return ErrUnauthorized
+	}
+	n.PublicKey = publicKey
+	return s.persistNode(networkID, n)
+}
+
+// UpdateNodePublicKeyByToken rotates a node's WireGuard public key under the
+// node's own bearer token. Unlike the device-token path (used for reinstall
+// recovery), this is what the daemon's periodic key rotation uses: it proves
+// possession of the node token and neither party needs to persist a device
+// token client-side.
+func (s *Store) UpdateNodePublicKeyByToken(token, networkID, nodeID, publicKey string) error {
+	if err := validatePublicKey(publicKey); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	if te.NetworkID != networkID || te.NodeID != nodeID {
+		return ErrUnauthorized
+	}
+	ns := s.networks[networkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[nodeID]
+	if n == nil {
+		return ErrNotFound
 	}
 	n.PublicKey = publicKey
 	return s.persistNode(networkID, n)

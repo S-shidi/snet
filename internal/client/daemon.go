@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +81,12 @@ const directGraceSec = 20
 // peer before re-attempting a direct path.
 const directRetrySec = 300
 
+// candProbeSec is how long the daemon stays on one direct-endpoint candidate
+// before rotating to the next. Behind a symmetric NAT the observed public port
+// is usually off by a small delta per destination, so probing a small window
+// of candidate ports (buildCandidates) raises the direct-hit rate.
+const candProbeSec = 4
+
 // netRuntime holds the live tunnel + control loops for one joined network.
 type netRuntime struct {
 	tun *Tunnel
@@ -94,6 +101,17 @@ type peerDirect struct {
 	mode     string // "direct" or "relay"
 	dirSince int64  // unix seconds when the current direct attempt started
 	lastDir  string // direct endpoint last attempted
+	relay    string // network relay endpoint, for telemetry
+
+	// Candidates for the current direct attempt: when the observed public
+	// endpoint does not complete a handshake, the daemon rotates through a
+	// small window of nearby ports. Can be empty (LAN peers etc.) meaning
+	// "do not probe".
+	cands     []string
+	candIdx   int
+	candStart int64 // unix second the current candidate attempt began
+	baseHS    int64 // peer handshake second observed when probing started
+	locked    bool  // a handshake succeeded on the current candidate; stop probing
 }
 
 // Daemon coordinates the local tunnels and the coordination server for any
@@ -147,7 +165,17 @@ type Daemon struct {
 	androidTunFD int
 	// hostnameCache caches the machine hostname for device registration.
 	hostnameCache string
+	// keyRotationStop signals the periodic key-rotation goroutine to exit.
+	keyRotationStop chan struct{}
+	// keyRotating guards against concurrent rotations (loop tick vs manual
+	// trigger). Guarded by d.mu.
+	keyRotating bool
 }
+
+// defaultKeyRotationDays is assumed when KeyRotationDays is unset (<=0) but a
+// caller explicitly enables rotation: 30 days is a sane forward-secrecy
+// interval for home/lab meshes.
+const defaultKeyRotationDays = 30
 
 func NewDaemon(cfg *Config) *Daemon {
 	return NewDaemonAt(cfg, "")
@@ -313,6 +341,148 @@ func (d *Daemon) ensureKeys(serverAddr string, port int) error {
 	if d.deviceIDFile != "" {
 		_ = SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey)
 	}
+	return nil
+}
+
+// SetKeyRotationDays configures the automatic WireGuard key rotation interval
+// in days (0 disables it) and (re)starts the background scheduler when enabled.
+func (d *Daemon) SetKeyRotationDays(days int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if days <= 0 {
+		d.cfg.KeyRotationDays = 0
+		if d.keyRotationStop != nil {
+			close(d.keyRotationStop)
+			d.keyRotationStop = nil
+		}
+		return
+	}
+	d.cfg.KeyRotationDays = days
+	d.startKeyRotationLocked()
+}
+
+// startKeyRotationLocked starts the daily key-rotation scheduler when it is
+// not already running. Caller must hold d.mu.
+func (d *Daemon) startKeyRotationLocked() {
+	if d.keyRotationStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	d.keyRotationStop = stop
+	go d.keyRotationLoop(stop)
+}
+
+// keyRotationLoop checks once a day whether the WireGuard keypair is due for
+// rotation and rotates it when so. The anchor (LastKeyRotatedAt) persists, so
+// restarting the daemon does not reset the schedule.
+func (d *Daemon) keyRotationLoop(stop chan struct{}) {
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+		}
+		d.mu.Lock()
+		days := d.cfg.KeyRotationDays
+		last := d.cfg.LastKeyRotatedAt
+		hasKey := d.cfg.PrivateKey != ""
+		d.mu.Unlock()
+		if !hasKey || days <= 0 {
+			continue
+		}
+		if last == 0 {
+			// First daemon run with rotation enabled: anchor the schedule now
+			// so an existing (possibly long-lived) key is not rotated
+			// immediately on upgrade.
+			d.mu.Lock()
+			if d.cfg.LastKeyRotatedAt == 0 {
+				d.cfg.LastKeyRotatedAt = time.Now().Unix()
+				_ = d.save()
+			}
+			d.mu.Unlock()
+			continue
+		}
+		due := time.Now().Unix()-last >= int64(days)*24*3600
+		if !due {
+			continue
+		}
+		if err := d.RotateKeys(); err != nil {
+			log.Printf("key rotation: %v", err)
+		}
+	}
+}
+
+// RotateKeys rotates the daemon's WireGuard keypair and pushes the new public
+// key to every active network's coordination server before switching the local
+// key, so tunnels are rebuilt on the new identity. Rotation is atomic: if any
+// network rejects the new key (stale token, unreachable server, incompatible
+// version), the local key is left unchanged and the error is returned, so no
+// network is ever broken by a half-applied rotation.
+func (d *Daemon) RotateKeys() error {
+	d.mu.Lock()
+	if d.keyRotating {
+		d.mu.Unlock()
+		return fmt.Errorf("key rotation already in progress")
+	}
+	d.keyRotating = true
+	serverAddr := d.cfg.ServerAddr
+	serverCA := d.cfg.ServerCAPath
+	type target struct {
+		nid, nodeID, token, name string
+	}
+	var targets []target
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active && nc.Token != "" {
+			targets = append(targets, target{nid, nc.NodeID, nc.Token, nc.Name})
+		}
+	}
+	deviceID := d.cfg.DeviceID
+	d.mu.Unlock()
+
+	defer func() {
+		d.mu.Lock()
+		d.keyRotating = false
+		d.mu.Unlock()
+	}()
+
+	priv, pub, err := GenerateKeyPair()
+	if err != nil {
+		return fmt.Errorf("generate keypair: %w", err)
+	}
+	newPrivHex := b64ToHex(priv)
+
+	api := newAPIClient(serverAddr, serverCA, d.ctx)
+	for _, t := range targets {
+		if err := api.UpdateNodePublicKeyByToken(t.nid, t.nodeID, t.token, pub); err != nil {
+			return fmt.Errorf("rotate %s (%s): %w", t.nid, t.name, err)
+		}
+		log.Printf("key rotation: network %s (%s) now advertises the new public key", t.nid, t.name)
+	}
+
+	now := time.Now().Unix()
+	d.mu.Lock()
+	d.cfg.PrivateKey = newPrivHex
+	d.cfg.LastKeyRotatedAt = now
+	if d.deviceIDFile != "" {
+		_ = SaveDeviceKeypair(d.deviceIDFile, deviceID, newPrivHex)
+	}
+	if err := d.save(); err != nil {
+		d.mu.Unlock()
+		return fmt.Errorf("save rotated key: %w", err)
+	}
+	// Rebuild tunnels so wireguard-go starts using the new keypair. Networking
+	// glitches during this window self-heal via keepalives and the poll loop.
+	for nid, nc := range d.cfg.Networks {
+		if nc.Active {
+			if err := d.bringUp(nid); err != nil {
+				log.Printf("key rotation: rebuild %s: %v", nid, err)
+			}
+		}
+	}
+	d.mu.Unlock()
+	log.Printf("key rotation: new WireGuard keypair active (%d network(s) updated)", len(targets))
 	return nil
 }
 
@@ -955,6 +1125,10 @@ func (d *Daemon) Start() error {
 	if d.cfg.Bound() {
 		d.startBindCheckLocked()
 	}
+	// Periodic WireGuard key rotation (KeyRotationDays > 0) for forward secrecy.
+	if d.cfg.KeyRotationDays > 0 {
+		d.startKeyRotationLocked()
+	}
 	// One-shot startup probe of every joined network so the UI can render a
 	// "已删除" badge for networks that the owner has removed from the server.
 	// Run asynchronously so daemon startup is not blocked on the server.
@@ -1143,8 +1317,14 @@ func (d *Daemon) localEndpointLocked(port int) (string, error) {
 // handshake completes within directGraceSec; peers stay on the relay until
 // directRetrySec elapses, then retry the direct path. Without relay the
 // peer's self-advertised public endpoint is used as before.
+//
+// Behind a symmetric NAT the public port observed by the probe often differs
+// from the port the peer's WireGuard socket actually uses toward us; while in
+// direct mode the daemon therefore rotates through a small window of nearby
+// candidate ports (buildCandidates) until a handshake completes, improving the
+// direct-hit rate before falling back to the relay.
 // Caller must hold no lock; the reply is a fresh slice.
-func (d *Daemon) resolvePeerEndpoints(rt *netRuntime, st protocol.PeersResp, localSubs []string) []protocol.Node {
+func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.PeersResp, localSubs []string) []protocol.Node {
 	out := make([]protocol.Node, len(st.Peers))
 	copy(out, st.Peers)
 	stats, _ := rt.tun.Stats()
@@ -1167,37 +1347,69 @@ func (d *Daemon) resolvePeerEndpoints(rt *netRuntime, st protocol.PeersResp, loc
 			}
 			rt.peerDirect[p.ID] = st2
 		}
+		st2.relay = st.RelayEndpoint
 		if st2.mode == "relay" {
 			// Periodically retry the direct path.
 			if st.RelayEndpoint != "" && direct != "" && now-st2.dirSince >= directRetrySec {
 				st2.mode = "direct"
 				st2.dirSince = now
 				st2.lastDir = direct
+				st2.cands = nil
+				log.Printf("path %s: peer %s %s -> direct (%s)", nid, p.ID, "relay", direct)
 			}
 		}
 		if st2.mode == "direct" {
 			switch {
 			case direct == "":
 				// Candidate disappeared; fall back to the relay.
+				if st.RelayEndpoint != "" {
+					log.Printf("path %s: peer %s direct -> relay (no direct candidate)", nid, p.ID)
+				}
 				st2.mode = "relay"
 				st2.dirSince = now
 			case st2.lastDir != direct:
-				// Direct candidate changed; restart the direct timer.
+				// Direct candidate changed; restart the direct timer and the
+				// candidate probe window.
 				st2.lastDir = direct
 				st2.dirSince = now
-			default:
-				// Check whether a handshake completed while on direct.
-				hs := stats[p.PublicKey].LastHandshakeSec
-				if !(hs >= st2.dirSince) && now-st2.dirSince >= directGraceSec {
-					// No handshake within grace: fall back to the relay.
-					if st.RelayEndpoint != "" {
-						st2.mode = "relay"
-						st2.dirSince = now
-					}
+				st2.cands = nil
+			}
+		}
+		if st2.mode == "direct" && direct != "" {
+			hs := stats[p.PublicKey].LastHandshakeSec
+			// (Re)build the candidate window when it is missing or the direct
+			// candidate changed. baseHS anchors "was there a new handshake
+			// since probing started" so a relay-era handshake cannot falsely
+			// lock a direct candidate.
+			if len(st2.cands) == 0 {
+				st2.cands = buildCandidates(direct)
+				st2.candIdx = 0
+				st2.candStart = now
+				st2.baseHS = hs
+				st2.locked = false
+			}
+			if !st2.locked && hs > st2.baseHS {
+				st2.locked = true
+				log.Printf("path %s: peer %s direct handshake via %s (candidate %d/%d)", nid, p.ID, direct, st2.candIdx+1, len(st2.cands))
+			}
+			if !st2.locked && now-st2.candStart >= candProbeSec {
+				if st2.candIdx+1 < len(st2.cands) {
+					st2.candIdx++
+					st2.candStart = now
+					st2.baseHS = hs
+					log.Printf("path %s: peer %s probing direct candidate %d/%d (%s)", nid, p.ID, st2.candIdx+1, len(st2.cands), st2.cands[st2.candIdx])
 				}
 			}
-			if st2.mode == "direct" && direct != "" {
-				p.Endpoint = direct
+			if st2.candIdx < len(st2.cands) {
+				p.Endpoint = st2.cands[st2.candIdx]
+			}
+			// Fall back to the relay when the direct budget is exhausted or
+			// every candidate has been tried without a handshake.
+			candsDone := !st2.locked && st2.candIdx+1 >= len(st2.cands) && now-st2.candStart >= candProbeSec
+			if st.RelayEndpoint != "" && !st2.locked && (now-st2.dirSince >= directGraceSec || candsDone) {
+				log.Printf("path %s: peer %s direct -> relay (no direct handshake in %ds)", nid, p.ID, now-st2.dirSince)
+				st2.mode = "relay"
+				st2.dirSince = now
 			}
 		}
 		if st2.mode == "relay" && st.RelayEndpoint != "" {
@@ -1206,6 +1418,46 @@ func (d *Daemon) resolvePeerEndpoints(rt *netRuntime, st protocol.PeersResp, loc
 	}
 	return out
 }
+
+// buildCandidates expands a direct endpoint into the ordered set of endpoints
+// to probe. LAN/private endpoints are tried as-is (no probing window: they are
+// either reachable or not, and a wrong port on the local segment buys nothing).
+// Public endpoints get the observed port first, then a deterministic window of
+// nearby ports (NATs tend to allocate consecutive ports per destination), so
+// a symmetric-NAT peer whose real port is offset from the probe-observed one
+// is still reached directly.
+func buildCandidates(direct string) []string {
+	host, port, err := net.SplitHostPort(direct)
+	if err != nil {
+		return []string{direct}
+	}
+	base, err := strconv.Atoi(port)
+	if err != nil || base <= 0 || base > 65535 {
+		return []string{direct}
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()) {
+		return []string{direct}
+	}
+	out := make([]string, 0, 1+2*maxPortDelta)
+	out = append(out, direct)
+	for delta := 1; delta <= maxPortDelta; delta++ {
+		for _, d := range []int{-delta, delta} {
+			cand := base + d
+			if cand < 1 || cand > 65535 {
+				continue
+			}
+			out = append(out, net.JoinHostPort(host, fmt.Sprint(cand)))
+		}
+	}
+	return out
+}
+
+// maxPortDelta bounds how far from the observed port the candidate window
+// reaches. Eight in each direction (17 candidates total, ~4s each ≈ 68s worst
+// case) is generous for consecutive-allocating NATs while keeping the probe
+// burst tame; directGraceSec caps the overall direct budget anyway.
+const maxPortDelta = 8
 
 // endpointIfLocal returns the peer's local endpoint when its IP falls inside
 // one of our own private LAN subnets (same-segment direct path), and empty
@@ -1339,7 +1591,7 @@ func (d *Daemon) pollLoop(nid string) {
 				log.Printf("save name %s: %v", nid, err)
 			}
 		}
-		peers := d.resolvePeerEndpoints(rt, st, d.DetectLocalSubnets())
+		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets())
 		for i := range peers {
 			log.Printf("poll peers %s: peer %d id=%s pub=%s endpoint=%s local=%s online=%v", nid, i, peers[i].ID, peers[i].PublicKey, peers[i].Endpoint, peers[i].LocalEndpoint, peers[i].Online)
 		}
@@ -1946,6 +2198,10 @@ func (d *Daemon) Close() {
 		close(d.retryStop)
 		d.retryStop = nil
 	}
+	if d.keyRotationStop != nil {
+		close(d.keyRotationStop)
+		d.keyRotationStop = nil
+	}
 	d.netErrs = make(map[string]string)
 	d.retryPending = make(map[string]struct{})
 	d.retryAttempts = make(map[string]int)
@@ -1975,6 +2231,29 @@ func (d *Daemon) HaltTunnels() {
 			delete(d.nets, nid)
 		}
 	}
+}
+
+// peerPathInfo exposes, per peer, the current routing path (direct vs relay),
+// the mode duration, the direct candidate being tried, the relay fallback, and
+// candidate-probe progress. It renders the daemon's path decisions observable
+// so misrouting through a remote relay is diagnosable. Caller must hold d.mu.
+func peerPathInfo(rt *netRuntime) map[string]any {
+	out := make(map[string]any, len(rt.peerDirect))
+	for id, pd := range rt.peerDirect {
+		info := map[string]any{
+			"mode":  pd.mode,
+			"since": pd.dirSince,
+			"direct": pd.lastDir,
+			"relay": pd.relay,
+		}
+		if len(pd.cands) > 0 {
+			info["candidates"] = len(pd.cands)
+			info["candidateIdx"] = pd.candIdx + 1
+		}
+		info["locked"] = pd.locked
+		out[id] = info
+	}
+	return out
 }
 
 // Status snapshot for the control API.
@@ -2014,6 +2293,7 @@ func (d *Daemon) Status() (map[string]any, error) {
 					entry["peerStats"] = stats
 				}
 			}
+			entry["peerPaths"] = peerPathInfo(rt)
 		}
 		if statePtr != nil && *statePtr == "gone" {
 			entry["error"] = netGoneErr.Error()

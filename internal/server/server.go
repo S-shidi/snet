@@ -139,7 +139,11 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":      "ok",
+			"apiVersion":  protocol.APIVersion,
+			"serverVersion": protocol.ServerVersion,
+		})
 	})
 
 	mux.HandleFunc("POST /api/v1/networks", func(w http.ResponseWriter, r *http.Request) {
@@ -267,29 +271,40 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	})
 
 	// Update a node's WireGuard public key. Used after a client reinstall
-	// when the device generates a new keypair. Authenticated by deviceToken.
+	// when the device generates a new keypair. Authenticated by deviceToken or
+	// by the node's own bearer token (used by periodic client-side rotation).
 	mux.HandleFunc("POST /api/v1/networks/{nid}/nodes/{nodeID}/publickey", func(w http.ResponseWriter, r *http.Request) {
 		nid := r.PathValue("nid")
 		nodeID := r.PathValue("nodeID")
-		deviceToken := deviceTokenOf(r)
-		if deviceToken == "" {
-			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
-			return
-		}
 		var req protocol.UpdateNodePublicKeyReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeErr(w, http.StatusBadRequest, ErrBadJSON)
 			return
 		}
-		if req.DeviceID == "" || req.PublicKey == "" {
-			writeErr(w, http.StatusBadRequest, errors.New("缺少deviceId或publicKey"))
+		if req.PublicKey == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("缺少publicKey"))
 			return
 		}
-		if !s.ValidateDeviceToken(req.DeviceID, deviceToken) {
-			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+		if deviceToken := deviceTokenOf(r); deviceToken != "" {
+			if req.DeviceID == "" {
+				writeErr(w, http.StatusBadRequest, errors.New("缺少deviceId"))
+				return
+			}
+			if !s.ValidateDeviceToken(req.DeviceID, deviceToken) {
+				writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+				return
+			}
+			if err := s.UpdateNodePublicKey(req.DeviceID, nid, nodeID, req.PublicKey); err != nil {
+				handleStoreErr(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if err := s.UpdateNodePublicKey(req.DeviceID, nid, nodeID, req.PublicKey); err != nil {
+		// Node-token path: the node may rotate its own public key. This is the
+		// channel periodic client-side key rotation uses, since the daemon
+		// never persists the device token.
+		if err := s.UpdateNodePublicKeyByToken(tokenOf(r), nid, nodeID, req.PublicKey); err != nil {
 			handleStoreErr(w, err)
 			return
 		}
@@ -734,7 +749,55 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	return secureHeaders(logRequests(limitBody(mux)))
+	return secureHeaders(logRequests(versionMiddleware(limitBody(mux))))
+}
+
+// versionMiddleware enforces the coordination API major version: a client that
+// sends a VersionHeader different from the server's APIVersion is answered
+// with 426, while legacy clients that send no header keep working. Every
+// response (including errors) advertises the server version.
+func versionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		vw := &versionRespWriter{ResponseWriter: w}
+		if v := r.Header.Get(protocol.VersionHeader); v != "" {
+			if major, err := strconv.Atoi(v); err == nil && major != protocol.APIVersion {
+				// Advertise the server version even on rejection, so the
+				// client can diagnose and upgrade.
+				vw.stamp()
+				writeErr(vw, http.StatusUpgradeRequired,
+					fmt.Errorf("incompatible api version %d (server supports %d)", major, protocol.APIVersion))
+				return
+			}
+		}
+		next.ServeHTTP(vw, r)
+	})
+}
+
+// versionRespWriter stamps the API version onto every response before the
+// status line is written, regardless of whether the handler writes the header
+// explicitly or relies on implicit WriteHeader from Write.
+type versionRespWriter struct {
+	http.ResponseWriter
+	stamped bool
+}
+
+func (vw *versionRespWriter) stamp() {
+	if vw.stamped {
+		return
+	}
+	vw.Header().Set(protocol.VersionHeader, fmt.Sprint(protocol.APIVersion))
+	vw.Header().Set("X-Snet-Server-Version", protocol.ServerVersion)
+	vw.stamped = true
+}
+
+func (vw *versionRespWriter) WriteHeader(code int) {
+	vw.stamp()
+	vw.ResponseWriter.WriteHeader(code)
+}
+
+func (vw *versionRespWriter) Write(b []byte) (int, error) {
+	vw.stamp()
+	return vw.ResponseWriter.Write(b)
 }
 
 // secureHeaders sets baseline protective response headers. API and admin

@@ -2,9 +2,9 @@
 
 端到端加密的私有虚拟局域网（WireGuard 数据面 + HTTPS 协调 + UDP 中继）。
 
-- **服务端**（Go）：网络协调、成员管理、NAT 穿透探测、UDP 中继、Web 管理页（分页列表、总览统计）、设备授权码、设备命名。安全加固：限流、安全头（CSP/HSTS/no-store）、XFF 最右、凭据加锁、引导互斥。
+- **服务端**（Go）：网络协调、成员管理、NAT 穿透探测、UDP 中继（懒绑定，按需端口）、Web 管理页（分页列表、总览统计）、设备授权码、设备命名。安全加固：限流、安全头（CSP/HSTS/no-store）、XFF 最右、凭据加锁、引导互斥。协议/API 版本协商（不匹配回 426）。
 - **客户端**（Go daemon + Tauri 桌面端）：macOS（launchd）、Windows（SCM 服务）、Linux 均支持；
-  数据面优先 NAT 打洞直连，打不通时经服务器中继转发。设备名自动上报（首次连接填充，管理端改名优先）。
+  数据面优先 NAT 打洞直连（公网站点做 ±1..±8 候选盲投），打不通时经服务器中继转发；每 peer 直连/中继路径可观测（`/ctl/status` `peerPaths`）。设备名自动上报（首次连接填充，管理端改名优先）。支持密钥定期轮换。
 - **Android 端**（WebView UI + gomobile AAR）：内置 VPN 服务，扫码/链接加入网络。设备名取 manufacturer+model。
 - **Docker 客户端**：支持在 Docker 主机、VPS、群晖 NAS 等环境容器化部署客户端。
 - **手机**：服务器端生成节点配置，用 WireGuard App 导入（见 `deploy/phone-android.conf` 模板）。
@@ -102,9 +102,9 @@ cd desktop/src-tauri && cargo check
 支持在 Docker 主机、VPS、群晖 NAS 等环境容器化部署客户端。
 
 **VPS 部署要点**：
-1. 服务端和客户端不能使用相同端口（51820-51883 为服务端 relay 范围）
+1. 服务端和客户端不能使用相同端口（51820-52075 为服务端 relay 池，懒绑定按需占用）
 2. Docker 客户端需使用 `--network host` + `--cap-add NET_ADMIN` + `--device /dev/net/tun`
-3. 客户端 WG 端口需配置在 relay 范围之外（如 51900）
+3. 客户端 WG 端口需配置在 relay 池之外（如 52100）
 
 **构建 Docker 镜像**：
 ```bash
@@ -139,8 +139,8 @@ docker run -d --name snetd --network host \
    - Android：硬件绑定（Build.* + ANDROID_ID → SHA-256），仅硬件变更时改变
    - 其他平台：文件持久化（`device.id`），支持重装恢复
 3. **端口规划**：
-   - 服务端：8090（HTTPS API）、8091（探测）、51820-51883（relay）
-   - 客户端 Docker：51900+（WG 端口，避免与服务端冲突）
+   - 服务端：8090（HTTPS API）、8091（探测）、51820-52075（relay 池，懒绑定）
+   - 客户端 Docker：52100+（WG 端口，避免与服务端 relay 池冲突）
 4. **配置文件路径**：
    - macOS：`/usr/local/snet/daemon.json`
    - Docker：`/data/daemon.json`（通过 volume 持久化）

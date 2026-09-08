@@ -1208,3 +1208,97 @@ func TestDetectLocalSubnets(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCandidates(t *testing.T) {
+	// Public endpoint: observed port first, then ±1..±8 interleaved.
+	got := buildCandidates("203.0.113.9:51820")
+	want := []string{
+		"203.0.113.9:51820",
+		"203.0.113.9:51819", "203.0.113.9:51821",
+		"203.0.113.9:51818", "203.0.113.9:51822",
+		"203.0.113.9:51817", "203.0.113.9:51823",
+		"203.0.113.9:51816", "203.0.113.9:51824",
+		"203.0.113.9:51815", "203.0.113.9:51825",
+		"203.0.113.9:51814", "203.0.113.9:51826",
+		"203.0.113.9:51813", "203.0.113.9:51827",
+		"203.0.113.9:51812", "203.0.113.9:51828",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("candidate[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// Private endpoints are used as-is: no probe window.
+	for _, ep := range []string{"10.7.86.111:51820", "192.168.1.5:12345", "127.0.0.1:51820", "169.254.1.1:9"} {
+		cands := buildCandidates(ep)
+		if len(cands) != 1 || cands[0] != ep {
+			t.Errorf("buildCandidates(%q) = %v, want [%q]", ep, cands, ep)
+		}
+	}
+
+	// Port bounds are respected near 1 and 65535.
+	low := buildCandidates("203.0.113.9:2")
+	for _, c := range low {
+		if _, p, err := net.SplitHostPort(c); err != nil || p == "0" || p == "-1" {
+			t.Errorf("invalid low-end candidate %q", c)
+		}
+	}
+}
+
+// TestRotateKeysNoNetworks rotates the identity when there are no networks: the
+// key changes, the schedule anchor is set, and no error is returned.
+// testWGKey returns a format-valid WireGuard public key for tests.
+func testWGKey(t *testing.T, i int) string {
+	t.Helper()
+	_, pub, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = i
+	return pub
+}
+
+func TestRotateKeysNoNetworks(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	oldKey := d.cfg.PrivateKey
+	if err := d.RotateKeys(); err != nil {
+		t.Fatalf("RotateKeys: %v", err)
+	}
+	if d.cfg.PrivateKey == "" || d.cfg.PrivateKey == oldKey {
+		t.Fatalf("key not rotated: %q -> %q", oldKey, d.cfg.PrivateKey)
+	}
+	if d.cfg.LastKeyRotatedAt == 0 {
+		t.Fatal("lastKeyRotatedAt not anchored")
+	}
+}
+
+// TestRotateKeysAbortsOnBadToken verifies rotation is all-or-nothing: when a
+// network's server exchange fails (bad token), the local key is left unchanged
+// so no live network is ever broken by a half-applied rotation.
+func TestRotateKeysAbortsOnBadToken(t *testing.T) {
+	srv := server.NewStore()
+	ts := httptest.NewServer(server.NewHandler(srv, server.Options{}))
+	defer ts.Close()
+
+	created, err := srv.CreateNetwork(testWGKey(t, 30), "device-rot", "rot", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := newTestDaemon(t)
+	oldKey := d.cfg.PrivateKey
+	d.cfg.ServerAddr = ts.URL
+	d.cfg.Networks = map[string]*NetworkCfg{
+		created.NetworkID: {NodeID: "node-does-not-exist", Token: "WRONGTOKEN", Active: true},
+	}
+	if err := d.RotateKeys(); err == nil {
+		t.Fatal("RotateKeys succeeded with a bad token, want error")
+	}
+	if d.cfg.PrivateKey != oldKey {
+		t.Fatal("local key changed despite failed rotation")
+	}
+}
