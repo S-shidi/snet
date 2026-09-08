@@ -257,6 +257,11 @@ func (c *apiClient) SetEndpointFor(nid, nodeID, token, endpoint, localEndpoint s
 		token, protocol.SetEndpointReq{Endpoint: endpoint, LocalEndpoint: localEndpoint}, nil)
 }
 
+func (c *apiClient) SetEndpointV6For(nid, nodeID, token, endpointV6 string) error {
+	return c.do(http.MethodPut, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/endpoint",
+		token, protocol.SetEndpointReq{EndpointV6: endpointV6}, nil)
+}
+
 func (c *apiClient) ListPeers(nid, token string) ([]protocol.Node, error) {
 	var out protocol.PeersResp
 	err := c.do(http.MethodGet, "/api/v1/networks/"+nid+"/peers", token, nil, &out)

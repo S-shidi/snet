@@ -1249,6 +1249,80 @@ func TestBuildCandidates(t *testing.T) {
 	}
 }
 
+// TestBuildCandidatesIPv6 verifies global IPv6 endpoints get a single
+// candidate (IPv6 has no NAT, so a port window buys nothing).
+func TestBuildCandidatesIPv6(t *testing.T) {
+	for _, ep := range []string{"[2001:db8::1]:51820", "[2606:65c0:20:493::e3dd]:51820", "[fe80::1%en0]:51820"} {
+		cands := buildCandidates(ep)
+		if len(cands) != 1 || cands[0] != ep {
+			t.Errorf("buildCandidates(%q) = %v, want single candidate [%q]", ep, cands, ep)
+		}
+	}
+}
+
+// TestBuildPeerCandidates verifies the ordered direct-candidate set: global
+// IPv6 first, then the v4 endpoint, then live relay mappings (excluding our
+// own public IP), then the nearby-port window, all deduplicated.
+func TestBuildPeerCandidates(t *testing.T) {
+	got := buildPeerCandidates(
+		"203.0.113.9:51820",
+		"[2001:db8::1]:51820",
+		[]string{"117.147.106.140:51820", "39.171.241.117:51991", "203.0.113.9:51820"},
+		"39.171.241.117", // our own public IP must be excluded
+	)
+	wantStart := []string{
+		"[2001:db8::1]:51820",
+		"203.0.113.9:51820",
+		"117.147.106.140:51820",
+	}
+	if len(got) < len(wantStart) {
+		t.Fatalf("candidates too short: %v", got)
+	}
+	for i := range wantStart {
+		if got[i] != wantStart[i] {
+			t.Fatalf("candidate[%d] = %q, want %q (full: %v)", i, got[i], wantStart[i], got)
+		}
+	}
+	seen := make(map[string]bool)
+	for _, c := range got {
+		if seen[c] {
+			t.Fatalf("duplicate candidate %q in %v", c, got)
+		}
+		if c == "39.171.241.117:51991" {
+			t.Fatalf("own mapping leaked into candidates: %v", got)
+		}
+		seen[c] = true
+	}
+	// The v4 window must trail the live relay mappings.
+	if got[3] != "203.0.113.9:51819" {
+		t.Fatalf("candidate[3] = %q, want window start %q (full: %v)", got[3], "203.0.113.9:51819", got)
+	}
+}
+
+// TestGlobalIPv6Sanity ensures globalIPv6 either finds nothing or returns a
+// genuinely global, non-private endpoint — never a ULA, link-local or
+// loopback address (those are invisible / unroutable across NAT-free v6).
+func TestGlobalIPv6Sanity(t *testing.T) {
+	ep := globalIPv6(51820)
+	if ep == "" {
+		return // host has no global v6; nothing to advertise
+	}
+	host, _, err := net.SplitHostPort(ep)
+	if err != nil {
+		t.Fatalf("bad endpoint %q: %v", ep, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		t.Fatalf("endpoint host %q not an IP", host)
+	}
+	if ip.To4() != nil {
+		t.Fatalf("expected IPv6 endpoint, got %q", ep)
+	}
+	if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+		t.Fatalf("globalIPv6 returned non-routable address %q", ep)
+	}
+}
+
 // TestRotateKeysNoNetworks rotates the identity when there are no networks: the
 // key changes, the schedule anchor is set, and no error is returned.
 // testWGKey returns a format-valid WireGuard public key for tests.

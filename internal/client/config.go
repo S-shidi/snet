@@ -38,7 +38,11 @@ type NetworkCfg struct {
 	Active         bool     `json:"active"`
 	Owner          bool     `json:"owner,omitempty"`
 	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
-	JoinedAt       string   `json:"joinedAt,omitempty"`
+	// PublicIP is the last public (NAT-observed) IPv4 the daemon advertised
+	// for this network; restored on restart so relay-observed peer lists can
+	// immediately exclude our own mapping without awaiting a fresh probe.
+	PublicIP string `json:"publicIP,omitempty"`
+	JoinedAt string `json:"joinedAt,omitempty"`
 }
 
 // Config is the daemon configuration (v2, multi-network). PrivateKey is the

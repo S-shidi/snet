@@ -20,11 +20,24 @@ const APIVersion = 1
 
 // ServerVersion is the human-readable server build version, advertised in
 // /healthz and as X-Snet-Server-Version.
-const ServerVersion = "0.10.0"
+const ServerVersion = "0.11.0"
 
 // VersionHeader names the request/response header carrying the API major
 // version. Absent header (legacy clients/servers) means "no enforcement".
 const VersionHeader = "X-Snet-Api-Version"
+
+// RelayCtrlPrefix leads each control packet a client sends to a network's
+// relay port. WireGuard messages start with a type byte of 1..4, so this
+// prefix cannot collide with real tunnel traffic. Old relays merely fan the
+// packet out to other peers, where it is dropped; the protocol is backwards
+// compatible.
+const RelayCtrlPrefix = "\xfeSNET1"
+
+// Relay control operation names.
+const (
+	RelayCtrlWhoami = "whoami" // ask the relay for the observed source endpoint
+	RelayCtrlGroup  = "group"  // ask the relay for all live peer endpoints
+)
 
 type Network struct {
 	ID               string `json:"id"`
@@ -56,11 +69,15 @@ type Node struct {
 	IP        string `json:"ip"`
 	PublicKey string `json:"publicKey"`
 	Endpoint  string `json:"endpoint"`
+	// EndpointV6 is the node's global-IPv6 direct endpoint ([v6]:port). IPv6
+	// has no NAT, so peers with a global v6 address can reach each other
+	// directly without hole punching or port forwarding.
+	EndpointV6 string `json:"endpointV6,omitempty"`
 	// LocalEndpoint is the node's LAN/NAT-internal address candidate.
 	// Nodes on the same subnet prefer this over the relay endpoint.
 	LocalEndpoint string `json:"localEndpoint,omitempty"`
-	LastSeen  int64  `json:"lastSeen,omitempty"`
-	DeviceID  string `json:"deviceId,omitempty"`
+	LastSeen      int64  `json:"lastSeen,omitempty"`
+	DeviceID      string `json:"deviceId,omitempty"`
 	// DeviceName is the display name of the bound device (admin views only;
 	// empty when the device never reported a name).
 	DeviceName string `json:"deviceName,omitempty"`
@@ -121,6 +138,9 @@ type SetEndpointReq struct {
 	// (host:port). Peers on the same subnet may connect to it directly to
 	// save relay bandwidth.
 	LocalEndpoint string `json:"localEndpoint,omitempty"`
+	// EndpointV6 is the node's global-IPv6 endpoint ([v6]:port), advertised
+	// when the device has a routable global v6 address.
+	EndpointV6 string `json:"endpointV6,omitempty"`
 }
 
 type PeersResp struct {

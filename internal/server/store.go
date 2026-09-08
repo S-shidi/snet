@@ -1170,7 +1170,37 @@ func (s *Store) SetEndpoint(token, endpoint, localEndpoint string) error {
 		return ErrNotFound
 	}
 	n.Endpoint = endpoint
+	if endpoint != "" {
+		n.EndpointV6 = ""
+	}
 	n.LocalEndpoint = localEndpoint
+	n.LastSeen = time.Now().Unix()
+	s.touchLocked(ns, time.Now())
+	return s.persistNode(te.NetworkID, n)
+}
+
+// SetEndpointV6 updates only the node's global-IPv6 endpoint ([v6]:port),
+// keeping the v4/v6 advertisements independent: a device may roam between
+// v4-only and dual-stack networks without clobbering the other family.
+func (s *Store) SetEndpointV6(token, endpointV6 string) error {
+	if err := validateEndpoint(endpointV6); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	te, ok := s.byToken[hashToken(token)]
+	if !ok {
+		return ErrUnauthorized
+	}
+	ns := s.networks[te.NetworkID]
+	if ns == nil {
+		return ErrNotFound
+	}
+	n := ns.nodes[te.NodeID]
+	if n == nil {
+		return ErrNotFound
+	}
+	n.EndpointV6 = endpointV6
 	n.LastSeen = time.Now().Unix()
 	s.touchLocked(ns, time.Now())
 	return s.persistNode(te.NetworkID, n)

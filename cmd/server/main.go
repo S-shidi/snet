@@ -17,7 +17,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "0.0.0.0:8090", "listen address")
-	probeAddr := flag.String("probe-addr", "0.0.0.0:8091", "UDP probe/echo address for public-IP discovery")
+	probeAddr := flag.String("probe-addr", "[::]:8091", "UDP probe/echo address for public-IP discovery (dual-stack)")
 	dbPath := flag.String("db", "", "bbolt database path (empty = in-memory, not persistent)")
 	adminToken := flag.String("admin-token", os.Getenv("SNET_ADMIN_TOKEN"), "admin API token (env SNET_ADMIN_TOKEN)")
 	adminUser := flag.String("admin-user", os.Getenv("SNET_ADMIN_USER"), "admin login username (env SNET_ADMIN_USER)")

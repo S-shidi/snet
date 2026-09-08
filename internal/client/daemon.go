@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -75,17 +76,22 @@ func nextRetryDelay(attempts int) time.Duration {
 
 // directGraceSec is how long the daemon tries a peer's direct endpoint
 // (LAN/LocalEndpoint) before falling back to the network relay endpoint.
-const directGraceSec = 20
+const directGraceSec = 45
 
 // directRetrySec is how long the daemon stays on the relay endpoint for a
 // peer before re-attempting a direct path.
-const directRetrySec = 300
+const directRetrySec = 180
 
 // candProbeSec is how long the daemon stays on one direct-endpoint candidate
 // before rotating to the next. Behind a symmetric NAT the observed public port
 // is usually off by a small delta per destination, so probing a small window
 // of candidate ports (buildCandidates) raises the direct-hit rate.
 const candProbeSec = 4
+
+// observedRefreshSec throttles how often the daemon asks the relay for the
+// live peer-mapping list. Each refresh restarts the direct candidate window
+// with the peers' current NAT-observed endpoints first (highest hit rate).
+const observedRefreshSec = 8
 
 // netRuntime holds the live tunnel + control loops for one joined network.
 type netRuntime struct {
@@ -102,6 +108,7 @@ type peerDirect struct {
 	dirSince int64  // unix seconds when the current direct attempt started
 	lastDir  string // direct endpoint last attempted
 	relay    string // network relay endpoint, for telemetry
+	tried    bool   // a direct attempt has at least one real candidate set
 
 	// Candidates for the current direct attempt: when the observed public
 	// endpoint does not complete a handshake, the daemon rotates through a
@@ -136,6 +143,20 @@ type Daemon struct {
 	// config dir. Explicit path keeps daemons running without $HOME
 	// (e.g. launchd) functional.
 	configPath string
+	// relayEP caches each network's relay endpoint learned from PeersState,
+	// so probeLoop can reuse it for relay-whoami hole punching.
+	relayEP map[string]string
+	// obsList caches the last good relay peer-mapping list per network; the
+	// candidates are re-resolved into per-peer candidate windows.
+	obsList map[string][]string
+	// obsAt records the last relay group refresh per network (unix seconds).
+	obsAt map[string]int64
+	// selfPub records the last observed public IP per network, used to
+	// exclude our own mapping from the relay peer-mapping list.
+	selfPub map[string]string
+	// endV6 caches the last advertised global-IPv6 endpoint per network so
+	// probeLoop only re-advertises on change.
+	endV6 map[string]string
 	// deviceIDFile is the on-disk stable device identity; empty disables it
 	// (used in tests / read-only environments).
 	deviceIDFile string
@@ -183,17 +204,28 @@ func NewDaemon(cfg *Config) *Daemon {
 
 func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
+	sp := make(map[string]string)
+	for nid, nc := range cfg.Networks {
+		if nc.PublicIP != "" {
+			sp[nid] = nc.PublicIP
+		}
+	}
 	return &Daemon{
-		cfg:          cfg,
-		configPath:   configPath,
-		nets:         make(map[string]*netRuntime),
-		pendingRuns:  make(map[string]chan struct{}),
-		netErrs:      make(map[string]string),
-		retryPending: make(map[string]struct{}),
+		cfg:           cfg,
+		configPath:    configPath,
+		nets:          make(map[string]*netRuntime),
+		pendingRuns:   make(map[string]chan struct{}),
+		netErrs:       make(map[string]string),
+		retryPending:  make(map[string]struct{}),
 		retryAttempts: make(map[string]int),
-		deviceIDFile: DefaultDeviceIDFile,
-		ctx:          ctx,
-		cancel:       cancel,
+		relayEP:       make(map[string]string),
+		obsList:       make(map[string][]string),
+		obsAt:         make(map[string]int64),
+		selfPub:       sp,
+		endV6:         make(map[string]string),
+		deviceIDFile:  DefaultDeviceIDFile,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 
@@ -1324,65 +1356,94 @@ func (d *Daemon) localEndpointLocked(port int) (string, error) {
 // candidate ports (buildCandidates) until a handshake completes, improving the
 // direct-hit rate before falling back to the relay.
 // Caller must hold no lock; the reply is a fresh slice.
-func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.PeersResp, localSubs []string) []protocol.Node {
+func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.PeersResp, localSubs []string, observed []string) []protocol.Node {
 	out := make([]protocol.Node, len(st.Peers))
 	copy(out, st.Peers)
 	stats, _ := rt.tun.Stats()
 	now := time.Now().Unix()
+	// The relay reports our own mapping along with the peers'; exclude the
+	// public IP we last advertised so we never punch at ourselves.
+	excludeHost := d.selfPub[nid]
 	for i := range out {
 		p := &out[i]
-		// Choose the best direct candidate for this peer.
+		// Choose the best direct candidates for this peer: the global-IPv6
+		// endpoint first (NAT-free), then the v4 self-advertised endpoint and
+		// any LAN/same-subnet local endpoint, then the live relay mappings.
 		direct := ""
 		if st.RelayEndpoint == "" {
 			direct = p.Endpoint
 		} else {
 			direct = endpointIfLocal(p, localSubs)
 		}
+		v6 := p.EndpointV6
+		// With the relay present the self-advertised public endpoint is often
+		// a stale pinhole, so the "direct" v4 target is only an on-LAN one;
+		// the live NAT mappings the relay observed are the actual punch
+		// targets. Any of the three being usable counts as "direct possible".
+		hasObs := false
+		for _, ep := range observed {
+			host, _, err := net.SplitHostPort(ep)
+			if err != nil || host == excludeHost {
+				continue
+			}
+			hasObs = true
+			break
+		}
+		// Direct punching is pointless against a side that is offline: probe
+		// only peers the server reports online (or whose state is unknown).
+		if st.RelayEndpoint != "" && !p.Online {
+			p.Endpoint = st.RelayEndpoint
+			continue
+		}
+		directOk := direct != "" || v6 != "" || hasObs
+		dirKey := v6 + "|" + direct
 		st2 := rt.peerDirect[p.ID]
 		if st2 == nil {
 			// First contact: prefer direct when a candidate exists.
-			st2 = &peerDirect{mode: "relay", lastDir: direct, dirSince: now}
-			if direct != "" {
+			st2 = &peerDirect{mode: "relay", lastDir: dirKey, dirSince: now}
+			if directOk {
 				st2.mode = "direct"
 			}
 			rt.peerDirect[p.ID] = st2
 		}
 		st2.relay = st.RelayEndpoint
 		if st2.mode == "relay" {
-			// Periodically retry the direct path.
-			if st.RelayEndpoint != "" && direct != "" && now-st2.dirSince >= directRetrySec {
+			// Switch to direct on the first opportunity (candidates just
+			// appeared) and re-probe periodically afterwards.
+			if st.RelayEndpoint != "" && directOk && (!st2.tried || now-st2.dirSince >= directRetrySec) {
 				st2.mode = "direct"
+				st2.tried = true
 				st2.dirSince = now
-				st2.lastDir = direct
+				st2.lastDir = dirKey
 				st2.cands = nil
-				log.Printf("path %s: peer %s %s -> direct (%s)", nid, p.ID, "relay", direct)
+				log.Printf("path %s: peer %s %s -> direct (%s|%s|obs)", nid, p.ID, "relay", v6, direct)
 			}
 		}
 		if st2.mode == "direct" {
 			switch {
-			case direct == "":
+			case !directOk:
 				// Candidate disappeared; fall back to the relay.
 				if st.RelayEndpoint != "" {
 					log.Printf("path %s: peer %s direct -> relay (no direct candidate)", nid, p.ID)
 				}
 				st2.mode = "relay"
 				st2.dirSince = now
-			case st2.lastDir != direct:
+			case st2.lastDir != dirKey:
 				// Direct candidate changed; restart the direct timer and the
 				// candidate probe window.
-				st2.lastDir = direct
+				st2.lastDir = dirKey
 				st2.dirSince = now
 				st2.cands = nil
 			}
 		}
-		if st2.mode == "direct" && direct != "" {
+		if st2.mode == "direct" && directOk {
 			hs := stats[p.PublicKey].LastHandshakeSec
 			// (Re)build the candidate window when it is missing or the direct
 			// candidate changed. baseHS anchors "was there a new handshake
 			// since probing started" so a relay-era handshake cannot falsely
 			// lock a direct candidate.
 			if len(st2.cands) == 0 {
-				st2.cands = buildCandidates(direct)
+				st2.cands = buildPeerCandidates(direct, v6, observed, excludeHost)
 				st2.candIdx = 0
 				st2.candStart = now
 				st2.baseHS = hs
@@ -1390,7 +1451,7 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 			}
 			if !st2.locked && hs > st2.baseHS {
 				st2.locked = true
-				log.Printf("path %s: peer %s direct handshake via %s (candidate %d/%d)", nid, p.ID, direct, st2.candIdx+1, len(st2.cands))
+				log.Printf("path %s: peer %s direct handshake via %s (candidate %d/%d)", nid, p.ID, st2.cands[st2.candIdx], st2.candIdx+1, len(st2.cands))
 			}
 			if !st2.locked && now-st2.candStart >= candProbeSec {
 				if st2.candIdx+1 < len(st2.cands) {
@@ -1419,6 +1480,38 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 	return out
 }
 
+// buildPeerCandidates orders the direct endpoints to probe for one peer:
+// the global-IPv6 endpoint first (no NAT), then the v4 self-advertised
+// endpoint, then the live NAT mappings observed by the relay (the exact
+// addresses a direct punch should hit), then the nearby-port window.
+func buildPeerCandidates(direct, epV6 string, observed []string, excludeHost string) []string {
+	seen := make(map[string]struct{}, 4+len(observed))
+	out := make([]string, 0, 4+len(observed))
+	add := func(ep string) {
+		if ep == "" {
+			return
+		}
+		if _, dup := seen[ep]; dup {
+			return
+		}
+		seen[ep] = struct{}{}
+		out = append(out, ep)
+	}
+	add(epV6)
+	add(direct)
+	for _, ep := range observed {
+		host, _, err := net.SplitHostPort(ep)
+		if err == nil && host == excludeHost {
+			continue
+		}
+		add(ep)
+	}
+	for _, c := range buildCandidates(direct) {
+		add(c)
+	}
+	return out
+}
+
 // buildCandidates expands a direct endpoint into the ordered set of endpoints
 // to probe. LAN/private endpoints are tried as-is (no probing window: they are
 // either reachable or not, and a wrong port on the local segment buys nothing).
@@ -1435,8 +1528,17 @@ func buildCandidates(direct string) []string {
 	if err != nil || base <= 0 || base > 65535 {
 		return []string{direct}
 	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	if ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()) {
+	hostNoBrackets := strings.Trim(host, "[]")
+	// IPv6 link-local addresses can carry a zone suffix ("fe80::1%en0") that
+	// net.ParseIP does not understand; strip it before classification.
+	hostNoZone := hostNoBrackets
+	if i := strings.Index(hostNoZone, "%"); i >= 0 {
+		hostNoZone = hostNoZone[:i]
+	}
+	ip := net.ParseIP(hostNoZone)
+	if ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.To4() == nil) {
+		// Single candidate: private/LAN addresses have no NAT, and IPv6
+		// (global and link-local) has no port-mapping window to probe.
 		return []string{direct}
 	}
 	out := make([]string, 0, 1+2*maxPortDelta)
@@ -1533,6 +1635,13 @@ func (d *Daemon) pollLoop(nid string) {
 			continue
 		}
 
+		// Cache the relay endpoint (probeLoop uses it for whoami) and refresh
+		// the live peer-mapping list for direct punches.
+		d.mu.Lock()
+		d.relayEP[nid] = st.RelayEndpoint
+		d.mu.Unlock()
+		observed := d.refreshObserved(nid, st.RelayEndpoint)
+
 		d.mu.Lock()
 		rt = d.nets[nid]
 		if rt == nil || rt.tun == nil {
@@ -1591,7 +1700,7 @@ func (d *Daemon) pollLoop(nid string) {
 				log.Printf("save name %s: %v", nid, err)
 			}
 		}
-		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets())
+		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets(), observed)
 		for i := range peers {
 			log.Printf("poll peers %s: peer %d id=%s pub=%s endpoint=%s local=%s online=%v", nid, i, peers[i].ID, peers[i].PublicKey, peers[i].Endpoint, peers[i].LocalEndpoint, peers[i].Online)
 		}
@@ -1613,6 +1722,7 @@ func (d *Daemon) probeLoop(nid string) {
 	defer ticker.Stop()
 	lastIP := ""
 	lastLocal := ""
+	lastV6 := ""
 	for {
 		select {
 		case <-ticker.C:
@@ -1630,27 +1740,107 @@ func (d *Daemon) probeLoop(nid string) {
 		}
 		serverAddr := d.cfg.ServerAddr
 		serverCA := d.cfg.ServerCAPath
+		relayAddr := d.relayEP[nid]
 		port := nc.Port
 		d.mu.Unlock()
 
 		localEP, _ := d.localEndpointLocked(port)
-		ip, err := probePublicIP(serverProbeAddr(serverAddr), nid, nc.NodeID, nc.Token)
+		// Prefer the in-band relay whoami (works over the already-live tunnel
+		// data path); fall back to the dedicated UDP probe port.
+		ip, err := d.probeSelfPublicIP(relayAddr, nid, nc.NodeID, nc.Token, serverAddr)
 		if err != nil {
 			log.Printf("probe public IP %s: %v", nid, err)
-			continue
+			// Keep whatever we last advertised; the relay group fetch keeps
+			// punching regardless.
+			if lastIP == "" {
+				continue
+			}
 		}
-		if ip == lastIP && localEP == lastLocal {
+		epV6 := ""
+		if v6, ok := globalIPv6Endpoint(port); ok {
+			epV6 = v6
+		}
+
+		if ip != "" {
+			d.mu.Lock()
+			d.selfPub[nid] = ip
+			if nc.PublicIP != ip {
+				nc.PublicIP = ip
+				if err := d.save(); err != nil {
+					log.Printf("save public IP %s: %v", nid, err)
+				}
+			}
+			d.mu.Unlock()
+		}
+		if ip == lastIP && localEP == lastLocal && epV6 == lastV6 {
 			continue
 		}
 		lastIP = ip
 		lastLocal = localEP
-		ep := net.JoinHostPort(ip, fmt.Sprint(port))
-		if err := newAPIClient(serverAddr, serverCA, d.ctx).SetEndpointFor(nid, nc.NodeID, nc.Token, ep, localEP); err != nil {
-			log.Printf("set public endpoint %s: %v", nid, err)
-			continue
+		lastV6 = epV6
+		api := newAPIClient(serverAddr, serverCA, d.ctx)
+		if ip != "" {
+			ep := net.JoinHostPort(ip, fmt.Sprint(port))
+			if err := api.SetEndpointFor(nid, nc.NodeID, nc.Token, ep, localEP); err != nil {
+				log.Printf("set public endpoint %s: %v", nid, err)
+				continue
+			}
+			log.Printf("public endpoint %s: %s (local %s)", nid, ep, localEP)
 		}
-		log.Printf("public endpoint %s: %s (local %s)", nid, ep, localEP)
+		if epV6 != "" {
+			if err := api.SetEndpointV6For(nid, nc.NodeID, nc.Token, epV6); err != nil {
+				log.Printf("set v6 endpoint %s: %v", nid, err)
+				continue
+			}
+			log.Printf("v6 endpoint %s: %s", nid, epV6)
+		}
 	}
+}
+
+// probeSelfPublicIP learns this node's public IP, preferring an in-band relay
+// whoami (which rides the same relay port the tunnel already uses) and falling
+// back to the dedicated server UDP probe port.
+func (d *Daemon) probeSelfPublicIP(relayAddr, nid, nodeID, token, serverAddr string) (string, error) {
+	if relayAddr != "" {
+		ep, err := relayWhoami(relayAddr)
+		if err == nil && ep != "" {
+			ip, _, err := net.SplitHostPort(ep)
+			if err == nil {
+				return ip, nil
+			}
+		}
+		// Fall through to the dedicated probe on whoami failure.
+	}
+	return probePublicIP(serverProbeAddr(serverAddr), nid, nodeID, token)
+}
+
+// refreshObserved asks the relay for the current set of live peer mappings
+// (throttled to observedRefreshSec per network) and caches the last good list.
+func (d *Daemon) refreshObserved(nid, relayAddr string) []string {
+	if relayAddr == "" {
+		return nil
+	}
+	d.mu.Lock()
+	last := d.obsAt[nid]
+	now := time.Now().Unix()
+	d.mu.Unlock()
+	if now-last < observedRefreshSec {
+		d.mu.Lock()
+		obs := d.obsList[nid]
+		d.mu.Unlock()
+		return obs
+	}
+	obs, err := relayGroup(relayAddr)
+	d.mu.Lock()
+	if err == nil {
+		d.obsList[nid] = obs
+		d.obsAt[nid] = now
+	} else {
+		log.Printf("relay group %s: %v", nid, err)
+		obs = d.obsList[nid]
+	}
+	d.mu.Unlock()
+	return obs
 }
 
 // serverProbeAddr derives the UDP probe address (host:ProbePort) from the
@@ -1695,6 +1885,122 @@ func probePublicIP(probeAddr, nid, nodeID, token string) (string, error) {
 		return "", err
 	}
 	return ip, nil
+}
+
+// relayControl exchanges one control packet with a network's relay port.
+// The relay answers control packets in-band and never forwards them; the
+// request and reply share a single UDP exchange, so no relay protocol version
+// negotiation is needed beyond the in-band prefix.
+func relayControl(relayAddr string, req interface{}) ([]byte, error) {
+	raddr, err := net.ResolveUDPAddr("udp", relayAddr)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialUDP("udp", nil, raddr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	full := append([]byte(protocol.RelayCtrlPrefix), payload...)
+	if _, err := conn.Write(full); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, 65535)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		// The relay answers control packets exclusively with control packets,
+		// but until every relay is upgraded an old one may fan peer WireGuard
+		// traffic back at our probing socket first; skip that noise and wait
+		// for the actual reply.
+		if n >= len(protocol.RelayCtrlPrefix) &&
+			strings.HasPrefix(string(buf[:n]), protocol.RelayCtrlPrefix) {
+			return buf[len(protocol.RelayCtrlPrefix):n], nil
+		}
+	}
+}
+
+// relayWhoami asks the relay for the observed source endpoint ("ip:port") of a
+// packet from this socket. Behind a cone NAT the public IP is authoritative
+// even though the mapped port belongs to this ephemeral socket rather than the
+// WireGuard port; that is why callers use the IP only.
+func relayWhoami(relayAddr string) (string, error) {
+	resp, err := relayControl(relayAddr, map[string]string{"op": protocol.RelayCtrlWhoami})
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return "", err
+	}
+	return out.Endpoint, nil
+}
+
+// relayGroup asks the relay for every other live endpoint on the network's
+// relay port. Because the relay forwards our WireGuard tunnel as-is, each
+// entry is a peer's current NAT-observed WireGuard endpoint — exactly the
+// address a direct punch should target.
+func relayGroup(relayAddr string) ([]string, error) {
+	resp, err := relayControl(relayAddr, map[string]string{"op": protocol.RelayCtrlGroup})
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Peers []string `json:"peers"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return nil, err
+	}
+	return out.Peers, nil
+}
+
+// globalIPv6 tries to find a routable global IPv6 address and returns it as
+// the WireGuard endpoint "[v6]:port". Global IPv6 has no NAT, so a peer
+// reachable over v6 needs neither hole punching nor port forwarding.
+func globalIPv6(port int) string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipn, _, err := net.ParseCIDR(a.String())
+			if err != nil {
+				continue
+			}
+			ip16 := ipn.To16()
+			if ip16 == nil {
+				continue
+			}
+			ip, ok := netip.AddrFromSlice(ip16)
+			if !ok || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsPrivate() || !ip.IsGlobalUnicast() {
+				continue
+			}
+			return net.JoinHostPort(ipn.String(), fmt.Sprint(port))
+		}
+	}
+	return ""
+}
+
+func globalIPv6Endpoint(port int) (string, bool) {
+	ep := globalIPv6(port)
+	return ep, ep != ""
 }
 
 // Leave stops and forgets a network's tunnel but keeps the server-side node
@@ -2241,10 +2547,10 @@ func peerPathInfo(rt *netRuntime) map[string]any {
 	out := make(map[string]any, len(rt.peerDirect))
 	for id, pd := range rt.peerDirect {
 		info := map[string]any{
-			"mode":  pd.mode,
-			"since": pd.dirSince,
+			"mode":   pd.mode,
+			"since":  pd.dirSince,
 			"direct": pd.lastDir,
-			"relay": pd.relay,
+			"relay":  pd.relay,
 		}
 		if len(pd.cands) > 0 {
 			info["candidates"] = len(pd.cands)

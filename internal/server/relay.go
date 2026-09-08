@@ -1,10 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
+
+	"snet/internal/protocol"
 )
 
 // Relay forwards UDP packets among the active endpoints of a network port,
@@ -13,6 +17,13 @@ import (
 // remembered, and a data packet from one endpoint is forwarded to all the
 // others (fan-out), so networks with more than two members still reach each
 // other through the relay.
+//
+// The relay is address-based and never decodes WireGuard, so the address it
+// sees for an endpoint IS that node's current NAT-mapped WireGuard endpoint.
+// Control packets (protocol.RelayCtrlPrefix) are therefore handled in-band:
+// "whoami" echoes the observed source endpoint and "group" lists every other
+// live endpoint on the port, giving clients the exact punching candidates
+// with no extra protocol surface.
 type Relay struct {
 	base  int
 	count int
@@ -31,6 +42,11 @@ type relayPair struct {
 	// seen tracks the last traffic time per relay endpoint ("ip:port") so
 	// stale NAT mappings can be evicted and current ones retained.
 	seen map[string]time.Time
+	// ctrlOnly marks endpoints whose only contact with the relay has been a
+	// control packet (e.g. a client's one-shot whoami/group probing socket).
+	// They are excluded from fan-out targets and from group listings so WG
+	// traffic is never sprayed at a socket that will not answer it.
+	ctrlOnly map[string]bool
 }
 
 // NewRelay builds a relay covering the port range [base, base+count).
@@ -61,11 +77,11 @@ func (r *Relay) Ensure(port int) error {
 	hook := r.onActivity
 	r.mu.Unlock()
 
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6unspecified, Port: port})
 	if err != nil {
 		return err
 	}
-	p := &relayPair{conn: conn, port: port, hook: hook, seen: make(map[string]time.Time)}
+	p := &relayPair{conn: conn, port: port, hook: hook, seen: make(map[string]time.Time), ctrlOnly: make(map[string]bool)}
 
 	r.mu.Lock()
 	// Another goroutine may have bound the same port while we were listening.
@@ -87,13 +103,13 @@ func (r *Relay) Ensure(port int) error {
 func (r *Relay) Start() error {
 	for i := 0; i < r.count; i++ {
 		port := r.base + i
-		conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6unspecified, Port: port})
 		if err != nil {
 			r.Close()
 			return err
 		}
 		r.mu.Lock()
-		p := &relayPair{conn: conn, port: port, hook: r.onActivity, seen: make(map[string]time.Time)}
+		p := &relayPair{conn: conn, port: port, hook: r.onActivity, seen: make(map[string]time.Time), ctrlOnly: make(map[string]bool)}
 		r.conns[port] = p
 		r.mu.Unlock()
 		go p.serve()
@@ -155,9 +171,20 @@ func (p *relayPair) handle(addr string, data []byte) {
 		}
 	}
 
+	// Control packets are answered in-band and never forwarded: they leak
+	// neither tunnel plaintext nor identity, and old relays just fan them out
+	// to peers, where they are dropped as non-WireGuard noise.
+	if len(data) >= len(protocol.RelayCtrlPrefix) &&
+		strings.HasPrefix(string(data), protocol.RelayCtrlPrefix) {
+		p.ctrlOnly[addr] = true
+		p.handleControl(addr, data[len(protocol.RelayCtrlPrefix):])
+		return
+	}
+	p.ctrlOnly[addr] = false
+
 	// Fan out to every other live endpoint.
 	for ep := range p.seen {
-		if ep == addr {
+		if ep == addr || p.ctrlOnly[ep] {
 			continue
 		}
 		dst, err := net.ResolveUDPAddr("udp", ep)
@@ -169,5 +196,47 @@ func (p *relayPair) handle(addr string, data []byte) {
 			delete(p.seen, ep)
 			log.Printf("relay: write to %s: %v", ep, err)
 		}
+	}
+}
+
+// handleControl answers a relay control request from addr. Callers hold p.mu.
+// whoami replies with the observed source endpoint (the requester's current
+// NAT mapping); group replies with every other live endpoint on the port.
+func (p *relayPair) handleControl(addr string, payload []byte) {
+	var req struct {
+		Op string `json:"op"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil || req.Op == "" {
+		return
+	}
+	switch req.Op {
+	case protocol.RelayCtrlWhoami:
+		resp, _ := json.Marshal(map[string]string{"op": protocol.RelayCtrlWhoami, "endpoint": addr})
+		p.writeCtrl(addr, resp)
+	case protocol.RelayCtrlGroup:
+		peers := make([]string, 0, len(p.seen))
+		for ep := range p.seen {
+			if ep == addr || p.ctrlOnly[ep] {
+				continue
+			}
+			peers = append(peers, ep)
+		}
+		resp, _ := json.Marshal(map[string]interface{}{"op": protocol.RelayCtrlGroup, "peers": peers})
+		p.writeCtrl(addr, resp)
+	}
+}
+
+// writeCtrl sends a relay control reply to addr, framing it with the control
+// prefix so receivers can separate control replies from forwarded traffic.
+func (p *relayPair) writeCtrl(addr string, resp []byte) {
+	framed := make([]byte, 0, len(protocol.RelayCtrlPrefix)+len(resp))
+	framed = append(framed, protocol.RelayCtrlPrefix...)
+	framed = append(framed, resp...)
+	dst, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return
+	}
+	if _, err := p.conn.WriteToUDP(framed, dst); err != nil {
+		log.Printf("relay ctrl reply to %s: %v", addr, err)
 	}
 }

@@ -1,9 +1,13 @@
 package server
 
 import (
+	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
+
+	"snet/internal/protocol"
 )
 
 // TestRelayPairing verifies two UDP clients talking to the same relay port
@@ -226,4 +230,127 @@ func dialUDP(t *testing.T, relayPort int) *net.UDPConn {
 		t.Fatal(err)
 	}
 	return c
+}
+
+// TestRelayWhoami verifies the relay answers a whoami control request with
+// the observed source endpoint (the requester's NAT mapping).
+func TestRelayWhoami(t *testing.T) {
+	port := freePort(t)
+	r := NewRelay(port, 1)
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	c := dialUDP(t, port)
+	defer c.Close()
+	relay := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+
+	req := append([]byte("\xfeSNET1"), []byte(`{"op":"whoami"}`)...)
+	if _, err := c.WriteToUDP(req, relay); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1024)
+	n, _, err := c.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read whoami reply: %v", err)
+	}
+	got := string(buf[:n])
+	if !strings.HasPrefix(got, "\xfeSNET1") {
+		t.Fatalf("reply missing control prefix: %q", got)
+	}
+	body := buf[len(protocol.RelayCtrlPrefix):n]
+	var w struct {
+		Op       string `json:"op"`
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal(body, &w); err != nil {
+		t.Fatalf("whoami reply not JSON: %s (%v)", got, err)
+	}
+	if w.Op != "whoami" {
+		t.Fatalf("whoami op = %q", w.Op)
+	}
+	_, wantPort, _ := net.SplitHostPort(c.LocalAddr().(*net.UDPAddr).String())
+	_, gotHost, _ := net.SplitHostPort(w.Endpoint) // unused; keep simple
+	if _, gotPort, err := net.SplitHostPort(w.Endpoint); err != nil || gotPort != wantPort {
+		t.Fatalf("whoami endpoint = %q, want port %s", w.Endpoint, wantPort)
+	}
+	_ = gotHost
+}
+
+// TestRelayGroup verifies a group request lists every other live endpoint but
+// not the requester, and that control packets are never fanned out.
+func TestRelayGroup(t *testing.T) {
+	port := freePort(t)
+	r := NewRelay(port, 1)
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	a := dialUDP(t, port)
+	b := dialUDP(t, port)
+	defer a.Close()
+	defer b.Close()
+	relay := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+
+	// register both endpoints
+	if _, err := a.WriteToUDP([]byte("ping-a"), relay); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.WriteToUDP([]byte("ping-b"), relay); err != nil {
+		t.Fatal(err)
+	}
+
+	// b's registration causes the relay to fan "ping-b" back to a; drain it so
+	// the group reply below is the first packet a reads after the request.
+	_ = a.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 2048)
+	if _, _, err := a.ReadFromUDP(buf); err != nil {
+		t.Fatalf("drain forwarded ping-b: %v", err)
+	}
+
+	req := append([]byte("\xfeSNET1"), []byte(`{"op":"group"}`)...)
+	if _, err := a.WriteToUDP(req, relay); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := a.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read group reply: %v", err)
+	}
+	got := string(buf[:n])
+	if !strings.HasPrefix(got, "\xfeSNET1") {
+		t.Fatalf("reply missing control prefix: %q", got)
+	}
+	var g struct {
+		Op    string   `json:"op"`
+		Peers []string `json:"peers"`
+	}
+	if err := json.Unmarshal(buf[len(protocol.RelayCtrlPrefix):n], &g); err != nil {
+		t.Fatalf("group reply not JSON: %s (%v)", got, err)
+	}
+	if g.Op != "group" || len(g.Peers) != 1 {
+		t.Fatalf("group reply = %+v", g)
+	}
+	_, wantPort, _ := net.SplitHostPort(b.LocalAddr().(*net.UDPAddr).String())
+	if _, gotPort, err := net.SplitHostPort(g.Peers[0]); err != nil || gotPort != wantPort {
+		t.Fatalf("group peers[0] = %q, want port %s", g.Peers[0], wantPort)
+	}
+	// b must not receive the control packet (it is not fanned out)
+	_ = b.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, _, err := b.ReadFromUDP(buf); err == nil {
+		t.Fatal("b received a control packet that should never be forwarded")
+	}
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	lc, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := lc.LocalAddr().(*net.UDPAddr).Port
+	lc.Close()
+	return p
 }

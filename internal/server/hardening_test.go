@@ -62,6 +62,27 @@ func TestSetEndpointValidation(t *testing.T) {
 	}
 }
 
+func TestSetEndpointV6RoundTrip(t *testing.T) {
+	s := NewStore()
+	c, err := s.CreateNetwork(testKey(1), "dev-ep-v6", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetEndpointV6(c.Token, "[2001:db8::1]:51820"); err != nil {
+		t.Fatalf("set v6 endpoint: %v", err)
+	}
+	peers, err := s.ListPeers(c.Token)
+	if err != nil {
+		t.Fatalf("list peers: %v", err)
+	}
+	if peers.Self == nil || peers.Self.EndpointV6 != "[2001:db8::1]:51820" {
+		t.Fatalf("self endpointV6 = %+v, want [2001:db8::1]:51820", peers.Self)
+	}
+	if err := s.SetEndpointV6(c.Token, "not::valid"); err == nil {
+		t.Fatal("malformed v6 endpoint should be rejected")
+	}
+}
+
 func TestBindReportsDeviceName(t *testing.T) {
 	s := NewStore()
 	tok, _ := genOneCode(t, s)

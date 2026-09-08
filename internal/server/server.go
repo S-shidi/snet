@@ -45,13 +45,13 @@ type Options struct {
 }
 
 const (
-	defaultCreatePerHour    = 50
-	defaultJoinPerMinute    = 60
-	defaultBindPerMinute    = 20
-	defaultRegisterPerMin   = 30
+	defaultCreatePerHour      = 50
+	defaultJoinPerMinute      = 60
+	defaultBindPerMinute      = 20
+	defaultRegisterPerMin     = 30
 	defaultPendingPollsPerMin = 10
-	sessionTTL              = 24 * time.Hour
-	limiterPruneInterval    = time.Minute
+	sessionTTL                = 24 * time.Hour
+	limiterPruneInterval      = time.Minute
 )
 
 type sessionEntry struct {
@@ -59,13 +59,13 @@ type sessionEntry struct {
 }
 
 type handler struct {
-	s           *Store
-	opts        Options
-	creates     *rateLimiter
-	joins       *rateLimiter
-	binds       *rateLimiter
-	logins      *rateLimiter
-	registers   *rateLimiter
+	s            *Store
+	opts         Options
+	creates      *rateLimiter
+	joins        *rateLimiter
+	binds        *rateLimiter
+	logins       *rateLimiter
+	registers    *rateLimiter
 	pendingPolls *rateLimiter
 
 	// adminMu guards adminUser and adminPassHash, which are rotated while
@@ -95,15 +95,15 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		joinPerMinute = defaultJoinPerMinute
 	}
 	h := &handler{
-		s:           s,
-		opts:        opts,
-		creates:     newRateLimiter(createPerHour, time.Hour),
-		joins:       newRateLimiter(joinPerMinute, time.Minute),
-		binds:       newRateLimiter(defaultBindPerMinute, time.Minute),
-		logins:      newRateLimiter(5, time.Minute),
-		registers:   newRateLimiter(defaultRegisterPerMin, time.Minute),
+		s:            s,
+		opts:         opts,
+		creates:      newRateLimiter(createPerHour, time.Hour),
+		joins:        newRateLimiter(joinPerMinute, time.Minute),
+		binds:        newRateLimiter(defaultBindPerMinute, time.Minute),
+		logins:       newRateLimiter(5, time.Minute),
+		registers:    newRateLimiter(defaultRegisterPerMin, time.Minute),
 		pendingPolls: newRateLimiter(defaultPendingPollsPerMin, time.Minute),
-		sessions:    make(map[string]sessionEntry),
+		sessions:     make(map[string]sessionEntry),
 	}
 	if opts.RequireDeviceAuth {
 		s.SetRequireDeviceAuth(true)
@@ -140,8 +140,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":      "ok",
-			"apiVersion":  protocol.APIVersion,
+			"status":        "ok",
+			"apiVersion":    protocol.APIVersion,
 			"serverVersion": protocol.ServerVersion,
 		})
 	})
@@ -320,6 +320,12 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		if err := s.SetEndpoint(tokenOf(r), req.Endpoint, req.LocalEndpoint); err != nil {
 			handleStoreErr(w, err)
 			return
+		}
+		if req.EndpointV6 != "" {
+			if err := s.SetEndpointV6(tokenOf(r), req.EndpointV6); err != nil {
+				handleStoreErr(w, err)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
