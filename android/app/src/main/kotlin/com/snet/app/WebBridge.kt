@@ -196,56 +196,96 @@ class WebBridge(private val activity: MainActivity) {
 
     @JavascriptInterface
     fun rejoin(nid: String): String {
-        // Heavy Go/JNI work must NOT run on the WebView JS bridge thread: it is
-        // the UI thread on Android, and blocking it for the daemon to cold-start
-        // made the toggle unresponsive for seconds. Schedule the real work on a
-        // background executor and return immediately; the shared UI finishes the
-        // interaction optimistically and its periodic refresh() reflects the
-        // real outcome a moment later.
+        // Return immediately for responsive UI; work happens in background.
+        // The shared UI finishes the interaction optimistically and its
+        // periodic refresh() reflects the real outcome.
         bgExecutor.execute {
             try {
                 if (!SnetVpnService.isRunning) {
                     Log.d(TAG, "VPN not running, requesting before rejoin")
                     activity.requestVpnPermission()
                 }
-                waitForCoreReady()
-                SnetBridge.rejoin(nid)
-                setAutoConnect(true)
-                notifyUi()
+                // Optimized: shorter timeout and early return if daemon ready
+                if (waitForCoreReadyOptimized()) {
+                    SnetBridge.rejoin(nid)
+                    setAutoConnect(true)
+                    notifyProgress("已连接")
+                    Thread.sleep(300) // Brief success feedback
+                    notifyUi()
+                } else {
+                    Log.w(TAG, "rejoin($nid) timed out waiting for core")
+                    notifyProgress("连接超时")
+                    Thread.sleep(500)
+                    notifyUi()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "rejoin($nid) bg failed", e)
+                notifyProgress("连接失败")
+                Thread.sleep(500)
                 notifyUi()
             }
         }
         return """{"ok":true}"""
     }
 
-    /** Blocks until the Go daemon finished starting. Bounded so a broken
-     *  startup cannot hang the (background) caller forever. */
-    private fun waitForCoreReady() {
-        val deadline = System.currentTimeMillis() + 15_000
+    /** Optimized wait with shorter timeout and early return. */
+    private fun waitForCoreReadyOptimized(): Boolean {
+        val deadline = System.currentTimeMillis() + 5_000 // Reduced from 15s to 5s
+        var lastStatus = ""
+        var lastNotifyTime = 0L
         while (System.currentTimeMillis() < deadline) {
-            if (SnetVpnService.isRunning && SnetBridge.isStarted()) return
+            if (SnetVpnService.isRunning && SnetBridge.isStarted()) return true
+            // Report progress every 500ms to UI
+            val now = System.currentTimeMillis()
+            if (now - lastNotifyTime > 500) {
+                val status = when {
+                    !SnetVpnService.isRunning -> "等待 VPN 启动..."
+                    !SnetBridge.isStarted() -> "等待守护进程就绪..."
+                    else -> "就绪"
+                }
+                if (status != lastStatus) {
+                    lastStatus = status
+                    lastNotifyTime = now
+                    Log.d(TAG, "waitForCoreReady: $status")
+                    notifyProgress(status)
+                }
+            }
             try {
                 Thread.sleep(100)
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
-                return
+                return false
             }
         }
-        Log.w(TAG, "waitForCoreReady timed out")
+        Log.w(TAG, "waitForCoreReadyOptimized timed out")
+        return false
+    }
+
+    private fun runOnUiThread(action: () -> Unit) {
+        activity.runOnUiThread(action)
+    }
+
+    private fun notifyProgress(status: String) {
+        activity.runOnUiThread {
+            activity.evaluateJs("if (typeof snetProgress === 'function') snetProgress('$status');")
+        }
     }
 
     @JavascriptInterface
     fun leave(nid: String): String {
         bgExecutor.execute {
             try {
+                notifyProgress("正在断开网络...")
                 SnetBridge.leaveNetwork(nid)
                 setAutoConnect(hasActiveNetwork())
                 checkIfAllLeftStopVpn()
+                notifyProgress("已断开")
+                Thread.sleep(300)
                 notifyUi()
             } catch (e: Exception) {
                 Log.e(TAG, "leave($nid) bg failed", e)
+                notifyProgress("断开失败")
+                Thread.sleep(500)
                 notifyUi()
             }
         }
@@ -256,12 +296,17 @@ class WebBridge(private val activity: MainActivity) {
     fun remove(nid: String): String {
         bgExecutor.execute {
             try {
+                notifyProgress("正在移除网络...")
                 SnetBridge.removeNetwork(nid)
                 setAutoConnect(hasActiveNetwork())
                 checkIfAllLeftStopVpn()
+                notifyProgress("已移除")
+                Thread.sleep(300)
                 notifyUi()
             } catch (e: Exception) {
                 Log.e(TAG, "remove($nid) bg failed", e)
+                notifyProgress("移除失败")
+                Thread.sleep(500)
                 notifyUi()
             }
         }

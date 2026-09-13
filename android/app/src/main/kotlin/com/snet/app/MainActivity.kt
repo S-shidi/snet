@@ -30,6 +30,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var webView: WebView
+    private val handler = Handler(Looper.getMainLooper())
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -131,7 +132,10 @@ class MainActivity : AppCompatActivity() {
         // Self-heal: if a network was previously joined (auto_connect pref or a
         // persisted active network), bring the VPN back up on app start so the
         // mesh address is re-registered without requiring a manual tap.
-        maybeAutoConnect()
+        // Delay auto-connect to avoid blocking UI startup.
+        handler.postDelayed({
+            maybeAutoConnect()
+        }, 500) // 500ms delay to let UI settle first
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -164,6 +168,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Evaluates JavaScript in the WebView. */
+    fun evaluateJs(script: String, callback: android.webkit.ValueCallback<String>? = null) {
+        if (::webView.isInitialized) {
+            webView.evaluateJavascript(script, callback)
+        }
+    }
+
     fun requestVpnPermission() {
         // Safe to call from any thread (JavascriptInterface methods run on a
         // WebView background thread): prepare()/launch() must run on the UI
@@ -185,10 +196,15 @@ class MainActivity : AppCompatActivity() {
      *  network in daemon.json). startVpn() reads daemon.json, so the persisted
      *  mesh IP (e.g. 10.88.1.5) is added to tun0 automatically. */
     private fun maybeAutoConnect() {
+        // Fast check on main thread, then async connect
         val prefs = getSharedPreferences("snet_prefs", MODE_PRIVATE)
         val auto = prefs.getBoolean("auto_connect", false)
-        if (auto || hasActiveNetwork()) {
-            Log.d(TAG, "auto-connect: starting VPN")
+        val hasActive = hasActiveNetwork()
+        Log.d(TAG, "maybeAutoConnect: auto=$auto hasActive=$hasActive")
+
+        if (auto || hasActive) {
+            Log.d(TAG, "auto-connect: starting VPN (non-blocking)")
+            // Non-blocking: just request permission, actual start is async
             requestVpnPermission()
         }
     }

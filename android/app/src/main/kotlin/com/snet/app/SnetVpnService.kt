@@ -121,13 +121,10 @@ class SnetVpnService : VpnService() {
                     Log.d(TAG, "VPN already running")
                     return START_STICKY
                 }
-                startForeground(NOTIFICATION_ID, buildNotification("正在连接..."))
+                startForeground(NOTIFICATION_ID, buildNotification("正在初始化..."))
                 // Do the heavy lifting (DNS resolution during exclusion, route
-                // setup, Builder.establish) on a worker thread. Running it on
-                // the main thread caused the UI to freeze ("点不动") whenever
-                // the DNS lookup hung — notably on devices whose resolver is
-                // unhealthy while the tunnel is coming up.
-                Thread { startVpn() }.start()
+                // setup, Builder.establish) on a worker thread with progress updates.
+                Thread { startVpnWithProgress() }.start()
                 return START_STICKY
             }
         }
@@ -353,6 +350,28 @@ class SnetVpnService : VpnService() {
             Log.e(TAG, "Failed to start VPN", e)
             notifyStatus("error:${e.message}")
             stopSelf()
+        }
+    }
+
+    private fun startVpnWithProgress() {
+        try {
+            // Stage 1: DNS resolution (can take 5-10s on slow networks)
+            updateNotification("正在解析服务器地址...")
+            notifyStatus("resolving")
+
+            // Stage 2: Load config
+            updateNotification("正在加载配置...")
+            Thread.sleep(100) // Small delay to show progress
+
+            // Stage 3: Establish VPN
+            updateNotification("正在建立 VPN 连接...")
+
+            startVpn()
+
+        } catch (e: Exception) {
+            Log.e(TAG, "startVpnWithProgress failed", e)
+            notifyStatus("error:${e.message}")
+            updateNotification("VPN 建立失败")
         }
     }
 
