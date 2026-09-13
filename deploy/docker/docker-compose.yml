@@ -1,27 +1,113 @@
+# SNET Docker Compose - 支持版本管理和自动更新
+# 
+# 快速启动:
+#   docker-compose up -d
+# 
+# 更新版本:
+#   docker-compose pull && docker-compose up -d
+# 
+# 回滚版本:
+#   docker-compose down
+#   docker tag snetd:latest snetd:backup
+#   docker tag snetd:previous snetd:latest
+#   docker-compose up -d
+
 services:
   snetd:
+    # 使用本地构建（推荐：包含最新优化）
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+      args:
+        - GO_VERSION=1.26
+        - TARGETARCH=amd64
+    
+    # 或者使用预构建镜像（取消注释以使用）
+    # image: snetd:0.11.0
+    
     container_name: snetd
+    
+    # 权限配置
     cap_add:
       - NET_ADMIN
+      - SYS_MODULE  # 可选：加载 WireGuard 模块
     devices:
       - /dev/net/tun:/dev/net/tun
+    privileged: false
+    
+    # 端口映射
     ports:
-      # Web UI
+      # Web UI (HTTP)
       - "8080:8080"
-      # WireGuard UDP: 每个网络占用一个端口 (52100起，避开服务端 relay 池 51820-52075)
+      # Web UI (HTTPS) - 可选
+      # - "8443:8443"
+      # WireGuard UDP: 每个网络占用一个端口
+      # 避开服务端 relay 池 (51820-52075)，从 52100 开始
       - "52100-52163:52100-52163/udp"
+    
+    # 数据持久化
     volumes:
       - snet-data:/data
+      # 可选：挂载自定义配置
+      # - ./daemon.json:/data/daemon.json:ro
+    
+    # 环境变量
     environment:
-      # 首次运行时设置这两个变量自动绑定；后续重启会跳过
-      - SNET_SERVER=${SNET_SERVER:-}
+      # 协调服务器地址（首次运行自动绑定）
+      - SNET_SERVER=${SNET_SERVER:-https://snet.uizhi.eu.org:8090}
+      
+      # 设备授权码（首次运行自动绑定）
       - SNET_BIND_CODE=${SNET_BIND_CODE:-}
+      
+      # WireGuard 端口范围（可选）
+      - SNET_WG_PORT_START=${SNET_WG_PORT_START:-52100}
+      - SNET_WG_PORT_END=${SNET_WG_PORT_END:-52163}
+      
+      # 日志级别（可选：debug, info, warn, error）
+      - SNET_LOG_LEVEL=${SNET_LOG_LEVEL:-info}
+      
+      # 时区
+      - TZ=Asia/Shanghai
+    
+    # 重启策略
     restart: unless-stopped
+    
+    # 系统配置
     sysctls:
       - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1  # 可选：IPv6 支持
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # 资源限制（可选）
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 128M
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
+# 数据卷
 volumes:
   snet-data:
+    driver: local
+
+# 网络配置（可选）
+# networks:
+#   snet-net:
+#     driver: bridge
