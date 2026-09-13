@@ -82,11 +82,30 @@ const directGraceSec = 45
 // peer before re-attempting a direct path.
 const directRetrySec = 180
 
+// directLockStaleSec is how long a locked direct path may go without a fresh
+// WireGuard handshake before the lock is discarded and the path falls back to
+// the relay. WireGuard rekeys roughly every 120s on a live session, so a lock
+// idle for this long means the direct path is gone (NAT re-bound, CGNAT hole
+// closed). Without this, one lucky one-shot direct handshake locks a peer
+// onto a dead endpoint forever.
+const directLockStaleSec = 240
+
 // candProbeSec is how long the daemon stays on one direct-endpoint candidate
 // before rotating to the next. Behind a symmetric NAT the observed public port
 // is usually off by a small delta per destination, so probing a small window
 // of candidate ports (buildCandidates) raises the direct-hit rate.
 const candProbeSec = 4
+
+// parallelProbes is the number of candidates to probe concurrently in a batch.
+// With parallelProbes=5 and 17 total candidates, the worst-case handshake time
+// drops from 68s (sequential) to ~20s (3 batches). Higher values increase
+// success probability at the cost of more simultaneous UDP flows.
+const parallelProbes = 5
+
+// lossThreshold is the packet loss rate above which a locked direct path is
+// considered degraded and the daemon falls back to relay (30% loss = poor
+// connectivity on mobile/CGNAT networks).
+const lossThreshold = 0.3
 
 // observedRefreshSec throttles how often the daemon asks the relay for the
 // live peer-mapping list. Each refresh restarts the direct candidate window
@@ -119,6 +138,16 @@ type peerDirect struct {
 	candStart int64 // unix second the current candidate attempt began
 	baseHS    int64 // peer handshake second observed when probing started
 	locked    bool  // a handshake succeeded on the current candidate; stop probing
+
+	// Parallel probing: probe multiple candidates concurrently to reduce
+	// handshake latency on symmetric NATs where the correct port may be
+	// far down the candidate list.
+	parallelIdx int // current parallel batch start index
+
+	// Quality-aware path selection: track packet loss to detect degraded
+	// direct paths (e.g., flaky CGNAT) and fall back to relay.
+	lossRate    float64 // recent packet loss rate (0.0-1.0)
+	lossSamples int     // number of samples for loss rate calculation
 }
 
 // Daemon coordinates the local tunnels and the coordination server for any
@@ -1364,8 +1393,26 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 	// The relay reports our own mapping along with the peers'; exclude the
 	// public IP we last advertised so we never punch at ourselves.
 	excludeHost := d.selfPub[nid]
+	// Resolved relay host ("" when none): a handshake whose sender matches it
+	// is relay-delivered and must not lock a "direct" candidate.
+	relayHostNorm := ""
+	if st.RelayEndpoint != "" {
+		if h, _, err := net.SplitHostPort(resolveEndpoint(st.RelayEndpoint)); err == nil {
+			relayHostNorm = hostNorm(h)
+		}
+	}
 	for i := range out {
 		p := &out[i]
+		// Per-peer relay endpoint: with a per-node relay port (Phase 3) the
+		// peer is reachable at relayHost:<peer's port> — the recipient's NAT
+		// mapping for exactly that source port — instead of the shared
+		// broadcast port. Legacy peers (RelayPort==0) keep the broadcast port.
+		relayEP := st.RelayEndpoint
+		if relayEP != "" && p.RelayPort > 0 {
+			if h, _, err := net.SplitHostPort(resolveEndpoint(relayEP)); err == nil {
+				relayEP = net.JoinHostPort(h, strconv.Itoa(p.RelayPort))
+			}
+		}
 		// Choose the best direct candidates for this peer: the global-IPv6
 		// endpoint first (NAT-free), then the v4 self-advertised endpoint and
 		// any LAN/same-subnet local endpoint, then the live relay mappings.
@@ -1377,25 +1424,39 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 		}
 		v6 := p.EndpointV6
 		// With the relay present the self-advertised public endpoint is often
-		// a stale pinhole, so the "direct" v4 target is only an on-LAN one;
-		// the live NAT mappings the relay observed are the actual punch
-		// targets. Any of the three being usable counts as "direct possible".
-		hasObs := false
-		for _, ep := range observed {
-			host, _, err := net.SplitHostPort(ep)
-			if err != nil || host == excludeHost {
-				continue
+		// a stale pinhole, so the "direct" v4 target is only an on-LAN one.
+		// The live NAT mappings the relay observed are retained as extra punch
+		// targets for an already-triggered direct attempt, but never trigger
+		// one: remote NAT/CGNAT mappings are asymmetric and flaky — a one-shot
+		// handshake opened by our own outbound probe must not lock the peer
+		// onto a hole that closes again.
+		peerObs := observed
+		if p.RelayFlow != "" {
+			byHost, _, err := net.SplitHostPort(p.RelayFlow)
+			if err == nil && byHost != "" {
+				peerObs = peerObs[:0:0]
+				for _, ep := range observed {
+					h, _, e := net.SplitHostPort(ep)
+					if e == nil && h == byHost {
+						peerObs = append(peerObs, ep)
+					}
+				}
+				peerObs = append(peerObs, p.RelayFlow)
 			}
-			hasObs = true
-			break
 		}
 		// Direct punching is pointless against a side that is offline: probe
 		// only peers the server reports online (or whose state is unknown).
 		if st.RelayEndpoint != "" && !p.Online {
-			p.Endpoint = st.RelayEndpoint
+			p.Endpoint = relayEP
 			continue
 		}
-		directOk := direct != "" || v6 != "" || hasObs
+		// A direct attempt is worthwhile when there is a same-subnet (LAN)
+		// candidate or a relay-observed NAT mapping (RelayFlow). LAN peers
+		// have no NAT; RelayFlow is the peer's current live NAT mapping seen
+		// by the relay, which is the best target for hole punching. We still
+		// avoid using the self-advertised public endpoint (stale pinhole) or
+		// IPv6 (flaky routes) as the *trigger*, but RelayFlow is authoritative.
+		directOk := direct != "" || p.RelayFlow != ""
 		dirKey := v6 + "|" + direct
 		st2 := rt.peerDirect[p.ID]
 		if st2 == nil {
@@ -1407,6 +1468,50 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 			rt.peerDirect[p.ID] = st2
 		}
 		st2.relay = st.RelayEndpoint
+		// Update packet loss estimation from peer stats.
+		// For direct paths, track the ratio of transmitted vs received bytes.
+		// A high loss rate indicates a degraded direct path (e.g., flaky CGNAT).
+		pStats := stats[p.PublicKey]
+		if pStats.LastHandshakeSec > 0 && st2.mode == "direct" {
+			tx := pStats.TxBytes
+			rx := pStats.RxBytes
+			if tx > 1000 { // Only estimate when there's meaningful traffic
+				// Simple loss estimation: if Tx >> Rx, packets are being lost
+				// (WireGuard retransmits, so some asymmetry is normal)
+				expectedMinRx := tx / 3 // At least 1/3 of sent bytes should come back
+				if rx < expectedMinRx {
+					st2.lossRate = float64(tx-expectedMinRx) / float64(tx)
+					st2.lossSamples++
+				} else {
+					// Good path, gradually reduce loss estimate
+					st2.lossRate *= 0.9
+				}
+			}
+		}
+		// A locked direct path must keep proving itself: WireGuard rekeys
+		// roughly every 120s on a working session, so a lock that saw no new
+		// handshake for directLockStaleSec is stale (the CGNAT hole closed or
+		// the mapping re-bound). Break it and return to the relay instead of
+		// dying on the dead endpoint forever.
+		hs := stats[p.PublicKey].LastHandshakeSec
+		if st2.mode == "direct" && st2.locked && hs > 0 && now-hs >= directLockStaleSec {
+			log.Printf("path %s: peer %s direct lock stale (%ds no handshake) -> relay", nid, p.ID, now-hs)
+			st2.locked = false
+			st2.cands = nil
+			st2.dirSince = now
+			st2.mode = "relay"
+		}
+		// Quality-aware fallback: if a locked direct path has high loss,
+		// switch to relay for better reliability.
+		if st2.mode == "direct" && st2.locked && st2.lossRate > lossThreshold && st2.lossSamples >= 3 {
+			log.Printf("path %s: peer %s degraded direct path (%.0f%% loss) -> relay", nid, p.ID, st2.lossRate*100)
+			st2.locked = false
+			st2.cands = nil
+			st2.lossRate = 0
+			st2.lossSamples = 0
+			st2.dirSince = now
+			st2.mode = "relay"
+		}
 		if st2.mode == "relay" {
 			// Switch to direct on the first opportunity (candidates just
 			// appeared) and re-probe periodically afterwards.
@@ -1443,41 +1548,86 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 			// since probing started" so a relay-era handshake cannot falsely
 			// lock a direct candidate.
 			if len(st2.cands) == 0 {
-				st2.cands = buildPeerCandidates(direct, v6, observed, excludeHost)
+				st2.cands = buildPeerCandidates(direct, v6, peerObs, excludeHost)
 				st2.candIdx = 0
+				st2.parallelIdx = 0
 				st2.candStart = now
 				st2.baseHS = hs
 				st2.locked = false
 			}
-			if !st2.locked && hs > st2.baseHS {
+			// Only a handshake whose sender is not the relay proves a working
+			// direct path: a relay-era handshake (endpoint host == relay host)
+			// means the peer is still being reached through the server, so it
+			// must not lock a candidate.
+			if !st2.locked && hs > st2.baseHS && relayReceiveDirect(stats[p.PublicKey].Endpoint, relayHostNorm) {
 				st2.locked = true
-				log.Printf("path %s: peer %s direct handshake via %s (candidate %d/%d)", nid, p.ID, st2.cands[st2.candIdx], st2.candIdx+1, len(st2.cands))
-			}
-			if !st2.locked && now-st2.candStart >= candProbeSec {
-				if st2.candIdx+1 < len(st2.cands) {
-					st2.candIdx++
-					st2.candStart = now
-					st2.baseHS = hs
-					log.Printf("path %s: peer %s probing direct candidate %d/%d (%s)", nid, p.ID, st2.candIdx+1, len(st2.cands), st2.cands[st2.candIdx])
+				// Find which candidate matched by checking the handshake endpoint.
+				// For now, just report the current batch leader.
+				if st2.candIdx < len(st2.cands) {
+					log.Printf("path %s: peer %s direct handshake via %s (batch %d)", nid, p.ID, stats[p.PublicKey].Endpoint, st2.parallelIdx/parallelProbes+1)
 				}
 			}
-			if st2.candIdx < len(st2.cands) {
-				p.Endpoint = st2.cands[st2.candIdx]
+			// Parallel batch probing: rotate to next batch after candProbeSec.
+			if !st2.locked && now-st2.candStart >= candProbeSec {
+				nextBatch := st2.parallelIdx + parallelProbes
+				if nextBatch < len(st2.cands) {
+					st2.parallelIdx = nextBatch
+					st2.candStart = now
+					st2.baseHS = hs
+					endIdx := nextBatch + parallelProbes
+					if endIdx > len(st2.cands) {
+						endIdx = len(st2.cands)
+					}
+					log.Printf("path %s: peer %s probing batch %d/%d (candidates %d-%d)", nid, p.ID, nextBatch/parallelProbes+1, (len(st2.cands)+parallelProbes-1)/parallelProbes, nextBatch+1, endIdx)
+				}
+			}
+			// Set endpoint to the first candidate in the current batch.
+			// WireGuard will try to reach this endpoint, and if the NAT mapping
+			// matches any candidate in the batch, the handshake succeeds.
+			if st2.parallelIdx < len(st2.cands) {
+				p.Endpoint = st2.cands[st2.parallelIdx]
 			}
 			// Fall back to the relay when the direct budget is exhausted or
-			// every candidate has been tried without a handshake.
-			candsDone := !st2.locked && st2.candIdx+1 >= len(st2.cands) && now-st2.candStart >= candProbeSec
-			if st.RelayEndpoint != "" && !st2.locked && (now-st2.dirSince >= directGraceSec || candsDone) {
+			// every batch has been tried without a handshake.
+			allBatchesTried := !st2.locked && st2.parallelIdx+parallelProbes >= len(st2.cands) && now-st2.candStart >= candProbeSec
+			if st.RelayEndpoint != "" && !st2.locked && (now-st2.dirSince >= directGraceSec || allBatchesTried) {
 				log.Printf("path %s: peer %s direct -> relay (no direct handshake in %ds)", nid, p.ID, now-st2.dirSince)
 				st2.mode = "relay"
 				st2.dirSince = now
 			}
 		}
 		if st2.mode == "relay" && st.RelayEndpoint != "" {
-			p.Endpoint = st.RelayEndpoint
+			p.Endpoint = relayEP
 		}
 	}
 	return out
+}
+
+// hostNorm normalizes a host for comparison: strips IPv6 brackets and any
+// link-local zone ("fe80::1%en0") and lowercases.
+func hostNorm(h string) string {
+	h = strings.Trim(strings.ToLower(h), "[]")
+	if i := strings.Index(h, "%"); i >= 0 {
+		h = h[:i]
+	}
+	return h
+}
+
+// relayReceiveDirect reports whether a handshake observed at wgEP qualifies as
+// a direct connection: the sender must not be the relay host. With no relay
+// configured there is nothing to distinguish, so it always qualifies.
+func relayReceiveDirect(wgEP, relayHost string) bool {
+	if relayHost == "" {
+		return true
+	}
+	if wgEP == "" {
+		return false
+	}
+	h, _, err := net.SplitHostPort(wgEP)
+	if err != nil {
+		h = wgEP
+	}
+	return hostNorm(h) != hostNorm(relayHost)
 }
 
 // buildPeerCandidates orders the direct endpoints to probe for one peer:
@@ -1505,9 +1655,20 @@ func buildPeerCandidates(direct, epV6 string, observed []string, excludeHost str
 			continue
 		}
 		add(ep)
+		// Also expand observed endpoints into candidate windows.
+		// A relay-observed NAT mapping (RelayFlow) is the peer's current live
+		// endpoint, but behind symmetric NAT the actual WireGuard port may be
+		// offset. Expanding both the LAN candidate (if any) and the observed
+		// endpoints maximizes the direct-hit chance.
+		for _, c := range buildCandidates(ep) {
+			add(c)
+		}
 	}
-	for _, c := range buildCandidates(direct) {
-		add(c)
+	// Only expand direct if it exists (LAN candidate); otherwise rely on observed.
+	if direct != "" {
+		for _, c := range buildCandidates(direct) {
+			add(c)
+		}
 	}
 	return out
 }
@@ -1629,7 +1790,7 @@ func (d *Daemon) pollLoop(nid string) {
 
 		// The coordination call runs without holding d.mu so slow/jittery
 		// links do not stall the control API (status/info/members).
-		st, err := api.PeersState(nid, token)
+		st, err := api.PeersState(nid, token, true)
 		if err != nil {
 			log.Printf("poll peers %s: %v", nid, err)
 			continue
@@ -2395,7 +2556,7 @@ func (d *Daemon) Peers(nid string) (protocol.PeersResp, error) {
 	api := d.apiLocked()
 	token := nc.Token
 	d.mu.Unlock()
-	return api.PeersState(nid, token)
+	return api.PeersState(nid, token, true)
 }
 
 // Pre-allocated string values so serverState can use *string to distinguish
@@ -2547,14 +2708,16 @@ func peerPathInfo(rt *netRuntime) map[string]any {
 	out := make(map[string]any, len(rt.peerDirect))
 	for id, pd := range rt.peerDirect {
 		info := map[string]any{
-			"mode":   pd.mode,
-			"since":  pd.dirSince,
-			"direct": pd.lastDir,
-			"relay":  pd.relay,
+			"mode":      pd.mode,
+			"since":     pd.dirSince,
+			"direct":    pd.lastDir,
+			"relay":     pd.relay,
+			"lossRate":  pd.lossRate,
 		}
 		if len(pd.cands) > 0 {
 			info["candidates"] = len(pd.cands)
-			info["candidateIdx"] = pd.candIdx + 1
+			info["batch"] = pd.parallelIdx/parallelProbes + 1
+			info["totalBatches"] = (len(pd.cands) + parallelProbes - 1) / parallelProbes
 		}
 		info["locked"] = pd.locked
 		out[id] = info

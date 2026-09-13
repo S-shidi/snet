@@ -331,7 +331,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	}))
 
 	mux.HandleFunc("GET /api/v1/networks/{nid}/peers", requireToken(func(w http.ResponseWriter, r *http.Request) {
-		peers, err := s.ListPeers(tokenOf(r))
+		relayPorts := r.URL.Query().Get("relayPorts") == "1"
+		peers, err := s.ListPeersFrom(tokenOf(r), h.clientIP(r), relayPorts)
 		if err != nil {
 			handleStoreErr(w, err)
 			return

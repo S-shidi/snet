@@ -7,6 +7,7 @@ const (
 	NetworkPrefix        = "10.88.0."
 	MaxNodes             = 100
 	KeepaliveInterval    = 10
+	KeepaliveIntervalIdle = 25 // Longer interval when idle (mobile power saving)
 	PollIntervalSeconds  = 2
 	ProbeIntervalSeconds = 15
 	ProbePort            = 8091
@@ -81,7 +82,18 @@ type Node struct {
 	// DeviceName is the display name of the bound device (admin views only;
 	// empty when the device never reported a name).
 	DeviceName string `json:"deviceName,omitempty"`
-	Online     bool   `json:"online,omitempty"`
+	// RelayFlow is this node's most recent live NAT mapping observed on the
+	// network relay ("ip:port"). It is the exact address a peer should punch
+	// toward for a direct connection, and is attributed per node by the
+	// server from the relay's observed flows (matching the node's control
+	// plane public IP). Empty when the node has not contacted the relay yet.
+	RelayFlow string `json:"relayFlow,omitempty"`
+	// RelayPort is the per-node unicast relay port assigned to this node.
+	// Peers send relay traffic to relayHost:RelayPort instead of the shared
+	// broadcast port, enabling unicast routing without fan-out amplification.
+	// Zero means the node still uses the legacy broadcast port.
+	RelayPort int  `json:"relayPort,omitempty"`
+	Online    bool `json:"online,omitempty"`
 	// AllowedSubnets lists CIDR subnets this node advertises for routing.
 	// Other peers route traffic for these subnets through this node's tunnel.
 	AllowedSubnets []string `json:"allowedSubnets,omitempty"`

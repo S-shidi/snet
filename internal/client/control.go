@@ -54,11 +54,12 @@ func newAPIClient(server, caPath string, ctx context.Context) *apiClient {
 	// Keep-alive transport: the daemon polls every couple of seconds and
 	// reuses the pooled connection (and TLS session) instead of paying a full
 	// handshake per request over slow/jittery links.
+	// Disable HTTP/2 to avoid stream errors on unreliable connections.
 	transport := &http.Transport{
 		MaxIdleConns:        8,
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     90 * time.Second,
-		ForceAttemptHTTP2:   true,
+		ForceAttemptHTTP2:   false, // disabled to avoid HTTP/2 stream errors
 	}
 	if strings.HasPrefix(server, "https://") {
 		if caPath != "" {
@@ -80,7 +81,7 @@ func newAPIClient(server, caPath string, ctx context.Context) *apiClient {
 			}
 		}
 	}
-	httpClient := &http.Client{Transport: transport, Timeout: 15 * time.Second}
+	httpClient := &http.Client{Transport: transport, Timeout: 30 * time.Second}
 	return &apiClient{server: strings.TrimRight(server, "/"), http: httpClient, ctx: ctx}
 }
 
@@ -269,10 +270,18 @@ func (c *apiClient) ListPeers(nid, token string) ([]protocol.Node, error) {
 }
 
 // PeersState returns peers plus the caller's own node (with current IP) and
-// the network subnet, so the daemon can detect subnet/IP changes.
-func (c *apiClient) PeersState(nid, token string) (protocol.PeersResp, error) {
+// the network subnet, so the daemon can detect subnet/IP changes. relayPorts
+// declares per-node unicast relay port support (Phase 3): the server then
+// allocates a unicast port for the caller and advertises peers' ports.
+func (c *apiClient) PeersState(nid, token string, relayPorts bool) (protocol.PeersResp, error) {
 	var out protocol.PeersResp
-	err := c.do(http.MethodGet, "/api/v1/networks/"+nid+"/peers", token, nil, &out)
+	var path string
+	if relayPorts {
+		path = "/api/v1/networks/" + nid + "/peers?relayPorts=1"
+	} else {
+		path = "/api/v1/networks/" + nid + "/peers"
+	}
+	err := c.do(http.MethodGet, path, token, nil, &out)
 	return out, err
 }
 

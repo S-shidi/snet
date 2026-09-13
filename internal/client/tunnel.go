@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -25,6 +26,10 @@ type Tunnel struct {
 
 	mu    sync.Mutex
 	peers map[string]protocol.Node // nodeID -> node
+
+	// Dynamic keepalive: track last activity to adjust interval
+	lastActivity time.Time
+	idle         bool
 }
 
 // NewTunnel creates the utun interface, assigns the private /32 address and
@@ -98,8 +103,31 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 		if ep != "" {
 			sb.WriteString("endpoint=" + ep + "\n")
 		}
-		sb.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", protocol.KeepaliveInterval))
+		// Dynamic keepalive: use longer interval when idle to save battery on mobile
+		keepalive := protocol.KeepaliveInterval
+		if t.idle {
+			keepalive = protocol.KeepaliveIntervalIdle
+		}
+		sb.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", keepalive))
 	}
+	// Update activity state based on recent traffic
+	t.mu.Lock()
+	stats, _ := t.Stats()
+	now := time.Now()
+	hasTraffic := false
+	for _, s := range stats {
+		if s.RxBytes > 0 || s.TxBytes > 0 {
+			hasTraffic = true
+			break
+		}
+	}
+	if hasTraffic {
+		t.lastActivity = now
+		t.idle = false
+	} else if now.Sub(t.lastActivity) > 60*time.Second {
+		t.idle = true
+	}
+	t.mu.Unlock()
 	if err := t.dev.IpcSet(sb.String()); err != nil {
 		return fmt.Errorf("wg config: %w", err)
 	}
@@ -211,7 +239,7 @@ func (t *Tunnel) Stats() (map[string]PeerStats, error) {
 			}
 			curPub = hexToB64(v)
 			cur = &PeerStats{}
-		case "rx_bytes", "tx_bytes", "last_handshake_time_sec":
+		case "rx_bytes", "tx_bytes", "last_handshake_time_sec", "endpoint":
 			if cur == nil {
 				continue
 			}
@@ -224,6 +252,8 @@ func (t *Tunnel) Stats() (map[string]PeerStats, error) {
 				var sec int64
 				fmt.Sscanf(v, "%d", &sec)
 				cur.LastHandshakeSec = sec
+			case "endpoint":
+				cur.Endpoint = strings.TrimSuffix(strings.TrimSpace(v), "(udp)")
 			}
 		}
 	}
@@ -237,6 +267,10 @@ type PeerStats struct {
 	RxBytes          int64
 	TxBytes          int64
 	LastHandshakeSec int64
+	// Endpoint is the remote endpoint wireguard-go last associated with the
+	// peer (set by the last received packet / handshake), used to tell a
+	// relay-delivered handshake apart from one that arrived directly.
+	Endpoint string
 }
 
 func (t *Tunnel) InterfaceName() string { return t.iface }

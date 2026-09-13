@@ -24,6 +24,11 @@ import (
 	"snet/internal/protocol"
 )
 
+// TraceRelayPorts, when set, logs every frame routed (or dropped) on the
+// listed per-node relay ports. Off by default; set via a map literal for
+// temporary debug builds.
+var TraceRelayPorts map[int]bool
+
 var (
 	ErrNotFound       = errors.New("not found")
 	ErrCodeInvalid    = errors.New("invalid or expired pairing code")
@@ -119,6 +124,19 @@ type networkState struct {
 	lastActivityAt int64
 	relayPort      int
 	subnetBase     net.IP
+
+	// relaySeen is the live set of NAT mappings observed on this network's
+	// relay ports ("ip:port" -> last activity), fed by the relay's flow hook.
+	relaySeen map[string]time.Time
+	// ctrlHost records the last public IP each node used for control-plane
+	// (HTTPS) calls; used to attribute relay flows to nodes.
+	ctrlHost map[string]string
+	// relayFlowByNode is the most recent attributed relay flow per node.
+	relayFlowByNode map[string]string
+	// nodePorts maps each node in this network to its per-node unicast relay
+	// port. The relay binds a separate UDP socket per node port and routes
+	// traffic unicast instead of broadcasting.
+	nodePorts map[string]int
 }
 
 type tokenEntry struct {
@@ -198,7 +216,7 @@ type authCodeRecord struct {
 }
 
 type Store struct {
-	mu        sync.Mutex
+	mu        sync.RWMutex // RWMutex: allows concurrent reads, exclusive writes
 	db        *bbolt.DB
 	networks  map[string]*networkState
 	byToken   map[string]tokenEntry // key = SHA-256 hex of the raw token
@@ -219,6 +237,24 @@ type Store struct {
 	// relayEnsure lazily binds a single relay UDP port. Set via SetRelayEnsure;
 	// read under s.mu in ensureRelayPort.
 	relayEnsure func(port int) error
+	// nodeEnsure lazily binds a per-node unicast relay port (Phase 3). Set via
+	// SetNodeEnsure; read under s.mu in ensureNodePort.
+	nodeEnsure func(port int) error
+	// relayFlows returns the live flows seen on a relay port, filtered to a
+	// host. Set via SetRelayFlowLookup; used by unicast routing.
+	relayFlows func(port int, host string) []string
+	// relaySend writes data from the socket bound to port. Set via
+	// SetRelaySend; used by unicast routing.
+	relaySend func(port int, to string, data []byte) bool
+	// netByPort maps a bound relay UDP port back to the network it serves.
+	// Registered for both the network's broadcast port and any per-node
+	// unicast relay ports (Phase 3).
+	netByPort map[int]*networkState
+	// portToNode maps a per-node unicast relay port back to the node ID
+	// it serves. Used by the relay for unicast routing: when a frame arrives
+	// at a node port, the relay looks up the sender and recipient from this
+	// mapping.
+	portToNode map[int]string
 }
 
 // NewStore returns a purely in-memory store (no persistence). Used by tests
@@ -232,10 +268,12 @@ func NewStore() *Store {
 // An empty path keeps the store purely in-memory.
 func NewStoreAt(path string) (*Store, error) {
 	s := &Store{
-		networks:  make(map[string]*networkState),
-		byToken:   make(map[string]tokenEntry),
-		devices:   make(map[string]*deviceRecord),
-		authCodes: make(map[string]*authCodeRecord),
+		networks:   make(map[string]*networkState),
+		byToken:    make(map[string]tokenEntry),
+		devices:    make(map[string]*deviceRecord),
+		authCodes:  make(map[string]*authCodeRecord),
+		netByPort:  make(map[int]*networkState),
+		portToNode: make(map[int]string),
 	}
 	if path == "" {
 		return s, nil
@@ -306,12 +344,16 @@ func (s *Store) load() error {
 						failCount:   r.FailCount,
 						lockedUntil: r.LockedUntil,
 					},
-					nodes:          make(map[string]*protocol.Node),
-					pending:        make(map[string]*pendingNode),
-					ipam:           r.IPAM,
-					relayPort:      r.RelayPort,
-					lastActivityAt: lastAct,
-					subnetBase:     base,
+					nodes:           make(map[string]*protocol.Node),
+					pending:         make(map[string]*pendingNode),
+					ipam:            r.IPAM,
+					relayPort:       r.RelayPort,
+					lastActivityAt:  lastAct,
+					subnetBase:      base,
+					relaySeen:       make(map[string]time.Time),
+					ctrlHost:        make(map[string]string),
+					relayFlowByNode: make(map[string]string),
+					nodePorts:       make(map[string]int),
 				}
 				s.networks[r.ID] = ns
 			}
@@ -756,6 +798,31 @@ func (s *Store) SetRelayEnsure(fn func(port int) error) {
 	s.relayEnsure = fn
 }
 
+// SetNodeEnsure registers the function that lazily binds a per-node unicast
+// relay port (Phase 3). Called under s.mu from ensureNodePort.
+func (s *Store) SetNodeEnsure(fn func(port int) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodeEnsure = fn
+}
+
+// SetRelayFlowLookup registers the function that returns live relay flows for
+// a port, filtered to a specific host. Used by unicast routing to find the
+// recipient's inbound mapping on the sender's socket.
+func (s *Store) SetRelayFlowLookup(fn func(port int, host string) []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayFlows = fn
+}
+
+// SetRelaySend registers the function that sends data from a specific relay
+// socket. Used by unicast routing to forward from the sender's port.
+func (s *Store) SetRelaySend(fn func(port int, to string, data []byte) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relaySend = fn
+}
+
 // relayEnabled reports whether relay mode is on.
 func (s *Store) relayEnabled() bool {
 	return s.relayHost != "" && s.relayCount > 0
@@ -768,6 +835,7 @@ func (s *Store) ensureRelayPort(ns *networkState) error {
 	if ns.relayPort != 0 {
 		// Re-bind after a restart that left the network with a persisted port.
 		if s.relayEnsure != nil {
+			s.netByPort[ns.relayPort] = ns
 			return s.relayEnsure(ns.relayPort)
 		}
 		return nil
@@ -796,10 +864,205 @@ func (s *Store) ensureRelayPort(ns *networkState) error {
 				}
 			}
 			ns.relayPort = candidate
+			s.netByPort[candidate] = ns
 			return s.persistNetwork(ns)
 		}
 	}
 	return errors.New("no free relay ports")
+}
+
+// ensureNodePort assigns a per-node unicast relay port to the node if it does
+// not already have one (Phase 3). The port is drawn from the same pool as the
+// network broadcast ports but is tracked separately so it is never reused for
+// two nodes. Callers must hold s.mu.
+func (s *Store) ensureNodePort(ns *networkState, nodeID string) error {
+	if nodeID == "" {
+		return nil
+	}
+	if ns.nodePorts[nodeID] != 0 {
+		return nil
+	}
+	if s.relayCount <= 0 {
+		return errors.New("no relay ports configured")
+	}
+	used := func(candidate int) bool {
+		if s.netByPort[candidate] != nil || s.portToNode[candidate] != "" {
+			return true
+		}
+		for _, other := range s.networks {
+			if other.relayPort == candidate {
+				return true
+			}
+			for _, p := range other.nodePorts {
+				if p == candidate {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for i := 0; i < s.relayCount*16; i++ {
+		candidate := s.relayBase + (i % s.relayCount)
+		if used(candidate) {
+			continue
+		}
+		// Bind lazily; on failure (port taken by a foreign process) skip to
+		// the next candidate rather than failing the node.
+		if s.nodeEnsure != nil {
+			if err := s.nodeEnsure(candidate); err != nil {
+				continue
+			}
+		}
+		ns.nodePorts[nodeID] = candidate
+		s.netByPort[candidate] = ns
+		s.portToNode[candidate] = nodeID
+		return nil
+	}
+	return errors.New("no free relay node ports")
+}
+
+// RelayRouteNodePort routes a frame that arrived at a per-node unicast relay
+// port. port is the socket the frame arrived on — which identifies the
+// recipient (each node's WireGuard socket addresses only its peer's port) —
+// and sender is the observed source NAT mapping. The frame is forwarded from
+// the SENDER's socket to the recipient's mapping opened toward the sender's
+// port, so the recipient's NAT accepts it (see Relay docs). Returns true when
+// the frame was routed or deliberately dropped; false falls back to broadcast
+// fan-out (e.g. the port is not a node port).
+func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	recipientID := s.portToNode[port]
+	if recipientID == "" {
+		return false
+	}
+	ns := s.netByPort[port]
+	if ns == nil {
+		return true
+	}
+	senderHost, _, err := net.SplitHostPort(sender)
+	if err != nil {
+		if TraceRelayPorts[port] {
+			log.Printf("TRACE nodeport %d: bad sender addr, drop", port)
+		}
+		return true
+	}
+	if TraceRelayPorts[port] {
+		log.Printf("TRACE nodeport %d: frame senderHost=%s recipientID=%s", port, senderHost, recipientID)
+	}
+	// Identify the sender node by its control-plane public IP (attributed in
+	// listPeersFrom). Without a match there is no sender port to route from.
+	var senderID string
+	for id, c := range ns.ctrlHost {
+		if hostNorm(c) == hostNorm(senderHost) {
+			senderID = id
+			break
+		}
+	}
+	senderPort := 0
+	if senderID != "" {
+		senderPort = ns.nodePorts[senderID]
+	}
+	if senderPort == 0 || senderPort == port {
+		if TraceRelayPorts[port] {
+			log.Printf("TRACE nodeport %d: no senderPort (senderID=%q nodePorts=%v) -> drop", port, senderID, ns.nodePorts)
+		}
+		return true
+	}
+	// Destination: the recipient's inbound mapping on the sender's socket.
+	// The recipient opens it by keepaliving to relayHost:<sender's port>; it
+	// will appear as a flow on the sender's port whose host is the recipient.
+	recipientHost := ns.ctrlHost[recipientID]
+	if recipientHost == "" {
+		if TraceRelayPorts[port] {
+			log.Printf("TRACE nodeport %d: no ctrlHost for recipient %q -> drop (senderPort=%d)", port, recipientID, senderPort)
+		}
+		return true
+	}
+	fls := s.relayFlowsByHost(senderPort, recipientHost)
+	if TraceRelayPorts[port] {
+		log.Printf("TRACE nodeport %d: senderID=%q senderPort=%d hostFlowsOn%d=%v", port, senderID, senderPort, senderPort, fls)
+	}
+	for _, fl := range fls {
+		if fl != sender {
+			s.relaySendFrom(senderPort, fl, data)
+			if TraceRelayPorts[port] {
+				log.Printf("TRACE nodeport %d: forwarded to %s via port %d", port, fl, senderPort)
+			}
+			return true
+		}
+	}
+	// No recipient mapping on the sender's socket yet; the recipient's
+	// keepalives will establish it shortly. Drop to avoid fan-out.
+	if TraceRelayPorts[port] {
+		log.Printf("TRACE nodeport %d: no recipient flow on sender port %d (host=%q) -> drop", port, senderPort, recipientHost)
+	}
+	return true
+}
+
+// relayFlowsByHost returns the live flows seen on a relay port whose host
+// equals host. Requires the route callback's lock discipline (callers hold
+// s.mu; this acquires the pair mutex, never a store lock).
+func (s *Store) relayFlowsByHost(port int, host string) []string {
+	if s.relayFlows == nil {
+		return nil
+	}
+	return s.relayFlows(port, host)
+}
+
+// relaySendFrom sends data from the socket bound to port. Requires the route
+// callback's lock discipline (callers hold s.mu; this acquires the relay mutex
+// only).
+func (s *Store) relaySendFrom(port int, to string, data []byte) bool {
+	if s.relaySend == nil {
+		return false
+	}
+	return s.relaySend(port, to, data)
+}
+
+// OnRelayFlow is invoked by the relay (from its port read loop) whenever a
+// real WireGuard packet is seen from a NAT mapping on one of this server's
+// relay ports. It records the live mapping and attributes it to the node whose
+// control-plane public IP matches the mapping's host, so the store can expose
+// each peer's exact current relay flow (the address to punch for a direct
+// connection) and later route unicast relay traffic to the right node.
+func (s *Store) OnRelayFlow(port int, addr string) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	ns := s.netByPort[port]
+	if ns == nil {
+		s.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	if len(ns.relaySeen) == 0 || now.Unix()%8 == 0 {
+		for a, t := range ns.relaySeen {
+			if now.Sub(t) >= 60*time.Second {
+				delete(ns.relaySeen, a)
+			}
+		}
+	}
+	ns.relaySeen[addr] = now
+	for nodeID, c := range ns.ctrlHost {
+		if c == host {
+			ns.relayFlowByNode[nodeID] = addr
+			break
+		}
+	}
+	s.mu.Unlock()
+}
+
+// NoteCtrlHost records the public IP a node's control-plane calls come from.
+// The relay flow hook uses it to attribute observed NAT mappings to nodes.
+func (s *Store) NoteCtrlHost(nid, nodeID, host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ns := s.networks[nid]; ns != nil {
+		ns.ctrlHost[nodeID] = host
+	}
 }
 
 // ---- public API ----
@@ -910,10 +1173,14 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 			remaining: codeMaxUse,
 			expiresAt: now.Add(codeTTL),
 		},
-		nodes:          make(map[string]*protocol.Node),
-		pending:        make(map[string]*pendingNode),
-		lastActivityAt: now.Unix(),
-		subnetBase:     base,
+		nodes:           make(map[string]*protocol.Node),
+		pending:         make(map[string]*pendingNode),
+		lastActivityAt:  now.Unix(),
+		subnetBase:      base,
+		relaySeen:       make(map[string]time.Time),
+		ctrlHost:        make(map[string]string),
+		relayFlowByNode: make(map[string]string),
+		nodePorts:       make(map[string]int),
 	}
 	s.netSeq++
 	ns.seq = s.netSeq
@@ -1011,6 +1278,24 @@ func (s *Store) touchLocked(ns *networkState, now time.Time) {
 	}
 }
 
+// touchLockedAsync is the async version of touchLocked for background persistence.
+// It acquires the lock itself and handles the network state update safely.
+func (s *Store) touchLockedAsync(ns *networkState, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ts := now.Unix()
+	if ts <= ns.lastActivityAt {
+		return
+	}
+	ns.lastActivityAt = ts
+	ns.n.LastActivityAt = ts
+	if now.Unix()-ns.lastActWrite >= int64(lastActThrot/time.Second) {
+		ns.lastActWrite = now.Unix()
+		_ = s.persistNetwork(ns)
+	}
+}
+
 func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinResp, error) {
 	code := protocol.NormalizeCode(rawCode)
 	now := time.Now()
@@ -1057,6 +1342,18 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 		p.remaining--
 	}
 	p.failCount = 0
+
+	// A device may hold only ONE node per network. A reinstalled client whose
+	// bound-network sync missed its membership will re-join with the same
+	// deviceId; without this guard it would spawn a second node and confuse
+	// every peer. When the join code is already valid, revive the most recently
+	// seen membership under the device's current public key and drop any
+	// leftover duplicate nodes of the same device.
+	if deviceID != "" {
+		if host := latestNodeForDevice(ns.nodes, deviceID); host != nil {
+			return s.reviveNode(ns, host, publicKey, deviceID, now)
+		}
+	}
 
 	if ns.n.ApprovalRequired {
 		pendingID, err := randomString(12)
@@ -1148,6 +1445,71 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 	}, nil
 }
 
+// latestNodeForDevice returns the most recently seen node in nodes owned by
+// deviceID, or nil if the device has no membership there.
+func latestNodeForDevice(nodes map[string]*protocol.Node, deviceID string) *protocol.Node {
+	var best *protocol.Node
+	for _, n := range nodes {
+		if n.DeviceID != deviceID || n.ID == "" {
+			continue
+		}
+		if best == nil || n.LastSeen > best.LastSeen {
+			best = n
+		}
+	}
+	return best
+}
+
+// reviveNode re-binds a joining device to an existing membership instead of
+// creating a duplicate: the surviving node keeps its nodeID/IP, adopts the
+// device's current public key (a reinstall generates a fresh WG key), and
+// receives a fresh auth token. Any additional nodes the same device left
+// behind are removed so each device owns exactly one node.
+func (s *Store) reviveNode(ns *networkState, host *protocol.Node, publicKey, deviceID string, now time.Time) (protocol.JoinResp, error) {
+	host.PublicKey = publicKey
+	host.LastSeen = now.Unix()
+	for id, n := range ns.nodes {
+		if n.ID != host.ID && n.DeviceID == deviceID {
+			delete(ns.nodes, id)
+			if err := s.deleteNode(ns.n.ID, id); err != nil {
+				log.Printf("join: delete stale node %s/%s: %v", ns.n.ID, id, err)
+			}
+		}
+	}
+	tok, err := randomToken()
+	if err != nil {
+		return protocol.JoinResp{}, err
+	}
+	s.byToken[hashToken(tok)] = tokenEntry{NetworkID: ns.n.ID, NodeID: host.ID}
+	if err := s.persistToken(tok, tokenEntry{NetworkID: ns.n.ID, NodeID: host.ID}); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	if err := s.upsertDeviceLocked(deviceID, publicKey, ""); err != nil {
+		return protocol.JoinResp{}, err
+	}
+	if err := s.persistNode(ns.n.ID, host); err != nil {
+		return protocol.JoinResp{}, err
+	}
+
+	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
+	for id, n := range ns.nodes {
+		if id != host.ID {
+			peers = append(peers, *n)
+		}
+	}
+	return protocol.JoinResp{
+		NetworkID: ns.n.ID,
+		Name:      ns.n.Name,
+		NodeID:    host.ID,
+		IP:        host.IP,
+		Token:     tok,
+		Subnet:    ns.n.Subnet,
+		RelayPort: ns.relayPort,
+		Peers:     peers,
+		Status:    "rejoined",
+	}, nil
+}
+
 func (s *Store) SetEndpoint(token, endpoint, localEndpoint string) error {
 	if err := validateEndpoint(endpoint); err != nil {
 		return err
@@ -1207,6 +1569,21 @@ func (s *Store) SetEndpointV6(token, endpointV6 string) error {
 }
 
 func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
+	return s.listPeersFrom(token, "", false)
+}
+
+// ListPeersFrom is ListPeers with the caller's public IP captured from the
+// control plane, which the relay-flow attribution uses to map observed NAT
+// mappings to nodes. relayPorts must be true when the caller's client
+// understands per-node unicast relay ports (Phase 3): only then is a node port
+// allocated for the caller and advertised to peers. Legacy clients pass false
+// and keep using the shared broadcast port, so mixed-version networks keep
+// interoperating through broadcast fan-out.
+func (s *Store) ListPeersFrom(token, remoteHost string, relayPorts bool) (protocol.PeersResp, error) {
+	return s.listPeersFrom(token, remoteHost, relayPorts)
+}
+
+func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protocol.PeersResp, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	te, ok := s.byToken[hashToken(token)]
@@ -1220,15 +1597,40 @@ func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
 	if me := ns.nodes[te.NodeID]; me != nil {
 		now := time.Now().Unix()
 		me.LastSeen = now
+		// Attribute control-plane calls to the caller's public IP for relay
+		// flow mapping — but never to calls that originate from the server
+		// host itself (loopback, or a local monitor reaching its own public
+		// address). Such requests are not the node's real egress and would
+		// poison the flow attribution.
+		if remoteHost != "" && remoteHost != s.relayHost && remoteHost != "127.0.0.1" && remoteHost != "::1" {
+			ns.ctrlHost[te.NodeID] = remoteHost
+		}
 		if now-ns.lastSeenWrite >= int64(lastSeenThrot/time.Second) {
-			_ = s.persistNode(te.NetworkID, me)
+			// Async persistence: persist node in background to avoid blocking API
+			go func(networkID string, node *protocol.Node) {
+				// Create a copy to avoid race
+				n2 := *node
+				_ = s.persistNode(networkID, &n2)
+			}(te.NetworkID, me)
 			ns.lastSeenWrite = now
 		}
 	}
-	s.touchLocked(ns, time.Now())
+	// Async network activity persistence
+	go func(ns *networkState, t time.Time) {
+		s.touchLockedAsync(ns, t)
+	}(ns, time.Now())
 	if s.relayEnabled() {
 		if err := s.ensureRelayPort(ns); err != nil {
 			return protocol.PeersResp{}, err
+		}
+		// Allocate a per-node unicast relay port for the caller (Phase 3)
+		// only when the client declares support for per-node relay ports.
+		// Legacy clients skip this and keep using the shared broadcast port,
+		// so mixed-version networks stay interoperable.
+		if relayPorts {
+			if err := s.ensureNodePort(ns, te.NodeID); err != nil {
+				return protocol.PeersResp{}, err
+			}
 		}
 	}
 	relayEP := ""
@@ -1247,6 +1649,12 @@ func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
 		if d := s.devices[n2.DeviceID]; d != nil {
 			n2.DeviceName = d.Name
 		}
+		// The node's most recent live relay NAT mapping, attributed by the
+		// relay flow hook; lets the caller punch at the exact address.
+		n2.RelayFlow = ns.relayFlowByNode[n2.ID]
+		// The node's per-node unicast relay port; peers use it to reach
+		// this node via relay without triggering broadcast fan-out.
+		n2.RelayPort = ns.nodePorts[n2.ID]
 	}
 	for id, n := range ns.nodes {
 		if id != te.NodeID {
@@ -2219,10 +2627,14 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 			codeHash:  hashCode(code),
 			remaining: codeUnlimited,
 		},
-		nodes:          make(map[string]*protocol.Node),
-		pending:        make(map[string]*pendingNode),
-		lastActivityAt: now.Unix(),
-		subnetBase:     base,
+		nodes:           make(map[string]*protocol.Node),
+		pending:         make(map[string]*pendingNode),
+		lastActivityAt:  now.Unix(),
+		subnetBase:      base,
+		relaySeen:       make(map[string]time.Time),
+		ctrlHost:        make(map[string]string),
+		relayFlowByNode: make(map[string]string),
+		nodePorts:       make(map[string]int),
 	}
 	s.netSeq++
 	ns.seq = s.netSeq
