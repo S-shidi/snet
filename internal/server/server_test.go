@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"snet/internal/protocol"
 )
@@ -221,5 +222,101 @@ func TestLinkFormat(t *testing.T) {
 	}
 	if _, _, _, _, err := protocol.ParseLink("garbage"); err == nil {
 		t.Fatal("expected error for garbage")
+	}
+}
+
+func TestJoinDedupeDeviceID(t *testing.T) {
+	// A reinstalled client re-joins with the same deviceId but a fresh WG key.
+	// The server must revive the existing membership instead of creating a
+	// duplicate node, and any leftover duplicate nodes of the device must be
+	// purged so peers never see two nodes for one device.
+	ts, s := newTestServer(t)
+
+	var created protocol.CreateNetworkResp
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks", "", protocol.CreateNetworkReq{
+		PublicKey: "qPw1bG7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2s=",
+	}, &created)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", resp.StatusCode)
+	}
+	const dev = "phone-dev-0001"
+	const k1 = "rQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2t="
+	const k2 = "sQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2u="
+	const k3 = "tQw2bH7fV8xY2zA3bC4dE5fG6hI7jK8lM9nO0pQ1R2v="
+
+	var joined protocol.JoinResp
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
+		protocol.JoinReq{Code: created.PairingCode, PublicKey: k1, DeviceID: dev}, &joined)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("join status = %d", resp.StatusCode)
+	}
+	firstID, firstIP, firstTok := joined.NodeID, joined.IP, joined.Token
+
+	// Re-join with the same device, new public key: same node, key refreshed.
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
+		protocol.JoinReq{Code: created.PairingCode, PublicKey: k2, DeviceID: dev}, &joined)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rejoin status = %d", resp.StatusCode)
+	}
+	if joined.NodeID != firstID || joined.IP != firstIP {
+		t.Fatalf("rejoin changed identity: got %s/%s want %s/%s", joined.NodeID, joined.IP, firstID, firstIP)
+	}
+	if joined.Status != "rejoined" {
+		t.Fatalf("rejoin status field = %q, want %q", joined.Status, "rejoined")
+	}
+	if joined.Token == "" || joined.Token == firstTok {
+		t.Fatalf("rejoin token not refreshed: got %q", joined.Token)
+	}
+
+	// Owner must see exactly one node for the device, with the new key.
+	var peers protocol.PeersResp
+	resp = doJSON(t, http.MethodGet, ts.URL+"/api/v1/networks/"+created.NetworkID+"/peers", created.Token, nil, &peers)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("peers status = %d", resp.StatusCode)
+	}
+	count := 0
+	for _, p := range peers.Peers {
+		if p.DeviceID == dev {
+			count++
+			if p.PublicKey != k2 {
+				t.Fatalf("revived node pubkey = %q, want %q", p.PublicKey, k2)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("peers for device %s = %d, want 1", dev, count)
+	}
+
+	// Damage state: simulate the pre-fix duplicate by injecting a second node
+	// for the same device, then re-join and expect the duplicate purged. The
+	// injected node is made clearly older so the "revive the latest" logic is
+	// deterministic regardless of second-boundary ties.
+	s.mu.Lock()
+	ns := s.networks[created.NetworkID]
+	ns.nodes["DUPXXXX"] = &protocol.Node{
+		ID:        "DUPXXXX",
+		NetworkID: created.NetworkID,
+		IP:        "10.88.0.3",
+		PublicKey: k1,
+		DeviceID:  dev,
+		LastSeen:  time.Now().Unix() - 3600,
+	}
+	s.mu.Unlock()
+
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/networks/"+created.NetworkID+"/join", "",
+		protocol.JoinReq{Code: created.PairingCode, PublicKey: k3, DeviceID: dev}, &joined)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rejoin after dup status = %d", resp.StatusCode)
+	}
+	s.mu.Lock()
+	var survivors []string
+	for id, n := range s.networks[created.NetworkID].nodes {
+		if n.DeviceID == dev {
+			survivors = append(survivors, id)
+		}
+	}
+	s.mu.Unlock()
+	if len(survivors) != 1 || survivors[0] != firstID {
+		t.Fatalf("dup cleanup survivors = %v, want [%s]", survivors, firstID)
 	}
 }

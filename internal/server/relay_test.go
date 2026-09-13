@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -353,4 +354,277 @@ func freePort(t *testing.T) int {
 	p := lc.LocalAddr().(*net.UDPAddr).Port
 	lc.Close()
 	return p
+}
+
+// TestRelayDampensControlFrames verifies the fan-out amplification loop is
+// broken: identical WireGuard control/keepalive frames re-entering the relay
+// from any source are fanned out at most once per window, and real data
+// frames are never dampened. This is the counterpart to the Phase 1 storm fix.
+func TestRelayDampensControlFrames(t *testing.T) {
+	port := freePort(t)
+	r := NewRelay(port, 1)
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	a := dialUDP(t, port)
+	b := dialUDP(t, port)
+	defer a.Close()
+	defer b.Close()
+	relay := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+
+	// A 148-byte handshake-init-shaped frame, and a 32-byte keepalive-shaped
+	// frame; both are exactly the "control" shapes the amplifier feeds on.
+	init := append([]byte{1}, make([]byte, 147)...)
+	keepalive := append([]byte{4}, make([]byte, 31)...)
+
+	mustWrite := func(c *net.UDPConn, m []byte) {
+		if _, err := c.WriteToUDP(m, relay); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Register both endpoints with data-length frames (never dampened, always
+	// fanned), so b starts in a's seen set and vice versa.
+	fake := []byte("x")
+	mustWrite(a, fake)
+	mustWrite(b, fake)
+
+	readUntil := func(c *net.UDPConn, want []byte, deadline time.Duration) bool {
+		_ = c.SetReadDeadline(time.Now().Add(deadline))
+		buf := make([]byte, 512)
+		for {
+			n, _, err := c.ReadFromUDP(buf)
+			if err != nil {
+				return false
+			}
+			if string(buf[:n]) == string(want) {
+				return true
+			}
+		}
+	}
+	// b got a's registration frame; drain it so b's next read is the init.
+	_ = readUntil(b, fake, time.Second)
+
+	// First output of a's init reaches b.
+	mustWrite(a, init)
+	if !readUntil(b, init, time.Second) {
+		t.Fatal("b never saw the first init fan-out")
+	}
+	// Re-broadcasting the SAME frame from b's side (the amplifier case: b
+	// roamed back to the relay and re-emits the identical keepalive) must NOT
+	// produce another copy at a.
+	mustWrite(b, keepalive)
+	if readUntil(a, keepalive, time.Second) {
+		// Note: a may legitimately receive b's own fresh keepalive via fan-out
+		// exactly once; re-sending it immediately must not produce a second.
+		mustWrite(b, keepalive)
+		if readUntil(a, keepalive, time.Second) {
+			t.Fatal("duplicate identical keepalive was fanned out again")
+		}
+	}
+
+	// Real data frames still flow unimpeded.
+	mustWrite(a, []byte("payload-1"))
+	if !readUntil(b, []byte("payload-1"), time.Second) {
+		t.Fatal("data frame was dampened")
+	}
+}
+
+// TestRelayClassifyWG sanity-checks WireGuard control-frame recognition.
+func TestRelayClassifyWG(t *testing.T) {
+	if classifyWG(append([]byte{1}, make([]byte, 147)...)) != wgInit {
+		t.Fatal("148B type-1 not init")
+	}
+	if classifyWG(append([]byte{2}, make([]byte, 91)...)) != wgResponse {
+		t.Fatal("92B type-2 not response")
+	}
+	if classifyWG(append([]byte{3}, make([]byte, 63)...)) != wgCookie {
+		t.Fatal("64B type-3 not cookie")
+	}
+	if classifyWG(append([]byte{4}, make([]byte, 31)...)) != wgKeepalive {
+		t.Fatal("32B type-4 not keepalive")
+	}
+	if classifyWG(append([]byte{1}, make([]byte, 100)...)) != wgData {
+		t.Fatal("odd-length type-1 should be data")
+	}
+}
+
+// TestPerNodeUnicastRouting verifies the Phase 3 unicast relay path: each node
+// is assigned its own relay port, and a data frame addressed to a peer's node
+// port is forwarded from the SENDER's socket to the recipient's inbound mapping
+// on it — with no broadcast fan-out to third parties. Legacy peers (no node
+// port) never take this path (covered by the un-routed fan-out tests).
+func TestPerNodeUnicastRouting(t *testing.T) {
+	base := freePort(t)
+	r := NewRelay(base, 8)
+	defer r.Close()
+
+	s := NewStore()
+	s.SetRelay("127.0.0.1", base, 8)
+	s.SetRelayEnsure(r.Ensure)
+	s.SetNodeEnsure(r.EnsureNode)
+	r.SetNodeRoute(s.RelayRouteNodePort)
+	s.SetRelayFlowLookup(r.FlowsByHost)
+	s.SetRelaySend(r.SendFrom)
+
+	created, err := s.CreateNetwork(testKey(900), "owner-device-0000", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	join := func(key int, device string) protocol.JoinResp {
+		t.Helper()
+		rj, err := s.Join(created.NetworkID, created.PairingCode, testKey(key), device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rj
+	}
+	// Owner is caller A; B and C join with distinct devices.
+	respA, err := s.ListPeersFrom(created.Token, "203.0.113.10", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respB := join(901, "device-b-0001")
+	respC := join(902, "device-c-0002")
+	respBp, err := s.ListPeersFrom(respB.Token, "203.0.113.20", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respCp, err := s.ListPeersFrom(respC.Token, "203.0.113.30", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The peers views advertise the same per-node ports back.
+	peerPort := func(ps []protocol.Node, id string) int {
+		t.Helper()
+		for _, p := range ps {
+			if p.ID == id {
+				return p.RelayPort
+			}
+		}
+		return 0
+	}
+	aPort := respA.Self.RelayPort
+	bPort := respBp.Self.RelayPort
+	cPort := respCp.Self.RelayPort
+	if aPort == 0 || bPort == 0 || cPort == 0 {
+		t.Fatalf("node ports not assigned: a=%d b=%d c=%d", aPort, bPort, cPort)
+	}
+	if aPort == bPort || aPort == cPort || bPort == cPort {
+		t.Fatalf("node ports must be distinct: a=%d b=%d c=%d", aPort, bPort, cPort)
+	}
+	if got := peerPort(respCp.Peers, respBp.Self.ID); got != bPort {
+		t.Fatalf("B advertised as C's peers' RelayPort=%d, want %d", got, bPort)
+	}
+	if got := peerPort(respCp.Peers, respA.Self.ID); got != aPort {
+		t.Fatalf("A advertised as C's peers' RelayPort=%d, want %d", got, aPort)
+	}
+	// After everyone has polled, every peer's view carries each other's port.
+	respAll, err := s.ListPeersFrom(respB.Token, "203.0.113.21", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := peerPort(respAll.Peers, respA.Self.ID); got != aPort {
+		t.Fatalf("after polls, A advertised RelayPort=%d, want %d", got, aPort)
+	}
+	if got := peerPort(respAll.Peers, respCp.Self.ID); got != cPort {
+		t.Fatalf("after polls, C advertised RelayPort=%d, want %d", got, cPort)
+	}
+
+	// Simulate the wire with three loopback endpoints bound to distinct source
+	// IPs, and point the store's control-plane host attribution at them so the
+	// unicast router can identify senders and recipients.
+	s.NoteCtrlHost(created.NetworkID, respA.Self.ID, "127.0.0.1")
+	s.NoteCtrlHost(created.NetworkID, respBp.Self.ID, "127.0.0.2")
+	s.NoteCtrlHost(created.NetworkID, respCp.Self.ID, "127.0.0.3")
+
+	dialFrom := func(ip string) *net.UDPConn {
+		t.Helper()
+		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(ip)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	// Two distinct real source hosts: loopback for A, a LAN interface for B
+	// (macOS only owns 127.0.0.1 on lo, so we can't bind 127.0.0.2/3).
+	lanIP := lanIPv4(t)
+	a := dialFrom("127.0.0.1")
+	b := dialFrom(lanIP)
+	defer a.Close()
+	defer b.Close()
+	s.NoteCtrlHost(created.NetworkID, respA.Self.ID, "127.0.0.1")
+	s.NoteCtrlHost(created.NetworkID, respBp.Self.ID, lanIP)
+
+	// B opens its inbound mapping on A's socket: B keepalives to A's node port
+	// (A targets its own port, the address its socket is bound to on the relay).
+	ka := []byte("x")
+	if _, err := b.WriteToUDP(ka, &net.UDPAddr{IP: net.ParseIP(lanIP), Port: aPort}); err != nil {
+		t.Fatal(err)
+	}
+	// The relay handles A's and B's sockets in separate goroutines, so wait
+	// until B's mapping is actually registered before A's payload can be
+	// routed through it.
+	deadline := time.Now().Add(2 * time.Second)
+	for r.FlowsByHost(aPort, lanIP) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("B's flow never registered on A's socket :%d", aPort)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	buf := make([]byte, 512)
+
+	// A sends a data frame addressed to B's node port (relayHost:RelayPortB).
+	// It must be routed unicast out of A's socket into B's mapping — fan-out
+	// on B's port would go nowhere because B's flow is on A's port, not B's.
+	payload := []byte("data-from-A")
+	if _, err := a.WriteToUDP(payload, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: bPort}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, src, err := b.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("B never received the unicast frame: %v", err)
+	}
+	if string(buf[:n]) != string(payload) {
+		t.Fatalf("B got %q, want %q", string(buf[:n]), payload)
+	}
+	// The frame must have left the relay from the SENDER's socket (A's node
+	// port), proving it crossed the NAT via the sender's own mapping.
+	if _, sp, err := net.SplitHostPort(src.String()); err != nil || sp != strconv.Itoa(aPort) {
+		t.Fatalf("B received from %v, want relay src port %d", src, aPort)
+	}
+}
+
+// lanIPv4 returns a routable non-loopback IPv4 of this host, or skips the test
+// when none exists (e.g. an offline CI runner).
+func lanIPv4(t *testing.T) string {
+	t.Helper()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("net.Interfaces: %v", err)
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ip, _, err := net.ParseCIDR(a.String())
+			if err != nil {
+				continue
+			}
+			if v4 := ip.To4(); v4 != nil {
+				return v4.String()
+			}
+		}
+	}
+	t.Skip("no non-loopback IPv4 interface")
+	return ""
 }
