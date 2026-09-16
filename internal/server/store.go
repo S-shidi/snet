@@ -3345,9 +3345,10 @@ func (s *Store) AdminGenerateAuthCodes(count, maxBindings int) ([]string, []stri
 // AdminAuthCodes lists all authorization codes with their plaintext (masked
 // hint only for legacy records whose plaintext was never stored), binding
 // capacity and bound devices, newest first.
+// AdminAuthCodes lists all auth codes with their bindings. Pure read operation.
 func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()  // Use RLock for read-only operations
+	defer s.mu.RUnlock()
 	out := make([]protocol.AuthCodeInfo, 0, len(s.authCodes))
 	for _, ac := range s.authCodes {
 		code := ac.CodePlain
@@ -3382,9 +3383,9 @@ func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
 }
 
 // AdminAuthCodesPage returns one page of auth codes sorted by creation time
-// (newest first).
+// (newest first). Pure read operation (delegates to AdminAuthCodes which uses RLock).
 func (s *Store) AdminAuthCodesPage(page, pageSize int) ([]protocol.AuthCodeInfo, int, int) {
-	all := s.AdminAuthCodes()
+	all := s.AdminAuthCodes()  // Already uses RLock
 	sort.Slice(all, func(i, j int) bool {
 		ti, tj := adminTimeOf(all[i].CreatedAt), adminTimeOf(all[j].CreatedAt)
 		if !ti.Equal(tj) {
