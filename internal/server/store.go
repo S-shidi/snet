@@ -2795,9 +2795,10 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 	return items, total, page
 }
 
+// AdminNetworks lists all networks with summary stats. Pure read operation.
 func (s *Store) AdminNetworks(zombieTTL time.Duration) []networkSummary {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()  // Use RLock for read-only operations
+	defer s.mu.RUnlock()
 	now := time.Now()
 	out := make([]networkSummary, 0, len(s.networks))
 	for _, ns := range s.networks {
@@ -2817,10 +2818,10 @@ func (s *Store) AdminNetworks(zombieTTL time.Duration) []networkSummary {
 	return out
 }
 
-// NodeNetwork returns the network ID that a coordination token belongs to.
+// NodeNetwork returns the network ID that a coordination token belongs to. Pure read operation.
 func (s *Store) NodeNetwork(token string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()  // Use RLock for read-only operations
+	defer s.mu.RUnlock()
 	te, ok := s.byToken[hashToken(token)]
 	if !ok {
 		return "", ErrUnauthorized
@@ -2828,10 +2829,10 @@ func (s *Store) NodeNetwork(token string) (string, error) {
 	return te.NetworkID, nil
 }
 
-// AdminDevices lists all registered device identities.
+// AdminDevices lists all registered device identities. Pure read operation.
 func (s *Store) AdminDevices() []protocol.Device {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()  // Use RLock for read-only operations
+	defer s.mu.RUnlock()
 	out := make([]protocol.Device, 0, len(s.devices))
 	for _, d := range s.devices {
 		out = append(out, protocol.Device{
