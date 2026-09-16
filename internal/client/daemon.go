@@ -32,6 +32,44 @@ func runWithRecovery(name string, fn func()) {
 	}()
 }
 
+// Buffer pools for frequently allocated byte slices to reduce GC pressure.
+var (
+	// smallBufPool for small UDP responses (512 bytes)
+	smallBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 512)
+		},
+	}
+	
+	// largeBufPool for large UDP responses (65535 bytes)
+	largeBufPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 65535)
+		},
+	}
+)
+
+// getSmallBuf retrieves a small buffer from the pool.
+func getSmallBuf() []byte {
+	return smallBufPool.Get().([]byte)
+}
+
+// putSmallBuf returns a small buffer to the pool.
+func putSmallBuf(b []byte) {
+	// Reset buffer (optional but recommended)
+	smallBufPool.Put(b)
+}
+
+// getLargeBuf retrieves a large buffer from the pool.
+func getLargeBuf() []byte {
+	return largeBufPool.Get().([]byte)
+}
+
+// putLargeBuf returns a large buffer to the pool.
+func putLargeBuf(b []byte) {
+	largeBufPool.Put(b)
+}
+
 // netGoneErr is returned when the server reports 404 for a network operation,
 // indicating the network no longer exists on the server.
 var netGoneErr = errors.New("该网络在服务端已不存在")
@@ -2044,7 +2082,8 @@ func probePublicIP(probeAddr, nid, nodeID, token string) (string, error) {
 	if _, err := conn.Write(payload); err != nil {
 		return "", err
 	}
-	buf := make([]byte, 512)
+	buf := getSmallBuf()
+	defer putSmallBuf(buf)
 	n, err := conn.Read(buf)
 	if err != nil {
 		return "", err
@@ -2085,7 +2124,8 @@ func relayControl(relayAddr string, req interface{}) ([]byte, error) {
 	if _, err := conn.Write(full); err != nil {
 		return nil, err
 	}
-	buf := make([]byte, 65535)
+	buf := getLargeBuf()
+	defer putLargeBuf(buf)
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
