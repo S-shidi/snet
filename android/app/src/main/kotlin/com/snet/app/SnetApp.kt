@@ -79,10 +79,10 @@ object WebViewPreloader {
                     displayZoomControls = false
                     useWideViewPort = true
                     loadWithOverviewMode = true
-                    
-                    // Enable hardware acceleration
-                    setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
                 }
+
+                // Enable hardware acceleration on WebView itself
+                webView?.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
 
                 // Restore strict mode
                 StrictMode.setThreadPolicy(oldPolicy)
