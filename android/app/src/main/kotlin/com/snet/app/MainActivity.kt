@@ -89,11 +89,9 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        if (SnetBridge.getStatus(this) == null) {
-            SnetBridge.init(this, filesDir.absolutePath)
-        }
-
-        webView = WebView(this)
+        // Try to use preloaded WebView for faster startup
+        webView = WebViewPreloader.get() ?: WebView(this)
+        WebViewPreloader.clear()  // Clear the reference after taking ownership
         setContentView(webView)
 
         webView.settings.apply {
@@ -101,8 +99,15 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             allowFileAccess = true
             allowContentAccess = false
-            cacheMode = WebSettings.LOAD_DEFAULT
+            cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK  // Prefer cache for faster load
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        
+            // Performance optimizations
+            setSupportZoom(false)
+            builtInZoomControls = false
+            displayZoomControls = false
+            useWideViewPort = true
+            loadWithOverviewMode = true
         }
 
         webView.webChromeClient = object : WebChromeClient() {
