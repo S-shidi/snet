@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,19 @@ import (
 
 	"snet/internal/protocol"
 )
+
+// runWithRecovery wraps a goroutine with panic recovery to prevent crashes.
+// All goroutines should use this wrapper to ensure stability.
+func runWithRecovery(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PANIC] %s recovered: %v\n%s", name, r, debug.Stack())
+			}
+		}()
+		fn()
+	}()
+}
 
 // netGoneErr is returned when the server reports 404 for a network operation,
 // indicating the network no longer exists on the server.

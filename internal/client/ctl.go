@@ -50,6 +50,14 @@ type CtlReq struct {
 func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) error {
 	var srv *http.Server
 	mux := http.NewServeMux()
+	
+	// Timeout configuration to prevent client hangs and connection leaks.
+	// These values are tuned for local control API usage (no network latency).
+	const (
+		readTimeout  = 10 * time.Second  // Time to read request headers/body
+		writeTimeout = 10 * time.Second  // Time to write response
+		idleTimeout  = 60 * time.Second  // Time to keep idle connections alive
+	)
 
 	// ctlAuthMiddleware gates all /ctl/* requests (except /ctl/auth/*) with
 	// a shared-secret token so local unprivileged processes cannot manipulate the
@@ -394,7 +402,14 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 	mux.HandleFunc("GET /ctl/auth/check", auth.handleCheck)
 	mux.HandleFunc("POST /ctl/auth/password", auth.handlePassword)
 
-	srv = &http.Server{Addr: addr, Handler: ctlAuthMux}
+	srv = &http.Server{
+		Addr:           addr,
+		Handler:        ctlAuthMux,
+		ReadTimeout:    readTimeout,
+		WriteTimeout:   writeTimeout,
+		IdleTimeout:    idleTimeout,
+		MaxHeaderBytes: 1 << 20, // 1MB
+	}
 	return srv.ListenAndServe()
 }
 
