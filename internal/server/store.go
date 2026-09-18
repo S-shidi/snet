@@ -37,7 +37,6 @@ var (
 	// retry lockout: codes carry ≈80 bits of entropy and the bind endpoint is
 	// per-IP rate limited.
 	ErrAuthCodeInvalid = errors.New("invalid device authorization code")
-	ErrAuthCodeUsed    = errors.New("device authorization code already used")
 	ErrAuthCodeFull    = errors.New("device authorization code reached max bindings")
 	ErrAuthCodeExpired = errors.New("授权码已过期，所有网络离线，请续期或更换授权码")
 	// ErrAdminExists is returned by BootstrapAdmin when an admin account has
@@ -3643,6 +3642,7 @@ type AdminOverview struct {
 	CodesTotal     int              `json:"codesTotal"`
 	CodesBound     int              `json:"codesBound"`
 	CodesFree      int              `json:"codesFree"`
+	CodesExpired   int              `json:"codesExpired"`
 	RecentNetworks []networkSummary `json:"recentNetworks"`
 }
 
@@ -3685,10 +3685,12 @@ func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
 	
 	type codeSnap struct {
 		bindings int
+		expired  bool
 	}
 	codeSnaps := make([]codeSnap, 0, len(s.authCodes))
 	for _, ac := range s.authCodes {
-		codeSnaps = append(codeSnaps, codeSnap{bindings: len(ac.Bindings)})
+		codeSnaps = append(codeSnaps, codeSnap{bindings: len(ac.Bindings),
+			expired: ac.ExpiresAt != nil && now.After(*ac.ExpiresAt)})
 	}
 	s.mu.Unlock()
 	
@@ -3721,6 +3723,9 @@ func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
 	ov.DevicesTotal = deviceCount
 	for _, cs := range codeSnaps {
 		ov.CodesTotal++
+		if cs.expired {
+			ov.CodesExpired++
+		}
 		if cs.bindings > 0 {
 			ov.CodesBound++
 		} else {
@@ -3868,6 +3873,11 @@ func (s *Store) BindDevice(code, deviceID, publicKey, name string) (string, erro
 	}
 	if found == nil {
 		return "", ErrAuthCodeInvalid
+	}
+	// An expired code rejects both new bindings and idempotent re-binds; the
+	// admin must renew it (or the device must present a fresh code) first.
+	if found.ExpiresAt != nil && time.Now().After(*found.ExpiresAt) {
+		return "", ErrAuthCodeExpired
 	}
 	if found.bindingIndex(deviceID) >= 0 {
 		// Idempotent: same device, same code. Still return the device token.

@@ -2978,6 +2978,14 @@ function fmtDate(iso) {
   return `${y}-${m}-${day}`;
 }
 
+// toDateInput formats a Date as a local yyyy-MM-dd value for <input type="date">.
+function toDateInput(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function icon(name) {
   const I = {
     copy: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
@@ -4070,7 +4078,8 @@ function renderCodes() {
     const expiresDisplay = c.expiresAt ? fmtDate(c.expiresAt) : '-';
     
     const actions = [];
-    if (c.status === 'expired') {
+    if (c.status !== 'permanent') {
+      // 有效或已过期的授权码都可以续期（续期可延长或设为永久）。
       actions.push(`<button type="button" class="btn sm" data-act="renew-code" data-id="${esc(c.id)}">续期</button>`);
     }
     actions.push(`<button type="button" class="btn danger ghost sm" data-act="revoke" data-id="${esc(c.id)}" data-code="${esc(c.code)}">吊销</button>`);
@@ -4157,7 +4166,7 @@ async function genCodes() {
         if (!dateInput.value) {
           const defaultDate = new Date();
           defaultDate.setDate(defaultDate.getDate() + 30);
-          dateInput.value = defaultDate.toISOString().split('T')[0];
+          dateInput.value = toDateInput(defaultDate);
         }
       } else {
         dateWrapper.style.display = 'none';
@@ -4179,8 +4188,8 @@ async function genCodes() {
         toast('请选择过期日期', 'err');
         return;
       }
-      // Set to end of day
-      expiresAt = new Date(dateVal + 'T23:59:59Z').toISOString();
+      // Set to end of day in the local timezone (no trailing Z).
+      expiresAt = new Date(dateVal + 'T23:59:59').toISOString();
     }
     
     try {
@@ -4259,7 +4268,7 @@ async function renewCode(codeId) {
   // Set default date to 1 year from now
   const defaultDate = new Date();
   defaultDate.setFullYear(defaultDate.getFullYear() + 1);
-  $('renew-expires-at').value = defaultDate.toISOString().split('T')[0];
+  $('renew-expires-at').value = toDateInput(defaultDate);
   
   // Bind radio change - toggle date input visibility
   modal.querySelectorAll('input[name="renew-expire"]').forEach(r => {
@@ -4288,7 +4297,8 @@ async function renewCode(codeId) {
         toast('请选择过期日期', 'err');
         return;
       }
-      expiresAt = new Date(dateVal + 'T23:59:59Z').toISOString();
+      // Set to end of day in the local timezone (no trailing Z).
+      expiresAt = new Date(dateVal + 'T23:59:59').toISOString();
     }
     
     try {

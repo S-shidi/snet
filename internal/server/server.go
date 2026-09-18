@@ -193,6 +193,8 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusUnauthorized, err)
 		case errors.Is(err, ErrNetworkFull):
 			writeErr(w, http.StatusConflict, err)
+		case errors.Is(err, ErrAuthCodeExpired):
+			writeErr(w, http.StatusForbidden, err)
 		case err != nil:
 			writeInternalErr(w, err)
 		default:
@@ -274,7 +276,10 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	})
 
 	// Check device authentication status (bound/expired). Used by clients to
-	// detect expired authorization codes and show appropriate warnings.
+	// detect expired authorization codes and show appropriate warnings. A bound
+	// device must present its device token (X-Device-Token) so the endpoint no
+	// longer leaks binding state to anyone who guesses a deviceId; unbound
+	// devices have no token and receive the generic not-bound answer.
 	mux.HandleFunc("GET /api/v1/devices/auth-status", func(w http.ResponseWriter, r *http.Request) {
 		if h.authStatus.blocked(h.clientIP(r)) {
 			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
@@ -286,6 +291,10 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		status := s.GetDeviceAuthStatus(deviceID)
+		if status.Bound && !s.ValidateDeviceToken(deviceID, deviceTokenOf(r)) {
+			writeErr(w, http.StatusUnauthorized, ErrUnauthorized)
+			return
+		}
 		writeJSON(w, http.StatusOK, status)
 	})
 
@@ -1228,8 +1237,8 @@ func handleStoreErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusForbidden, err)
 	case errors.Is(err, ErrAuthCodeInvalid):
 		writeErr(w, http.StatusNotFound, errors.New("无效的设备授权码"))
-	case errors.Is(err, ErrAuthCodeUsed):
-		writeErr(w, http.StatusConflict, errors.New("设备授权码已被其他设备使用"))
+	case errors.Is(err, ErrAuthCodeExpired):
+		writeErr(w, http.StatusForbidden, err)
 	case errors.Is(err, ErrAuthCodeFull):
 		writeErr(w, http.StatusConflict, errors.New("设备授权码可绑定的设备数已满"))
 	default:
