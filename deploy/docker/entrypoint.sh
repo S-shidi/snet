@@ -51,8 +51,8 @@ is_bound() {
     echo "$STATUS" | grep -q '"bound":true'
 }
 
-# ---- Auto-bind if env vars are set ----
-if [ -n "$SNET_SERVER" ] && [ -n "$SNET_BIND_CODE" ]; then
+# ---- Auto-bind if a bind code is set ----
+if [ -n "$SNET_BIND_CODE" ]; then
     echo "[entrypoint] Starting snetd for bind..."
 
     # Start snetd in background (control API on localhost only)
@@ -69,8 +69,8 @@ if [ -n "$SNET_SERVER" ] && [ -n "$SNET_BIND_CODE" ]; then
     if is_bound; then
         echo "[entrypoint] Device already bound, skipping bind"
     else
-        echo "[entrypoint] Binding to $SNET_SERVER ..."
-        if snetctl -ctl "http://$CTL_ADDR" bind --server "$SNET_SERVER" --code "$SNET_BIND_CODE"; then
+        echo "[entrypoint] Binding with device authorization code ..."
+        if snetctl -ctl "http://$CTL_ADDR" bind --code "$SNET_BIND_CODE"; then
             echo "[entrypoint] Bind successful"
         else
             echo "[entrypoint] WARN: bind failed (device may already be bound or code invalid)" >&2
