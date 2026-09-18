@@ -54,6 +54,7 @@
 创建网络 → 分配 10.88.0.x/24 → 生成 pairingCode → 返回 token
     ↓
 分享 snet://join?nid=xxx&code=yyy[&name=xxx][&server=xxx]
+    ↓  <!-- server 参数仅转发用；客户端现只接受固定服务器 https://snet.uizhi.eu.org:8090，异地址链接被拒绝 -->
     ↓
 其他设备加入 → 验证 code → 分配 IP + token → 返回 peers 列表
     ↓
@@ -471,7 +472,7 @@ Visibility  string   `json:"visibility,omitempty"` // "shareable"
 // Node 新增字段
 Role string `json:"role,omitempty"` // "owner" | "admin" | "member"
 
-// snet:// 链接扩展
+// snet:// 链接扩展（server 参数客户端不再采纳，一律用固定协调服务器）
 snet://join?nid=xxx&code=yyy&name=家庭NAS共享[&server=xxx]
 ```
 
@@ -493,5 +494,6 @@ snet://join?nid=xxx&code=yyy&name=家庭NAS共享[&server=xxx]
 
 | 版本 | 内容 |
 |------|------|
+| v0.11.0 | **服务器地址固定**：协调服务器锁定 `https://snet.uizhi.eu.org:8090`（`internal/constants.DefaultServerAddr`），ctl/snetcore/UI 边界强制校验，create/join/bind 不接受自定义地址，UI 去除服务器输入与明文展示，邀请链接异地址被拒。<br>**授权码过期端到端**：服务端拒绝绑定过期码、`/api/v1/devices/auth-status` 需要 `X-Device-Token`（bound 才返回绑定态）、`Bearer`/管理态返回 `expired`；客户端 `AuthExpired` 置位 + 桌面/Web 过期红卡，管理页支持非 permanent 码续期（本地时区日末）。旧客户端对 bound 设备将收到 401（防探测），升级需服务端+客户端协同。 |
 | v0.10.0 | **中继懒绑定 + 池扩容**：relay 端口按网络首次需求才 bind（`Ensure`），池 64→256；启动零 socket 开销，占用失败自动跳下一候选。<br>**协议/API 版本协商**：客户端请求带 `X-Snet-Api-Version`，服务端不匹配回 426（拒绝响应也盖章），无头老客户端兼容；`/healthz` 暴露 `apiVersion/serverVersion`。<br>**路径遥测**：每 peer 的 direct/relay 路径、候选进度暴露到 `/ctl/status`（`peerPaths`）并记录切换日志——同 LAN 直连是否生效一目了然。<br>**对称 NAT 候选盲投**：`buildCandidates` ±1..±8 交错 17 候选轮询，握手锁定。<br>**密钥定期轮换**：`RotateKeys()` 全有或全无（任一网络推送新公钥失败则本地 key 不动），`keyRotationDays>0` 启每日调度；服务端 publickey 端点支持节点 token 双认证。 |
 | v0.9.x | `/ctl/*` token + bcrypt 认证；Android VPN 线程安全；mesh IP 上报修正、中继 fan-out（>2 成员可达）、Android 冷启动自动重连。 |

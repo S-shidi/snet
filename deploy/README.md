@@ -91,7 +91,9 @@ VNET_REQUIRE_DEVICE_AUTH=1
 ```
 
 - 开启后先在管理页「设备」页生成若干授权码，再让各客户端在桌面端「设置」里
-  用授权码「链接服务器」（或 `snetctl bind --server ... --code ...`）。
+  用授权码「链接服务器」（或 `snetctl bind --code ...`）。协调服务器地址为全局
+  固定值（`https://snet.uizhi.eu.org:8090`，见 `internal/constants`），客户端
+  create/join/bind 不再接受、也不再展示服务器地址输入。
 - 授权码明文存于服务端（bbolt），管理页列表可随时查看复制；一码可绑定多设备（生成时设定）；
   换码自动释放旧码；吊销/解绑只影响后续准入，已加入节点由管理员踢出。
 - 绑定接口 `/api/v1/devices/bind` 不套强制门槛，但按 IP 限频（20 次/分钟）。
@@ -110,10 +112,8 @@ iptables -A INPUT -p udp --dport 51820:52075 -j ACCEPT  # UDP 中继池
 
 ## 5. 客户端接入
 
-- 桌面端「设置」里服务器填 `https://snet.uizhi.eu.org:8090`，并指定 CA 固定证书
-  （服务器公钥证书 `server.pem`，客户端 `snetd --ca-path` / `snetctl --ca-path`）。
 - 客户端为多网络模式：一台机器可加入多个网络并存（每个网络独立 utun + WG 端口，
-  端口从 `--port` 起自动探测空闲）；单协调服务器（多服务器请另跑一个 daemon）。
+  端口从 `--port` 起自动探测空闲）；单协调服务器（地址固定，多服务器请另跑一个 daemon）。
 - 创建设备身份：`snetd` 首次启动生成 16 位设备 ID（macOS 取 IOPlatformUUID、Linux 取 DMI product_uuid 派生，虚拟机等取不到时回退随机）存于 `/usr/local/snet/device.id`（卸载重装不丢失；硬件 ID 派生，重装系统也不变）；新创建的网络自动认领为 owner（迁移旧网络：`snetctl claim --nid`）。设备名自动上报（Android: manufacturer+model，桌面端: hostname），管理端可随时改名。
 - 创建网络 → 生成邀请链接/配对码 → 另一端复制链接加入（加入方同样需 `--ca-path`）。
 - 客户端创建的网络 72h 无任何设备在线会被服务端清理；owner 可在管理页/客户端看到僵尸状态。
@@ -193,8 +193,8 @@ curl -sk -X POST https://snet.uizhi.eu.org:8090/admin/devices/authcodes/generate
   -H "Authorization: Bearer $VNET_ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d '{"count":5}'          # 返回 codes（明文）与 ids（吊销用）
 
-# 2) 客户端绑定（桌面端「设置」→「链接服务器」，或命令行）
-snetctl bind --server https://snet.uizhi.eu.org:8090 --code XXXX...   # 需 -ca-path（如适用）
+# 2) 客户端绑定（桌面端「设置」→「链接服务器」，或命令行；服务器地址为固定值，无需指定）
+snetctl bind --code XXXX...   # 需 -ca-path（如适用）
 # 客户端首次绑定时自动上报设备名（Android: manufacturer+model，桌面端: hostname）；
 # 管理端可通过 PATCH /admin/devices/<id> 改名，改名后客户端不再覆盖
 
@@ -340,7 +340,7 @@ docker compose -f deploy/docker/docker-compose.yml up -d
 
 # 2. 进入容器手动绑定
 docker exec -it snetd sh
-snetctl -ctl 127.0.0.1:19432 bind --server https://snet.uizhi.eu.org:8090 --code 你的授权码
+snetctl -ctl 127.0.0.1:19432 bind --code 你的授权码
 ```
 
 ### 管理操作

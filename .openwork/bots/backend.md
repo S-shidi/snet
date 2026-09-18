@@ -53,6 +53,8 @@ DESIGN.md §8 局限描述            → 对比当前代码状态              
 | `BACK-INV-04` | 设备授权码仅存哈希，码长 16（`AuthCodeLen` = 16），熵 ≈ 80 bits | 检查 `protocol/types.go` 的 `AuthCodeLen` 常量和 `store.go` 的 `NormalizeCode()` + `sha256()` 使用 | `protocol/types.go` 约 274 行；`store.go` 的 `bind` 流程 |
 | `BACK-INV-05` | 服务器与客户端 relay 端口不重叠（服务端 51820-51883，共 64 端口；Docker 客户端 51900+） | 检查 `cmd/server/main.go` 的 `-relay-base` 和 `-relay-count` 标志，以及 `deploy/docker/docker-compose.yml` 的端口配置 | `main.go` 约 30-31 行；`deploy/docker/docker-compose.yml` |
 | `BACK-INV-06` | 内存 map + bbolt **双写**（读走内存 `map`，写节流刷盘到 `bbolt`） | 检查 `store.go` 的 `GetNetwork()`（内存读取）和 `CreateNetwork()`（写入 bbolt + 更新内存）的实现模式 | `store.go` 多处 |
+| `BACK-INV-07` | 协调服务器地址**固定**为 `https://snet.uizhi.eu.org:8090`（`internal/constants.DefaultServerAddr`）；所有客户端入口必须锁定该值，不得接受/展示自定义服务器 | 检查 `internal/client/ctl.go` 的 `enforceServer` 与 `snetbind/snetcore.go` 的 `enforceFixedServer`（create/join/bind 均需过滤） | `internal/constants/constants.go`；`ctl.go`；`snetbind/snetcore.go` |
+| `BACK-INV-08` | 授权码过期必须端到端生效：服务端 `BindDevice` 拒绝过期码、`GetDeviceAuthStatus` 上报 `expired`；客户端 `verifyBinding` 置 `AuthExpired`，UI 显示过期红卡 | `go test ./internal/server -run AuthCodeExpiry` + `go test ./internal/server -run AuthStatus` 必须全绿 | `internal/server/store.go`；`internal/client/daemon.go` |
 
 ---
 

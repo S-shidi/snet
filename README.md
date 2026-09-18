@@ -2,9 +2,9 @@
 
 端到端加密的私有虚拟局域网（WireGuard 数据面 + HTTPS 协调 + UDP 中继）。
 
-- **服务端**（Go）：网络协调、成员管理、NAT 穿透探测、UDP 中继（懒绑定，按需端口）、Web 管理页（分页列表、总览统计）、设备授权码、设备命名。安全加固：限流、安全头（CSP/HSTS/no-store）、XFF 最右、凭据加锁、引导互斥。协议/API 版本协商（不匹配回 426）。
+- **服务端**（Go）：网络协调、成员管理、NAT 穿透探测、UDP 中继（懒绑定，按需端口）、Web 管理页（分页列表、总览统计）、设备授权码（支持过期/续期/吊销）、设备命名。安全加固：限流、安全头（CSP/HSTS/no-store）、XFF 最右、凭据加锁、引导互斥、auth-status 需设备令牌。协议/API 版本协商（不匹配回 426）。
 - **客户端**（Go daemon + Tauri 桌面端）：macOS（launchd）、Windows（SCM 服务）、Linux 均支持；
-  数据面优先 NAT 打洞直连（公网站点做 ±1..±8 候选盲投），打不通时经服务器中继转发；每 peer 直连/中继路径可观测（`/ctl/status` `peerPaths`）。设备名自动上报（首次连接填充，管理端改名优先）。支持密钥定期轮换。
+  数据面优先 NAT 打洞直连（公网站点做 ±1..±8 候选盲投），打不通时经服务器中继转发；每 peer 直连/中继路径可观测（`/ctl/status` `peerPaths`）。设备名自动上报（首次连接填充，管理端改名优先）。支持密钥定期轮换。协调服务器地址固定为 `https://snet.uizhi.eu.org:8090`，授权码过期时客户端置冻结态并显示过期提示。
 - **Android 端**（WebView UI + gomobile AAR）：内置 VPN 服务，扫码/链接加入网络。设备名取 manufacturer+model。
 - **Docker 客户端**：支持在 Docker 主机、VPS、群晖 NAS 等环境容器化部署客户端。
 - **手机**：服务器端生成节点配置，用 WireGuard App 导入（见 `deploy/phone-android.conf` 模板）。

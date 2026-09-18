@@ -20,7 +20,7 @@
 | **存储** | bbolt 7 bucket：`networks / nodes / tokens / devices / pending / admin / authcodes` |
 | **客户端** | Desktop（Tauri v2 + Rust 22 命令代理）/ Android（WebView + Kotlin 桥 + gomobile AAR）/ Docker（snetd + nginx） |
 | **共享 UI** | `shared/web/{ui,types,utils,subnet}.ts` + `index.html` + `styles.css`，由 `scripts/build-web.sh` 同步到 Android 与 Docker |
-| **协议标识** | `snet://join?nid=xxx&code=yyy[&name=xxx][&server=xxx]`（`internal/protocol/link.go`） |
+| **协议标识** | `snet://join?nid=xxx&code=yyy[&name=xxx][&server=xxx]`（`internal/protocol/link.go`）——`server` 参数仅下游转发用；客户端 create/join/bind 现只接受固定服务器 `https://snet.uizhi.eu.org:8090`，异地址邀请链接将被拒绝，UI 不留服务器输入 |
 | **关键端口** | 8090 协调 / 8091 探测 / 51820-51883 中继 / 51900+ Docker 客户端 / 19432 本地控制 |
 | **当前阶段** | DESIGN.md §10 描述的"社区共享 / 角色模型 / Visibility"是主要演进方向；DESIGN 已知局限：无集群、本地 /ctl 无认证、relay 端口上限 64、daemon.go 1935 行偏大 |
 | **测试基线** | `go test ./internal/server ./internal/client ./internal/protocol` + `scripts/e2e.sh`（需 root）+ 验收见 `scripts/acceptance-README.txt` |

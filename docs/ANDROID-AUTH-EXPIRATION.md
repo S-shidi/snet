@@ -14,11 +14,13 @@ Android 客户端已实现授权码过期检测功能，与后端服务配合：
 
 ### 1. **SnetBridge.kt** - 添加查询方法
 
+`getAuthStatus` 曾是一段恒返回 `{}` 的 TODO stub；现已实现，转发到 Go 绑定层 `SnetCore.GetAuthStatus`（`snetbind/snetcore.go`），并使用固定协调服务器地址 `SnetRepository.SERVER_ADDR`（`https://snet.uizhi.eu.org:8090`）查询：
+
 ```kotlin
 fun getAuthStatus(): String {
     val c = core ?: return """{"error":"core not initialized"}"""
     return try {
-        c.getAuthStatus("", "")
+        c.getAuthStatus(SnetRepository.SERVER_ADDR, "") ?: "{}"
     } catch (e: Exception) {
         """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
     }
@@ -140,16 +142,23 @@ ls -lh app/build/outputs/apk/debug/app-debug.apk
 
 ### 1. **查询授权状态**
 
+已绑定设备必须携带设备令牌，否则返回 401（防止任意 deviceId 探测绑定状态）：
+
 ```http
 GET /api/v1/devices/auth-status?deviceId={deviceId}
+X-Device-Token: {deviceToken}
 
 响应:
 {
   "bound": true,
   "expired": false,
-  "authCodeId": "GGSC3U8K"
+  "authCodeId": "GGSC3U8K",
+  "expiresAt": "2026-12-31T23:59:59Z"
 }
 ```
+
+- `expiresAt`：仅已绑定且授权码带期限时返回
+- 未绑定设备：`{"bound":false,"expired":false}`；令牌缺失/错误：`401`
 
 ### 2. **生成带过期时间的授权码**
 
@@ -209,8 +218,9 @@ curl -sk https://66.187.6.46:8090/admin/devices/authcodes/generate \
 ### 4. 验证过期状态
 
 ```bash
-# 查询设备授权状态
-curl -sk "https://66.187.6.46:8090/api/v1/devices/auth-status?deviceId=<deviceID>"
+# 查询设备授权状态（已绑定设备需带 X-Device-Token）
+curl -sk "https://66.187.6.46:8090/api/v1/devices/auth-status?deviceId=<deviceID>" \
+  -H "X-Device-Token: <deviceToken>"
 # 应返回 {"bound":true,"expired":true}
 ```
 
@@ -224,11 +234,12 @@ curl -sk "https://66.187.6.46:8090/api/v1/devices/auth-status?deviceId=<deviceID
 - **过期处理**：检测到过期时自动停止所有网络
 - **代码位置**：`internal/client/daemon.go` 的 `verifyBinding()` 方法
 
-### Kotlin 层（已实现）
+### Kotlin 层（本轮已从 stub 落地为真实调用）
 
-- **定期检查**：每小时查询一次
-- **UI 提示**：显示过期警告卡片
-- **代码位置**：`MainViewModel.kt` 的 `startAuthCheck()` 方法
+- **定期检查**：每小时查询一次（`startAuthCheck()`）
+- **过期检测**：`checkAuthStatus()` → `SnetBridge.getAuthStatus()` → Go 绑定 `SnetCore.GetAuthStatus` → 服务端 `/api/v1/devices/auth-status`
+- **UI 提示**：显示过期警告卡片（`MainScreen.kt`）
+- **代码位置**：`MainViewModel.kt` 的 `startAuthCheck()`、`SnetBridge.kt` 的 `getAuthStatus()`
 
 ---
 
