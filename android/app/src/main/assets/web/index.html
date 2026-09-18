@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Snet · Web 控制台</title>
   <link rel="stylesheet" href="styles.css" />
-  <script src="progress.js"></script>
 </head>
 <body>
 
@@ -73,14 +72,10 @@
       <div class="step current"><span class="step-num">2</span> 绑定服务器</div>
     </div>
     <form id="onboarding-form" class="auth-form" autocomplete="off">
-      <p class="auth-desc">输入协调服务器地址和设备授权码</p>
-      <div class="field">
-        <label>服务器地址</label>
-        <input id="onb-server" type="text" placeholder="https://example.com:8090" autofocus />
-      </div>
+      <p class="auth-desc">输入设备授权码完成绑定（服务器地址已固定）</p>
       <div class="field">
         <label>设备授权码</label>
-        <input id="onb-code" type="text" placeholder="管理端生成的设备授权码" autocomplete="off" />
+        <input id="onb-code" type="text" placeholder="管理端生成的设备授权码" autocomplete="off" autofocus />
       </div>
       <p class="msg" id="onb-bind-result"></p>
       <button id="onb-bind" type="submit" class="btn-full">绑定并进入控制台</button>

@@ -3,7 +3,7 @@
  * Platform adapters (Desktop/Web/Android) provide a Backend implementation
  * and call init() to wire everything up.
  */
-import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp } from "./types.js";
+import { FIXED_SERVER, type Backend, type DaemonStatus, type NetInfoDetail, type PeersResp, type CreateResp, type JoinResp } from "./types.js";
 import { $, esc, SPIN, fmtBytes, onlineCount, toast, copyText, renderQR, loadQR, openModal, closeModal, confirmDialog, initTabs } from "./utils.js";
 import { subnetCheck, subnetWidgetHTML, subnetWidgetInit } from "./subnet.js";
 
@@ -20,7 +20,7 @@ let skipOnboarding = false;
 /* ── Settings (localStorage) ──────────────────────────────────── */
 const SETTINGS_KEY = "snet.settings";
 const LEGACY_CA = "/usr/local/snet/certs/server.pem";
-const DEFAULT_SETTINGS = { server: "https://snet.uizhi.eu.org:8090", ca: "", wgport: 51820 };
+const DEFAULT_SETTINGS = { server: FIXED_SERVER, ca: "", wgport: 51820 };
 type Settings = typeof DEFAULT_SETTINGS;
 
 function loadSettings(): Settings {
@@ -40,7 +40,7 @@ function saveSettings(s: Settings) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 }
 function currentServer(): string {
-  if (status?.bound) return status.serverAddr ?? "";
+  if (status?.bound) return FIXED_SERVER;
   return "";
 }
 
@@ -281,19 +281,27 @@ function renderNetworks() {
   }
   lastEmptyHTML = "";
   const hasOwner = nets.some((n) => n.owner);
+  const expired = !!status?.authExpired;
+  const expBanner = expired ? `<div class="expired-banner">设备授权已过期：网络已全部断开，请联系管理员在管理端续期设备授权码。</div>` : "";
   const btnCreate = $("#btn-create");
   if (btnCreate) {
-    btnCreate.disabled = hasOwner;
-    btnCreate.classList.toggle("muted", hasOwner);
+    btnCreate.disabled = hasOwner || expired;
+    btnCreate.classList.toggle("muted", hasOwner || expired);
+    btnCreate.title = expired ? "设备授权已过期" : hasOwner ? "已创建网络，不支持再创建" : "";
+  }
+  const btnJoin = $("#btn-join");
+  if (btnJoin) {
+    btnJoin.disabled = expired;
+    btnJoin.title = expired ? "设备授权已过期" : "";
   }
   if (!nets.length && !pending.length) {
-    const html = `<div class="empty">
+    const html = `${expBanner}<div class="empty">
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="24" r="6"/><circle cx="36" cy="24" r="6"/><path d="M18 24h12"/></svg>
       <div class="t">还没有加入任何网络</div>
       <div class="s">创建一个网络，或使用邀请链接/配对码加入其他设备</div>
       <div class="empty-actions">
-        <button id="empty-create" class="btn" ${hasOwner ? 'disabled data-disabled-reason="已创建网络，不支持再创建"' : ''}>创建网络</button>
-        <button id="empty-join" class="btn ghost">加入网络</button>
+        <button id="empty-create" class="btn" ${hasOwner || expired ? 'disabled data-disabled-reason="已创建网络，不支持再创建"' : ""}>创建网络</button>
+        <button id="empty-join" class="btn ghost" ${expired ? "disabled" : ""}>加入网络</button>
       </div>
     </div>`;
     if (html !== lastEmptyHTML) {
@@ -313,7 +321,7 @@ function renderNetworks() {
     if (tb) return 1;
     return (a.networkId || "").localeCompare(b.networkId || "");
   });
-  const netHTML = sortedNets.map(netCard).join("");
+  const netHTML = expBanner + sortedNets.map(netCard).join("");
   const pendingHTML = pending.length
     ? `<h4 class="pending-heading">待批准 · 加入请求</h4>` +
       pending.map(
@@ -1028,8 +1036,8 @@ function openCreateModal() {
     ? `<p class="msg">本设备已创建网络（每客户端仅能创建一个）。如需新网络，请先删除或退出当前网络。</p>`
     : "";
   const serverHint = srv
-    ? `<p class="hint">将在已连接的服务器上创建：<code>${esc(srv)}</code></p>`
-    : `<p class="msg">未连接服务器：请先在「设置」中链接服务器。</p>`;
+    ? `<p class="hint">将在服务器上创建虚拟网络（服务器地址固定）</p>`
+    : `<p class="msg">设备尚未绑定授权：请先在「设置」中输入设备授权码完成绑定。</p>`;
   openModal({
     title: "创建网络",
     body: `${hint}
@@ -1059,7 +1067,7 @@ function openCreateModal() {
             .split(",").map((s) => s.trim()).filter(Boolean).slice(0, 8);
           const server = currentServer();
           if (!name) throw new Error("请输入网络名称");
-          if (!server) throw new Error("未连接服务器：请先在设置中链接服务器");
+          if (!server) throw new Error("设备尚未绑定授权，请先在设置中绑定");
           const r: CreateResp = await backend.create({ server, port: s.wgport, ca: s.ca, name, subnet, approvalRequired: false, description, tags, visibility: "" });
           const modalEl = body;
           const mBody = modalEl.querySelector<HTMLElement>(".modal-body")!;
@@ -1108,8 +1116,8 @@ function openJoinModal() {
   const s = loadSettings();
   const srv = currentServer();
   const serverHint = srv
-    ? `<p class="hint">将加入已连接服务器上的网络：<code>${esc(srv)}</code></p>`
-    : `<p class="msg">未连接服务器：请先在「设置」中链接服务器；或粘贴带有服务器地址的邀请链接后加入。</p>`;
+    ? `<p class="hint">加入当前网络（服务器地址固定）</p>`
+    : `<p class="msg">设备尚未绑定授权：加入网络前请先绑定设备授权码，或粘贴邀请链接后在下方绑定。</p>`;
   openModal({
     title: "加入网络",
     body: `<div class="row"><label>邀请链接</label>
@@ -1152,11 +1160,11 @@ function openJoinModal() {
         }
       });
 
-      const bindAndThen = (server: string, then: () => Promise<void>) => {
+      const bindAndThen = (then: () => Promise<void>) => {
         authWrap.hidden = false;
         authWrap.innerHTML = `
           <div class="settings-block">
-            <p class="msg">该邀请属于服务器 <code>${esc(server)}</code>，本机尚未绑定该服务器。请输入设备授权码以绑定后加入：</p>
+            <p class="msg">本机尚未绑定授权。请输入设备授权码后即可加入：</p>
             <div class="row"><label>设备授权码</label><input id="m-bind-code" type="text" placeholder="管理端生成的授权码" autocomplete="off" /></div>
             <div class="settings-actions"><button id="m-bind-go" class="btn">绑定并加入</button></div>
             <p class="msg" id="m-bind-result"></p>
@@ -1172,9 +1180,9 @@ function openJoinModal() {
           bindResult.className = "msg"; bindResult.textContent = "正在绑定…";
           try {
             const ca = s.ca;
-            await backend.bind({ server, ca, code });
-            saveSettings({ ...loadSettings(), server, ca });
-            bindResult.className = "msg ok"; bindResult.textContent = `已绑定 ${server}，正在加入…`;
+            await backend.bind({ server: FIXED_SERVER, ca, code });
+            saveSettings({ ...loadSettings(), server: FIXED_SERVER, ca });
+            bindResult.className = "msg ok"; bindResult.textContent = `已绑定，正在加入…`;
             await then();
           } catch (e) {
             bindResult.className = "msg"; bindResult.textContent = `绑定失败: ${e}`;
@@ -1199,13 +1207,16 @@ function openJoinModal() {
             if (!nid || !code) throw new Error("请输入邀请链接，或网络ID + 配对码");
             link = `snet://join?nid=${nid}&code=${code}`;
           }
-          const linkServer = linkServerOf(link);
+          let linkServer = linkServerOf(link);
+          if (linkServer && normalizeServerCompare(linkServer) !== normalizeServerCompare(FIXED_SERVER)) {
+            throw new Error("该邀请来自其他服务器，无法加入（服务器地址固定）");
+          }
+          linkServer = linkServer ? FIXED_SERVER : undefined;
           const srv = currentServer();
 
           class NeedBind extends Error {}
           const doJoin = async () => {
-            const server = linkServer && linkServer.trim() ? linkServer : srv;
-            if (!server) throw new Error("未连接服务器：请先在设置中链接服务器");
+            const server = FIXED_SERVER;
             try {
               const r: JoinResp = await backend.join({ server, port: s.wgport, ca, link });
               result.className = "msg ok";
@@ -1224,15 +1235,13 @@ function openJoinModal() {
             }
           };
 
-          if (linkServer && srv && normalizeServerCompare(linkServer) === normalizeServerCompare(srv)) {
-            await doJoin();
-          } else if (linkServer) {
+          if (linkServer) {
             try {
               await doJoin();
             } catch (e) {
               if (e instanceof NeedBind) {
                 await new Promise<void>((resolve, reject) => {
-                  bindAndThen(linkServer, async () => {
+                  bindAndThen(async () => {
                     try { await doJoin(); resolve(); }
                     catch (e2) { result.className = "msg"; result.textContent = `加入失败: ${e2}`; submit.disabled = false; reject(e2); }
                   });
@@ -1240,7 +1249,18 @@ function openJoinModal() {
               } else { throw e; }
             }
           } else {
-            await doJoin();
+            try {
+              await doJoin();
+            } catch (e) {
+              if (e instanceof NeedBind) {
+                await new Promise<void>((resolve, reject) => {
+                  bindAndThen(async () => {
+                    try { await doJoin(); resolve(); }
+                    catch (e2) { result.className = "msg"; result.textContent = `加入失败: ${e2}`; submit.disabled = false; reject(e2); }
+                  });
+                });
+              } else { throw e; }
+            }
           }
         } catch (e) {
           result.className = "msg";
@@ -1270,11 +1290,11 @@ function openSettingsModal() {
   openModal({
     title: "设置",
     body: `<div class="settings-block">
-        <div class="row"><label>服务器地址</label><input id="s-server" type="text" value="${esc(s.server)}" placeholder="https://example.com:8090" /></div>
+        <p class="hint" style="margin-bottom:6px">服务器地址已固定：${esc(FIXED_SERVER)}</p>
         <div class="row"><label>设备授权码</label><input id="s-code" type="text" placeholder="管理端生成的设备授权码（仅用于链接，不保存）" autocomplete="off" /></div>
         <div class="row"><label>CA 证书路径</label><input id="s-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
         <div class="settings-actions">
-          <button id="s-bind" class="btn">链接服务器</button>
+          <button id="s-bind" class="btn">绑定设备</button>
         </div>
         <p class="msg" id="s-bind-result"></p>
       </div>
@@ -1302,10 +1322,8 @@ function openSettingsModal() {
       const bindBtn = body.querySelector<HTMLButtonElement>("#s-bind");
 
       body.querySelector("#s-bind")?.addEventListener("click", async () => {
-        const server = (body.querySelector("#s-server") as HTMLInputElement).value.trim();
         const ca = (body.querySelector("#s-ca") as HTMLInputElement).value.trim();
         const code = (body.querySelector("#s-code") as HTMLInputElement).value.trim();
-        if (!server) { bindResult.className = "msg"; bindResult.textContent = "请输入服务器地址"; return; }
         if (!code) { bindResult.className = "msg"; bindResult.textContent = "请输入设备授权码"; return; }
         if (bindBtn) {
           bindBtn.disabled = true;
@@ -1313,10 +1331,10 @@ function openSettingsModal() {
         }
         bindResult.className = "msg"; bindResult.textContent = "正在链接服务器，请稍候…";
         try {
-          await backend.bind({ server, ca, code });
-          saveSettings({ ...loadSettings(), server, ca });
-          bindResult.className = "msg ok"; bindResult.textContent = `已绑定 ${server}`;
-          toast("已绑定服务器");
+          await backend.bind({ server: FIXED_SERVER, ca, code });
+          saveSettings({ ...loadSettings(), server: FIXED_SERVER, ca });
+          bindResult.className = "msg ok"; bindResult.textContent = "已绑定设备授权";
+          toast("已绑定设备授权");
           skipOnboarding = true;
           await refresh();
           skipOnboarding = false;
@@ -1325,7 +1343,7 @@ function openSettingsModal() {
           bindResult.className = "msg"; bindResult.textContent = `链接失败: ${e}`;
           if (bindBtn) {
             bindBtn.disabled = false;
-            bindBtn.textContent = "链接服务器";
+            bindBtn.textContent = "绑定设备";
           }
         }
       });
@@ -1362,9 +1380,7 @@ function renderOnboarding() {
   const ov = $("#onboarding");
   if (!ov) return;
   const s = loadSettings();
-  const serverInput = $("#onb-server") as HTMLInputElement;
   const caInput = $("#onb-ca") as HTMLInputElement;
-  if (serverInput) serverInput.value = s.server;
   if (caInput) caInput.value = s.ca;
   const daemonSection = $("#onb-daemon");
   if (daemonSection) daemonSection.hidden = !!status;
@@ -1395,17 +1411,15 @@ function renderOnboarding() {
 
   const bindResult = $("#onb-bind-result") as HTMLElement;
   ($("#onb-bind") as HTMLButtonElement).onclick = async () => {
-    const server = ($("#onb-server") as HTMLInputElement).value.trim();
     const ca = ($("#onb-ca") as HTMLInputElement).value.trim();
     const code = ($("#onb-code") as HTMLInputElement).value.trim();
-    if (!server) { bindResult.className = "msg"; bindResult.textContent = "请输入服务器地址"; return; }
     if (!code) { bindResult.className = "msg"; bindResult.textContent = "请输入设备授权码"; return; }
     bindResult.className = "msg"; bindResult.textContent = "正在绑定…";
     try {
-      await backend.bind({ server, ca, code });
-      saveSettings({ ...loadSettings(), server, ca });
-      bindResult.className = "msg ok"; bindResult.textContent = `已绑定 ${server}`;
-      toast("已绑定服务器");
+      await backend.bind({ server: FIXED_SERVER, ca, code });
+      saveSettings({ ...loadSettings(), server: FIXED_SERVER, ca });
+      bindResult.className = "msg ok"; bindResult.textContent = "已绑定设备授权";
+      toast("已绑定设备授权");
       await finishOnboarding();
     } catch (e) {
       bindResult.className = "msg"; bindResult.textContent = `绑定失败: ${e}`;
@@ -1446,8 +1460,7 @@ function renderStatus() {
     return;
   }
   if (deviceId) deviceId.textContent = status.deviceId || "-";
-  const addr = status.serverAddr ?? "";
-  if (svcServer) svcServer.textContent = status.bound && addr ? addr : "未连接服务器";
+  if (svcServer) svcServer.textContent = status.bound ? FIXED_SERVER : "未绑定";
   if (svcWgport) svcWgport.textContent = String(status.wgPort ?? "-");
   const nets = status.networks ?? [];
   if (tunnelDetail) {

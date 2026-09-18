@@ -2,6 +2,7 @@
  * Thin adapter: provides Backend + auth flow, delegates UI to shared/ui.ts.
  */
 import type { Backend, DaemonStatus, NetInfoDetail, PeersResp, CreateResp, JoinResp } from "../../shared/web/types.js";
+import { FIXED_SERVER } from "../../shared/web/types.js";
 import { init } from "../../shared/web/ui.js";
 
 const NS = "/ctl";
@@ -205,14 +206,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // Onboarding bind
   const onbBind = document.getElementById("onb-bind");
   if (onbBind) onbBind.addEventListener("click", async () => {
-    const server = (document.getElementById("onb-server") as HTMLInputElement)?.value.trim();
     const code = (document.getElementById("onb-code") as HTMLInputElement)?.value.trim();
     const result = document.getElementById("onb-bind-result")!;
-    if (!server || !code) { result.className = "msg"; result.textContent = "请填写服务器地址和授权码"; return; }
+    if (!code) { result.className = "msg"; result.textContent = "请输入授权码"; return; }
     result.className = "msg"; result.textContent = "正在绑定…";
     try {
-      await backend.bind({ server, ca: "", code });
-      result.className = "msg ok"; result.textContent = "已绑定 " + server;
+      await backend.bind({ server: FIXED_SERVER, ca: "", code });
+      result.className = "msg ok"; result.textContent = "已绑定设备授权";
       startApp();
     } catch (e) { result.className = "msg"; result.textContent = "绑定失败: " + e; }
   });

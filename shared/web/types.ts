@@ -1,5 +1,8 @@
 /* ── Shared types for SNET client UI ────────────────────────────── */
 
+/** Fixed coordination server. Not user-configurable or displayed in plaintext. */
+export const FIXED_SERVER = "https://snet.uizhi.eu.org:8090";
+
 export type PeerStats = { RxBytes?: number; TxBytes?: number; LastHandshakeSec?: number };
 export type NetInfo = {
   networkId: string;
@@ -28,8 +31,8 @@ export type PendingJoin = {
 };
 export type DaemonStatus = {
   deviceId?: string;
-  serverAddr?: string;
   bound?: boolean;
+  authExpired?: boolean;
   wgPort?: number;
   networks?: NetInfo[];
   pendingJoins?: PendingJoin[];
