@@ -731,8 +731,9 @@ func (d *Daemon) bindCheckLoop(stop chan struct{}) {
 }
 
 // verifyBinding checks the current server's view of this device's binding and
-// clears the local bound state when the server no longer considers the device
-// bound. It returns false when the check loop should stop.
+// expiration status. It clears the local bound state when the server no longer
+// considers the device bound or the auth code has expired. It returns false
+// when the check loop should stop.
 func (d *Daemon) verifyBinding() bool {
 	d.mu.Lock()
 	if !d.cfg.Bound() || d.cfg.ServerAddr == "" {
@@ -741,10 +742,10 @@ func (d *Daemon) verifyBinding() bool {
 	}
 	api := d.apiLocked()
 	deviceID := d.cfg.DeviceID
-	pub := d.publicKeyLocked()
 	d.mu.Unlock()
 
-	bound, err := api.RegisterDevice(deviceID, pub, d.hostname())
+	// Query the server for binding and expiration status
+	status, err := api.GetDeviceAuthStatus(deviceID)
 	if err != nil {
 		// A definite "not authorized" answer means the server revoked the
 		// binding. Transient errors (timeouts, DNS) are not a revocation.
@@ -756,15 +757,47 @@ func (d *Daemon) verifyBinding() bool {
 		}
 		return true
 	}
-	// Only an explicit non-nil response is authoritative; old servers that do
-	// not report binding status leave the local state untouched.
-	if bound != nil && !*bound {
+
+	// Handle expiration: stop all networks and clear binding
+	if status.Expired {
+		log.Printf("auth code expired, stopping all networks")
+		d.mu.Lock()
+		// Stop all active networks
+		for nid, rt := range d.nets {
+			if rt.tun != nil {
+				rt.tun.Close()
+			}
+			delete(d.nets, nid)
+		}
+		d.clearBindingLocked()
+		d.mu.Unlock()
+		return false
+	}
+
+	// Handle revocation
+	if !status.Bound {
 		d.mu.Lock()
 		d.clearBindingLocked()
 		d.mu.Unlock()
 		return false
 	}
+
 	return true
+}
+
+// GetAuthStatus queries the server for this device's authorization status.
+// It uses the configured server address and returns binding and expiration info.
+func (d *Daemon) GetAuthStatus() (protocol.DeviceAuthStatusResp, error) {
+	d.mu.RLock()
+	if d.cfg.ServerAddr == "" {
+		d.mu.RUnlock()
+		return protocol.DeviceAuthStatusResp{}, errors.New("no server configured")
+	}
+	api := d.apiLocked()
+	deviceID := d.cfg.DeviceID
+	d.mu.RUnlock()
+
+	return api.GetDeviceAuthStatus(deviceID)
 }
 
 // Create makes a new network on the server and joins this node as owner.

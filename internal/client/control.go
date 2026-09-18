@@ -192,6 +192,13 @@ func (c *apiClient) BindDevice(deviceID, publicKey, code, name string) (protocol
 	return out, err
 }
 
+// GetDeviceAuthStatus queries the server for the device's binding and expiration status.
+func (c *apiClient) GetDeviceAuthStatus(deviceID string) (protocol.DeviceAuthStatusResp, error) {
+	var out protocol.DeviceAuthStatusResp
+	err := c.do(http.MethodGet, "/api/v1/devices/auth-status?deviceId="+deviceID, "", nil, &out)
+	return out, err
+}
+
 func (c *apiClient) SetNodeDevice(nid, nodeID, token, deviceID string) error {
 	return c.do(http.MethodPost, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/device", token,
 		protocol.SetNodeDeviceReq{DeviceID: deviceID}, nil)

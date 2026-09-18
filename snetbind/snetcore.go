@@ -515,6 +515,29 @@ func (c *SnetCore) ResetCode(nid string) string {
 	return string(b)
 }
 
+// GetAuthStatus queries the server for this device's authorization status.
+// Returns a JSON object with "bound" (bool), "expired" (bool), and "authCodeId" (string).
+// serverAddr and serverCA specify the server to query; pass empty to use the
+// daemon's configured server. This is a one-shot check; the daemon's background
+// bindCheckLoop continues to verify binding every 10 seconds.
+func (c *SnetCore) GetAuthStatus(serverAddr, serverCA string) string {
+	c.mu.Lock()
+	d, err := c.ensureDaemon()
+	c.mu.Unlock()
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+
+	// Use the daemon's existing API client (it handles server selection)
+	status, err := d.GetAuthStatus()
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+
+	b, _ := json.Marshal(status)
+	return string(b)
+}
+
 // Version returns the library version.
 func Version() string {
 	return "0.1.0"
