@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SNET</string>
+    <string name="network_connected">已连接</string>
+    <string name="network_disconnected">未连接</string>
+    <string name="network_deleted">已删除</string>
+    <string name="loading">加载中...</string>
+    <string name="error">错误</string>
+    <string name="refresh">刷新</string>
+    <string name="create_network">创建网络</string>
+    <string name="join_network">加入网络</string>
+    <string name="delete_network">删除网络</string>
+    <string name="remove_network">移除网络</string>
+    <string name="members">成员</string>
+    <string name="online">在线</string>
+    <string name="offline">离线</string>
+</resources>

@@ -18,6 +18,12 @@ android/local.properties
 android/app/libs/
 android/app/src/main/jniLibs/
 
+# Android native (app-native) build artifacts
+android/app-native/build/
+android/app-native/libs/
+android/app-native/src/main/jniLibs/
+*.bak
+
 # Build binaries
 /server
 /build/
@@ -34,3 +40,7 @@ android/app/src/main/jniLibs/
 # OpenCode local tooling config (Slack plugin skills/commands)
 .opencode/commands/
 .opencode/skills/
+.opencode/node_modules/
+
+# Additional build artifacts
+/server_linux
