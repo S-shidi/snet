@@ -111,7 +111,6 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 		sb.WriteString(fmt.Sprintf("persistent_keepalive_interval=%d\n", keepalive))
 	}
 	// Update activity state based on recent traffic
-	t.mu.Lock()
 	stats, _ := t.Stats()
 	now := time.Now()
 	hasTraffic := false
@@ -127,7 +126,6 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 	} else if now.Sub(t.lastActivity) > 60*time.Second {
 		t.idle = true
 	}
-	t.mu.Unlock()
 	if err := t.dev.IpcSet(sb.String()); err != nil {
 		return fmt.Errorf("wg config: %w", err)
 	}
