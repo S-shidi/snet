@@ -206,13 +206,25 @@ class MainActivity : AppCompatActivity() {
         // Fast check on main thread, then async connect
         val prefs = getSharedPreferences("snet_prefs", MODE_PRIVATE)
         val auto = prefs.getBoolean("auto_connect", false)
-        val hasActive = hasActiveNetwork()
-        Log.d(TAG, "maybeAutoConnect: auto=$auto hasActive=$hasActive")
-
-        if (auto || hasActive) {
+        Log.d(TAG, "maybeAutoConnect: auto=$auto")
+        
+        if (auto) {
             Log.d(TAG, "auto-connect: starting VPN (non-blocking)")
             // Non-blocking: just request permission, actual start is async
             requestVpnPermission()
+        } else {
+            // Check for active networks asynchronously to avoid UI freeze
+            Thread {
+                try {
+                    val hasActive = hasActiveNetwork()
+                    if (hasActive) {
+                        Log.d(TAG, "auto-connect: has active network, starting VPN")
+                        runOnUiThread { requestVpnPermission() }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to check active networks", e)
+                }
+            }.start()
         }
     }
 

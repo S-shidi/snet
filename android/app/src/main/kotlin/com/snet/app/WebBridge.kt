@@ -54,6 +54,19 @@ class WebBridge(private val activity: MainActivity) {
         }
     }
 
+    /** Async version of hasActiveNetwork() to avoid blocking UI thread */
+    private fun hasActiveNetworkAsync(callback: (Boolean) -> Unit) {
+        Thread {
+            try {
+                val hasActive = hasActiveNetwork()
+                activity.runOnUiThread { callback(hasActive) }
+            } catch (e: Exception) {
+                Log.e(TAG, "hasActiveNetworkAsync failed", e)
+                activity.runOnUiThread { callback(false) }
+            }
+        }.start()
+    }
+
     private companion object {
         const val TAG = "WebBridge"
 
@@ -102,11 +115,31 @@ class WebBridge(private val activity: MainActivity) {
 
     @JavascriptInterface
     fun status(): String {
+        // Run SnetBridge.statusRaw() in a background thread with timeout
+        // to avoid blocking the WebView's JavaScript thread
         return try {
-            val raw = SnetBridge.statusRaw() ?: "{}"
+            val future = java.util.concurrent.CompletableFuture.supplyAsync {
+                try {
+                    SnetBridge.statusRaw() ?: "{}"
+                } catch (e: Exception) {
+                    Log.e(TAG, "statusRaw failed", e)
+                    "{}"
+                }
+            }
+            
+            // Wait with timeout (max 2000ms for more reliable status)
+            val raw = future.get(2000, java.util.concurrent.TimeUnit.MILLISECONDS)
             val obj = org.json.JSONObject(raw)
             obj.put("started", SnetBridge.isStarted())
             obj.put("vpnRunning", SnetVpnService.isRunning)
+            obj.toString()
+        } catch (e: java.util.concurrent.TimeoutException) {
+            Log.w(TAG, "status() timeout, returning basic status")
+            // Return a minimal status instead of empty to avoid UI flickering
+            val obj = org.json.JSONObject()
+            obj.put("started", SnetBridge.isStarted())
+            obj.put("vpnRunning", SnetVpnService.isRunning)
+            obj.put("networks", org.json.JSONArray())
             obj.toString()
         } catch (e: Exception) {
             Log.e(TAG, "status failed", e)
@@ -201,28 +234,27 @@ class WebBridge(private val activity: MainActivity) {
         // periodic refresh() reflects the real outcome.
         bgExecutor.execute {
             try {
+                // Request VPN permission if needed (non-blocking)
                 if (!SnetVpnService.isRunning) {
                     Log.d(TAG, "VPN not running, requesting before rejoin")
                     activity.requestVpnPermission()
+                    // Don't wait - the VPN will start asynchronously
+                    // The network will be rejoined when VPN is ready
+                    return@execute
                 }
-                // Optimized: shorter timeout and early return if daemon ready
-                if (waitForCoreReadyOptimized()) {
+                
+                // Quick check without busy waiting
+                if (SnetBridge.isStarted()) {
                     SnetBridge.rejoin(nid)
                     setAutoConnect(true)
-                    notifyProgress("已连接")
-                    Thread.sleep(300) // Brief success feedback
                     notifyUi()
                 } else {
-                    Log.w(TAG, "rejoin($nid) timed out waiting for core")
-                    notifyProgress("连接超时")
-                    Thread.sleep(500)
-                    notifyUi()
+                    Log.w(TAG, "rejoin($nid) core not ready yet")
+                    notifyProgress("请稍后重试")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "rejoin($nid) bg failed", e)
                 notifyProgress("连接失败")
-                Thread.sleep(500)
-                notifyUi()
             }
         }
         return """{"ok":true}"""
@@ -275,18 +307,22 @@ class WebBridge(private val activity: MainActivity) {
     fun leave(nid: String): String {
         bgExecutor.execute {
             try {
-                notifyProgress("正在断开网络...")
                 SnetBridge.leaveNetwork(nid)
-                setAutoConnect(hasActiveNetwork())
-                checkIfAllLeftStopVpn()
-                notifyProgress("已断开")
-                Thread.sleep(300)
-                notifyUi()
+                
+                // Check active networks asynchronously
+                Thread {
+                    val hasActive = hasActiveNetwork()
+                    setAutoConnect(hasActive)
+                    checkIfAllLeftStopVpn()
+                    
+                    // Notify UI to refresh
+                    activity.runOnUiThread {
+                        activity.refreshWebView()
+                    }
+                }.start()
             } catch (e: Exception) {
                 Log.e(TAG, "leave($nid) bg failed", e)
                 notifyProgress("断开失败")
-                Thread.sleep(500)
-                notifyUi()
             }
         }
         return """{"ok":true}"""
@@ -296,18 +332,22 @@ class WebBridge(private val activity: MainActivity) {
     fun remove(nid: String): String {
         bgExecutor.execute {
             try {
-                notifyProgress("正在移除网络...")
                 SnetBridge.removeNetwork(nid)
-                setAutoConnect(hasActiveNetwork())
-                checkIfAllLeftStopVpn()
-                notifyProgress("已移除")
-                Thread.sleep(300)
-                notifyUi()
+                
+                // Check active networks asynchronously
+                Thread {
+                    val hasActive = hasActiveNetwork()
+                    setAutoConnect(hasActive)
+                    checkIfAllLeftStopVpn()
+                    
+                    // Notify UI to refresh
+                    activity.runOnUiThread {
+                        activity.refreshWebView()
+                    }
+                }.start()
             } catch (e: Exception) {
                 Log.e(TAG, "remove($nid) bg failed", e)
                 notifyProgress("移除失败")
-                Thread.sleep(500)
-                notifyUi()
             }
         }
         return """{"ok":true}"""

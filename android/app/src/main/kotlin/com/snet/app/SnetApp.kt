@@ -24,8 +24,15 @@ class SnetApp : Application() {
         super.onCreate()
         instance = this
 
-        // Initialize SnetBridge early (Go daemon runtime)
-        SnetBridge.init(this, filesDir.absolutePath)
+        // Initialize SnetBridge asynchronously to avoid blocking app startup
+        Thread {
+            try {
+                SnetBridge.init(this, filesDir.absolutePath)
+                android.util.Log.d(TAG, "SnetBridge initialized in background")
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "SnetBridge init failed", e)
+            }
+        }.start()
 
         // Preload WebView for faster startup
         WebViewPreloader.init(this)
@@ -53,47 +60,46 @@ object WebViewPreloader {
     fun init(context: Context) {
         if (isPreloaded) return
 
-        // Create WebView in a background thread to avoid blocking app startup
-        Thread {
-            try {
-                // Temporarily disable strict mode for WebView creation
-                val oldPolicy = StrictMode.getThreadPolicy()
-                StrictMode.setThreadPolicy(StrictMode.ThreadPolicy.Builder().permitAll().build())
+        // Create WebView synchronously to ensure it's ready when MainActivity launches
+        // WebView creation is fast (typically <50ms), so it won't significantly delay startup
+        try {
+            // Temporarily disable strict mode for WebView creation
+            val oldPolicy = StrictMode.getThreadPolicy()
+            StrictMode.setThreadPolicy(StrictMode.ThreadPolicy.Builder().permitAll().build())
 
-                // Create WebView with application context
-                val appContext = context.applicationContext
-                webView = WebView(appContext)
+            // Create WebView with application context
+            val appContext = context.applicationContext
+            webView = WebView(appContext)
 
-                // Pre-configure WebView settings
-                webView?.settings?.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    allowFileAccess = true
-                    allowContentAccess = false
-                    cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK // Prefer cache for faster load
-                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                    
-                    // Performance optimizations
-                    setSupportZoom(false)
-                    builtInZoomControls = false
-                    displayZoomControls = false
-                    useWideViewPort = true
-                    loadWithOverviewMode = true
-                }
-
-                // Enable hardware acceleration on WebView itself
-                webView?.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
-
-                // Restore strict mode
-                StrictMode.setThreadPolicy(oldPolicy)
-
-                isPreloaded = true
-                android.util.Log.d(TAG, "WebView preloaded successfully")
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "Failed to preload WebView", e)
-                webView = null
+            // Pre-configure WebView settings
+            webView?.settings?.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                allowFileAccess = true
+                allowContentAccess = false
+                cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK // Prefer cache for faster load
+                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                
+                // Performance optimizations
+                setSupportZoom(false)
+                builtInZoomControls = false
+                displayZoomControls = false
+                useWideViewPort = true
+                loadWithOverviewMode = true
             }
-        }.start()
+
+            // Enable hardware acceleration on WebView itself
+            webView?.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+
+            // Restore strict mode
+            StrictMode.setThreadPolicy(oldPolicy)
+
+            isPreloaded = true
+            android.util.Log.d(TAG, "WebView preloaded successfully in ${System.currentTimeMillis()}ms")
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to preload WebView", e)
+            webView = null
+        }
     }
 
     /**

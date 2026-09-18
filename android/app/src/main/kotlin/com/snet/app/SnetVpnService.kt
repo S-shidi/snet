@@ -113,7 +113,8 @@ class SnetVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             "STOP" -> {
-                stopVpn()
+                // Stop VPN on a background thread to avoid UI freeze
+                Thread { stopVpn() }.start()
                 return START_NOT_STICKY
             }
             "START" -> {
