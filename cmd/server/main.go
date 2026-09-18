@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -33,26 +32,6 @@ func main() {
 	requireDeviceAuth := flag.Bool("require-device-auth", os.Getenv("SNET_REQUIRE_DEVICE_AUTH") == "1", "only allow devices that bound an admin-generated authorization code to create/join networks (env SNET_REQUIRE_DEVICE_AUTH=1)")
 	adminReset := flag.Bool("admin-reset", false, "force-reset admin password from env/admin-pass and exit")
 	flag.Parse()
-
-	// Temporary debug: enable per-port trace logging on selected relay ports.
-	if v := os.Getenv("SNET_TRACE_RELAY_PORTS"); v != "" {
-		server.TraceRelayPorts = map[int]bool{}
-		for _, s := range strings.Split(v, ",") {
-			s = strings.TrimSpace(s)
-			if s == "" {
-				continue
-			}
-			if p, err := strconv.Atoi(s); err == nil {
-				server.TraceRelayPorts[p] = true
-			}
-		}
-		if len(server.TraceRelayPorts) > 0 {
-			log.Printf("TRACE relay node ports enabled: %v", server.TraceRelayPorts)
-		}
-	} else {
-		// Default: trace the first two active node ports for debugging.
-		server.TraceRelayPorts = map[int]bool{51821: true, 51822: true}
-	}
 
 	store, err := server.NewStoreAt(*dbPath)
 	if err != nil {
@@ -85,6 +64,10 @@ func main() {
 		// Phase 3: per-node unicast relay ports. Each node's port is bound
 		// lazily the same way and routes unicast instead of broadcasting.
 		store.SetNodeEnsure(relay.EnsureNode)
+		// Release hook: when a network or node is removed, the store frees the
+		// bound relay socket and its send-loop goroutine so ports are never
+		// leaked out of the assignable pool.
+		store.SetRelayRelease(relay.ClosePort)
 		relay.SetNodeRoute(store.RelayRouteNodePort)
 		store.SetRelayFlowLookup(relay.FlowsByHost)
 		store.SetRelaySend(relay.SendFrom)
@@ -131,6 +114,7 @@ func main() {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB: cap header size to bound memory
 	}
 
 	if *tlsCert == "" || *tlsKey == "" {

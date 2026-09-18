@@ -250,6 +250,9 @@
   .pill.bound { background:var(--accent-soft); color:var(--accent2); }
   .pill.free { background:rgba(154,163,178,.12); color:var(--dim); }
   .pill.pending { background:var(--warn-soft); color:var(--warn); }
+  .pill.expired { background:var(--err-soft); color:var(--err); }
+  .pill.permanent { background:var(--ok-soft); color:var(--ok); }
+  .pill.active { background:var(--ok-soft); color:var(--ok); }
   button.pill.pending { cursor:pointer; border:none; font:inherit; transition:filter .15s; }
   button.pill.pending:hover { filter:brightness(1.15); }
   .badge-dot { display:inline-flex; align-items:center; justify-content:center; min-width:17px; height:17px; padding:0 4px; border-radius:999px; background:var(--err); color:#fff; font-size:11px; font-weight:700; }
@@ -361,6 +364,45 @@
     border-radius:8px; padding:8px 12px;
   }
   .fresh-code .code { flex:1; min-width:0; word-break:break-all; font-size:13.5px; letter-spacing:1px; user-select:all; }
+  .fresh-code .expire { color:var(--dim); font-size:12px; white-space:nowrap; }
+  
+  .form-group { margin-bottom:16px; }
+  .form-group label { display:block; margin-bottom:6px; font-size:13px; color:var(--text); font-weight:500; }
+  
+  .input-hint-group { display:flex; flex-direction:column; align-items:stretch; gap:6px; }
+  .input-hint-group .hint { font-size:12px; color:var(--dim); }
+  .input-sm { width:100%; padding:8px 10px; font-size:14px; }
+  .input-date { width:100%; padding:8px 10px; font-size:14px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); }
+  
+  .expire-options { display:flex; flex-direction:column; gap:10px; margin-bottom:8px; }
+  .expire-pair { flex-direction:row; }
+  .expire-pair .radio-label { flex:1; }
+  .radio-label { display:flex; align-items:flex-start; gap:10px; padding:12px; border:1px solid var(--border); border-radius:6px; cursor:pointer; transition:all 0.2s; }
+  .radio-label:hover { background:var(--bg); border-color:var(--accent); }
+  .radio-label input[type="radio"] { margin-top:2px; }
+  .radio-label input[type="radio"]:checked + .radio-text strong { color:var(--accent); }
+  .radio-label input[type="radio"]:checked ~ .radio-text { color:var(--text); }
+  .radio-text { display:flex; flex-direction:column; gap:2px; }
+  .radio-text strong { font-size:14px; color:var(--text); }
+  .radio-desc { font-size:12px; color:var(--dim); }
+  
+  .date-wrapper { display:flex; flex-direction:column; gap:8px; margin-top:8px; padding:12px; background:var(--bg); border-radius:6px; border:1px solid var(--border); }
+  .date-wrapper .hint { font-size:12px; color:var(--dim); }
+  #gen-date-wrapper { padding:0; background:transparent; border:none; border-radius:0; }
+  
+  .gen-form { padding:8px 0; }
+  .gen-form > * + * { margin-top:20px; }
+  .gen-form > .form-group:last-child { margin-bottom:0; }
+
+  .gen-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .gen-grid .form-group { margin-bottom:0; }
+  .gen-grid .input-hint-group { width:100%; }
+  .gen-grid input[type="number"] { flex:1; width:100%; min-width:0; }
+  .gen-rows { display:flex; flex-direction:column; gap:14px; }
+  
+  .radio-group { display:flex; flex-direction:column; gap:6px; }
+  .radio-group label { display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px; }
+  .radio-group input[type="radio"] { margin:0; }
 
   .copyable { display:inline-flex; align-items:center; gap:6px; }
   .copyable .val { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
@@ -375,6 +417,7 @@
     #main { padding:14px 14px 50px; }
     .stats { grid-template-columns:repeat(2,1fr); }
     .modal-foot { flex-direction:row-reverse; }
+    .gen-grid { grid-template-columns:1fr; }
      .brand .sub { display:inline; font-size:10px; }
   }
 </style>
@@ -525,23 +568,15 @@
     <div class="card">
       <div class="card-head"><h3>设备授权码</h3></div>
       <p class="hint mt0">用于客户端「自定义服务器」模式的设备绑定。服务端开启强制校验（-require-device-auth）后，只有绑定过授权码的设备才能创建或加入网络。一个授权码可绑定多台设备（数量在生成时设定）。授权码明文可在控制台随时查看。</p>
-      <div class="flex wrap">
-        <div class="row mb0 flex" style="align-items:center;gap:8px">
-          <label for="auth-count" style="margin:0">生成数量</label>
-          <input type="number" id="auth-count" min="1" max="100" value="10" />
-        </div>
-        <div class="row mb0 flex" style="align-items:center;gap:8px">
-          <label for="auth-bind" style="margin:0">每码可绑定设备数</label>
-          <input type="number" id="auth-bind" min="1" max="100" value="1" />
-        </div>
+      <div class="flex wrap" style="align-items:center">
         <button type="button" class="btn" data-act="gen-codes">生成授权码</button>
         <span class="msg" id="auth-msg"></span>
       </div>
     </div>
     <div class="tbl-wrap">
       <table>
-        <thead><tr><th>授权码</th><th>状态</th><th>创建时间</th><th style="width:150px">操作</th></tr></thead>
-        <tbody id="code-body"><tr><td colspan="4"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
+        <thead><tr><th>授权码</th><th>创建日期</th><th>状态</th><th>绑定设备</th><th>有效期</th><th style="width:150px">操作</th></tr></thead>
+        <tbody id="code-body"><tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
       </table>
     </div>
     <div class="pager" id="code-pager"></div>
@@ -2933,6 +2968,16 @@ function fmtTime(iso) {
   return d.toLocaleString();
 }
 
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function icon(name) {
   const I = {
     copy: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
@@ -3123,14 +3168,16 @@ function subnetWidgetInit(wrap) {
   };
 }
 
-function setModal(title, html, wide) {
+function setModal(title, html, wide, width) {
   $('modal-title').textContent = title;
   $('modal-box').className = 'modal' + (wide ? ' wide' : '');
+  $('modal-box').style.width = width || '';
   delete $('modal-body').dataset.membersNid; // stale marker must not survive into other modals
   $('modal-body').innerHTML = html;
   $('modal').hidden = false;
   const f = $('modal-body').querySelector('input, select, textarea');
   if (f) setTimeout(() => f.focus(), 30);
+  return $('modal');
 }
 
 function closeModal() {
@@ -3970,7 +4017,7 @@ async function delDev(deviceID, deviceName) {
 async function loadAuthCodes(showLoading, page) {
   const my = ++codeSeq;
   const body = $('code-body');
-  if (showLoading) body.innerHTML = '<tr><td colspan="4"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
+  if (showLoading) body.innerHTML = '<tr><td colspan="6"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr>';
   if (page !== undefined) codePage = page;
   try {
     const qs = new URLSearchParams({ page: String(codePage), page_size: String(PAGE_SIZE) });
@@ -3992,7 +4039,7 @@ async function loadAuthCodes(showLoading, page) {
 function renderCodes() {
   const body = $('code-body');
   if (!codeData.length) {
-    body.innerHTML = '<tr><td colspan="4"><div class="empty">' + icon('empty') +
+    body.innerHTML = '<tr><td colspan="6"><div class="empty">' + icon('empty') +
       '<div class="t">暂无授权码</div><div class="s">点击上方「生成授权码」开始</div></div></td></tr>';
     return;
   }
@@ -4001,51 +4048,163 @@ function renderCodes() {
     const bound = (c.boundCount || 0) > 0;
     const max = Math.max(1, c.maxBindings || 1);
     const devs = c.boundDevices || [];
-    const statusCell = bound
+    
+    // Status badge
+    let statusBadge = '';
+    if (c.status === 'expired') {
+      statusBadge = '<span class="pill expired">已过期</span>';
+    } else if (c.status === 'permanent') {
+      statusBadge = '<span class="pill permanent">永久</span>';
+    } else {
+      statusBadge = '<span class="pill active">活跃</span>';
+    }
+    
+    const bindCell = bound
       ? `<button type="button" class="pill bound pill-toggle" data-act="toggle-bound" aria-expanded="false"><span>已绑定 ${c.boundCount}/${max}</span><span class="chev">${icon('chev')}</span></button>` +
         `<div class="code-bound-list" hidden>${devs.map(d => {
           const label = d.deviceName ? `${d.deviceName}（${d.deviceId}）` : d.deviceId;
           return `<div class="code-bound-row"><span class="dev-id" title="${esc(label)}">${esc(label)}</span><span class="t">${fmtTime(d.boundAt)}</span><button type="button" class="act" data-act="unbind" data-dev="${esc(d.deviceId)}">解绑</button></div>`;
         }).join('')}</div>`
       : `<span class="pill free">未绑定 0/${max}</span>`;
+    
+    const expiresDisplay = c.expiresAt ? fmtDate(c.expiresAt) : '-';
+    
+    const actions = [];
+    if (c.status === 'expired') {
+      actions.push(`<button type="button" class="btn sm" data-act="renew-code" data-id="${esc(c.id)}">续期</button>`);
+    }
+    actions.push(`<button type="button" class="btn danger ghost sm" data-act="revoke" data-id="${esc(c.id)}" data-code="${esc(c.code)}">吊销</button>`);
+    
     rows += `<tr>
       <td class="mono" style="white-space:nowrap">
         <span class="code" style="cursor:pointer" data-act="copy" data-copy="${esc(c.code)}" title="点击复制">${esc(c.code)}</span>
         <button type="button" class="btn icon sm" data-act="copy" data-copy="${esc(c.code)}" title="复制授权码">${icon('copy')}</button>
       </td>
-      <td>${statusCell}</td>
-      <td>${fmtTime(c.createdAt)}</td>
-      <td style="white-space:nowrap">
-        <button type="button" class="btn danger ghost sm" data-act="revoke" data-id="${esc(c.id)}" data-code="${esc(c.code)}">吊销</button>
-      </td>
+      <td style="white-space:nowrap">${fmtTime(c.createdAt)}</td>
+      <td>${statusBadge}</td>
+      <td>${bindCell}</td>
+      <td>${expiresDisplay}</td>
+      <td style="white-space:nowrap">${actions.join(' ')}</td>
     </tr>`;
   }
   body.innerHTML = rows;
 }
 
 async function genCodes() {
-  const raw = parseInt($('auth-count').value || '10', 10);
-  const count = Math.min(100, Math.max(1, isNaN(raw) ? 10 : raw));
-  const rawBind = parseInt($('auth-bind').value || '1', 10);
-  const maxBindings = Math.min(100, Math.max(1, isNaN(rawBind) ? 1 : rawBind));
-  const msg = $('auth-msg');
-  msg.textContent = '';
-  try {
-    const r = await api('POST', '/admin/devices/authcodes/generate', { count, maxBindings });
-    const codes = r.codes || [];
-    const items = codes.map(c => `
-      <div class="fresh-code">
-        <span class="code">${esc(c)}</span>
-        <button type="button" class="btn sm" data-act="copy" data-copy="${esc(c)}">${icon('copy')} 复制</button>
-      </div>`).join('');
-    setModal('新生成的设备授权码', `
-      <p class="hint mt0">每个授权码可绑定 <b>${maxBindings}</b> 台设备。明文会保存在列表中，随时可查看复制，无需时可吊销。</p>
-      <div class="fresh-codes">${items}</div>
-      <div class="modal-foot">
-        <button type="button" class="btn" data-act="close-modal">完成</button>
-      </div>`);
-    loadAuthCodes(false, 1);
-  } catch (e) { msg.textContent = '生成失败：' + e.message.replace(/^\d+\s*/, ''); }
+  // Show generate modal
+  const modal = setModal('生成授权码', `
+    <div class="gen-form">
+      <div class="gen-grid">
+        <div class="form-group">
+          <label for="gen-count">生成数量</label>
+          <div class="input-hint-group">
+            <input type="number" id="gen-count" value="1" min="1" max="100" class="input-sm">
+            <span class="hint">一次最多生成 100 个授权码</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="gen-bind">每码可绑定设备数</label>
+          <div class="input-hint-group">
+            <input type="number" id="gen-bind" value="1" min="1" max="10" class="input-sm">
+            <span class="hint">每个授权码最多可绑定 10 台设备</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>有效期限</label>
+        <div class="expire-options expire-pair">
+          <label class="radio-label">
+            <input type="radio" name="gen-expire" value="permanent" checked>
+            <span class="radio-text">
+              <strong>永久有效</strong>
+              <span class="radio-desc">授权码永不过期，除非手动吊销</span>
+            </span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="gen-expire" value="date">
+            <span class="radio-text">
+              <strong>指定日期</strong>
+              <span class="radio-desc">授权码到期后绑定的设备将无法使用</span>
+            </span>
+          </label>
+        </div>
+        <div id="gen-date-wrapper" class="date-wrapper" style="display:none">
+          <input type="date" id="gen-expires-at" class="input-date">
+          <span class="hint">授权码将在所选日期的 23:59:59 到期</span>
+        </div>
+      </div>
+    </div>
+    
+    <div class="modal-foot">
+      <button type="button" class="btn ghost" data-act="close-modal">取消</button>
+      <button type="button" class="btn primary" id="gen-submit">
+        <span class="icon">${icon('plus')}</span> 生成授权码
+      </button>
+    </div>
+  `, true, '450px');
+  
+  // Bind radio change - toggle date input visibility
+  modal.querySelectorAll('input[name="gen-expire"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const dateWrapper = $('gen-date-wrapper');
+      const dateInput = $('gen-expires-at');
+      
+      if (r.value === 'date') {
+        dateWrapper.style.display = 'block';
+        dateInput.disabled = false;
+        // Set default date to 30 days from now
+        if (!dateInput.value) {
+          const defaultDate = new Date();
+          defaultDate.setDate(defaultDate.getDate() + 30);
+          dateInput.value = defaultDate.toISOString().split('T')[0];
+        }
+      } else {
+        dateWrapper.style.display = 'none';
+        dateInput.disabled = true;
+      }
+    });
+  });
+  
+  // Bind submit
+  $('gen-submit').addEventListener('click', async () => {
+    const count = parseInt($('gen-count').value) || 1;
+    const maxBindings = parseInt($('gen-bind').value) || 1;
+    const expireType = modal.querySelector('input[name="gen-expire"]:checked').value;
+    
+    let expiresAt = null;
+    if (expireType === 'date') {
+      const dateVal = $('gen-expires-at').value;
+      if (!dateVal) {
+        toast('请选择过期日期', 'err');
+        return;
+      }
+      // Set to end of day
+      expiresAt = new Date(dateVal + 'T23:59:59Z').toISOString();
+    }
+    
+    try {
+      const r = await api('POST', '/admin/devices/authcodes/generate', { count, maxBindings, expiresAt });
+      closeModal();
+      
+      const codes = r.codes || [];
+      const items = codes.map(c => `
+        <div class="fresh-code">
+          <span class="code">${esc(c.code)}</span>
+          <span class="expire">${c.status === 'permanent' ? '永久有效' : '有效期至 ' + fmtDate(c.expiresAt)}</span>
+          <button type="button" class="btn sm" data-act="copy" data-copy="${esc(c.code)}">${icon('copy')} 复制</button>
+        </div>`).join('');
+      setModal('新生成的设备授权码', `
+        <p class="hint mt0">已成功生成 <b>${codes.length}</b> 个授权码，每个可绑定 <b>${maxBindings}</b> 台设备。</p>
+        <div class="fresh-codes">${items}</div>
+        <div class="modal-foot">
+          <button type="button" class="btn primary" data-act="close-modal">完成</button>
+        </div>`);
+      loadAuthCodes(false, 1);
+    } catch (e) {
+      handleErr(e, '生成失败');
+    }
+  });
 }
 
 async function revokeCode(id, code) {
@@ -4061,6 +4220,86 @@ async function revokeCode(id, code) {
     loadAuthCodes(false);
     loadOverview(false);
   } catch (e) { handleErr(e, '吊销失败'); }
+}
+
+async function renewCode(codeId) {
+  const modal = setModal('续期授权码', `
+    <p class="hint mt0">为授权码设置新的有效期，续期后绑定的设备可正常使用。</p>
+<div class="form-group">
+        <label>新的有效期</label>
+        <div class="expire-options expire-pair">
+          <label class="radio-label">
+            <input type="radio" name="renew-expire" value="permanent">
+            <span class="radio-text">
+              <strong>永久有效</strong>
+              <span class="radio-desc">授权码永不过期，除非手动吊销</span>
+            </span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="renew-expire" value="date" checked>
+            <span class="radio-text">
+              <strong>指定日期</strong>
+              <span class="radio-desc">授权码到期后绑定的设备将无法使用</span>
+            </span>
+          </label>
+        </div>
+        <div id="renew-date-wrapper" class="date-wrapper">
+          <input type="date" id="renew-expires-at" class="input-date">
+          <span class="hint">授权码将在所选日期的 23:59:59 到期</span>
+        </div>
+      </div>
+    <div class="modal-foot">
+      <button type="button" class="btn ghost" data-act="close-modal">取消</button>
+      <button type="button" class="btn primary" id="renew-submit">
+        <span class="icon">${icon('check')}</span> 确认续期
+      </button>
+    </div>
+  `, true);
+  
+  // Set default date to 1 year from now
+  const defaultDate = new Date();
+  defaultDate.setFullYear(defaultDate.getFullYear() + 1);
+  $('renew-expires-at').value = defaultDate.toISOString().split('T')[0];
+  
+  // Bind radio change - toggle date input visibility
+  modal.querySelectorAll('input[name="renew-expire"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const dateWrapper = $('renew-date-wrapper');
+      const dateInput = $('renew-expires-at');
+      
+      if (r.value === 'date') {
+        dateWrapper.style.display = 'block';
+        dateInput.disabled = false;
+      } else {
+        dateWrapper.style.display = 'none';
+        dateInput.disabled = true;
+      }
+    });
+  });
+  
+  // Bind submit
+  $('renew-submit').addEventListener('click', async () => {
+    const expireType = modal.querySelector('input[name="renew-expire"]:checked').value;
+    
+    let expiresAt = null;
+    if (expireType === 'date') {
+      const dateVal = $('renew-expires-at').value;
+      if (!dateVal) {
+        toast('请选择过期日期', 'err');
+        return;
+      }
+      expiresAt = new Date(dateVal + 'T23:59:59Z').toISOString();
+    }
+    
+    try {
+      await api('PATCH', `/admin/devices/authcodes/${codeId}/renew`, { expiresAt });
+      closeModal();
+      toast('续期成功');
+      loadAuthCodes(false);
+    } catch (e) {
+      handleErr(e, '续期失败');
+    }
+  });
 }
 
 async function unbindCode(deviceID) {
@@ -4187,6 +4426,9 @@ document.addEventListener('click', async e => {
     }
     case 'revoke':
       withBusy(el, () => revokeCode(el.dataset.id, el.dataset.code));
+      break;
+    case 'renew-code':
+      renewCode(el.dataset.id);
       break;
     case 'unbind':
       withBusy(el, () => unbindCode(el.dataset.dev));

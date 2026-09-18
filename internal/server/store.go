@@ -17,17 +17,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.etcd.io/bbolt"
 	"golang.org/x/crypto/bcrypt"
 	"snet/internal/protocol"
 )
-
-// TraceRelayPorts, when set, logs every frame routed (or dropped) on the
-// listed per-node relay ports. Off by default; set via a map literal for
-// temporary debug builds.
-var TraceRelayPorts map[int]bool
 
 var (
 	ErrNotFound       = errors.New("not found")
@@ -43,6 +39,7 @@ var (
 	ErrAuthCodeInvalid = errors.New("invalid device authorization code")
 	ErrAuthCodeUsed    = errors.New("device authorization code already used")
 	ErrAuthCodeFull    = errors.New("device authorization code reached max bindings")
+	ErrAuthCodeExpired = errors.New("授权码已过期，所有网络离线，请续期或更换授权码")
 	// ErrAdminExists is returned by BootstrapAdmin when an admin account has
 	// already been initialized.
 	ErrAdminExists = errors.New("管理员账号已初始化")
@@ -133,6 +130,10 @@ type networkState struct {
 	ctrlHost map[string]string
 	// relayFlowByNode is the most recent attributed relay flow per node.
 	relayFlowByNode map[string]string
+	// lastFlowWrite throttles OnRelayFlow (hit on every UDP packet) to one
+	// locked scan per network per second; updated atomically so the fast path
+	// never takes s.mu.
+	lastFlowWrite atomic.Int64
 	// nodePorts maps each node in this network to its per-node unicast relay
 	// port. The relay binds a separate UDP socket per node port and routes
 	// traffic unicast instead of broadcasting.
@@ -208,6 +209,7 @@ type authCodeRecord struct {
 	CreatedAt   time.Time         `json:"createdAt"`
 	MaxBindings int               `json:"maxBindings,omitempty"`
 	Bindings    []authCodeBinding `json:"bindings,omitempty"`
+	ExpiresAt   *time.Time        `json:"expiresAt,omitempty"` // expiration time, nil means permanent
 
 	// Legacy single-binding fields, kept for migration only.
 	DeviceID  string    `json:"deviceId,omitempty"`
@@ -240,6 +242,10 @@ type Store struct {
 	// nodeEnsure lazily binds a per-node unicast relay port (Phase 3). Set via
 	// SetNodeEnsure; read under s.mu in ensureNodePort.
 	nodeEnsure func(port int) error
+	// relayRelease releases a bound relay socket (broadcast or per-node).
+	// Set via SetRelayRelease; called under s.mu when a network or node is
+	// removed so ports and goroutines are never leaked.
+	relayRelease func(port int) error
 	// relayFlows returns the live flows seen on a relay port, filtered to a
 	// host. Set via SetRelayFlowLookup; used by unicast routing.
 	relayFlows func(port int, host string) []string
@@ -806,6 +812,16 @@ func (s *Store) SetNodeEnsure(fn func(port int) error) {
 	s.nodeEnsure = fn
 }
 
+// SetRelayRelease registers the function that releases a bound relay UDP port
+// (socket and send-loop goroutine). Called under s.mu whenever a network's
+// broadcast port or a node's per-node relay port is removed, so relay ports
+// and goroutines are reclaimed instead of leaked.
+func (s *Store) SetRelayRelease(fn func(port int) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayRelease = fn
+}
+
 // SetRelayFlowLookup registers the function that returns live relay flows for
 // a port, filtered to a specific host. Used by unicast routing to find the
 // recipient's inbound mapping on the sender's socket.
@@ -921,6 +937,45 @@ func (s *Store) ensureNodePort(ns *networkState, nodeID string) error {
 	return errors.New("no free relay node ports")
 }
 
+// releaseNodePortLocked releases the per-node unicast relay port bound to a
+// node, if any, returning it to the free pool. It removes the socket (stopping
+// its send-loop goroutine) and clears all port bookkeeping. Callers must hold
+// s.mu.
+func (s *Store) releaseNodePortLocked(ns *networkState, nodeID string) {
+	if ns == nil {
+		return
+	}
+	port := ns.nodePorts[nodeID]
+	if port == 0 {
+		return
+	}
+	delete(ns.nodePorts, nodeID)
+	delete(s.portToNode, port)
+	delete(s.netByPort, port)
+	if s.relayRelease != nil {
+		_ = s.relayRelease(port)
+	}
+}
+
+// releaseNetworkPortsLocked releases a network's broadcast relay port and every
+// per-node unicast port bound to it, freeing their sockets and goroutine
+// resources. Callers must hold s.mu.
+func (s *Store) releaseNetworkPortsLocked(ns *networkState) {
+	if ns == nil {
+		return
+	}
+	for id := range ns.nodePorts {
+		s.releaseNodePortLocked(ns, id)
+	}
+	if ns.relayPort != 0 {
+		delete(s.netByPort, ns.relayPort)
+		if s.relayRelease != nil {
+			_ = s.relayRelease(ns.relayPort)
+		}
+		ns.relayPort = 0
+	}
+}
+
 // RelayRouteNodePort routes a frame that arrived at a per-node unicast relay
 // port. port is the socket the frame arrived on — which identifies the
 // recipient (each node's WireGuard socket addresses only its peer's port) —
@@ -942,13 +997,7 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	}
 	senderHost, _, err := net.SplitHostPort(sender)
 	if err != nil {
-		if TraceRelayPorts[port] {
-			log.Printf("TRACE nodeport %d: bad sender addr, drop", port)
-		}
 		return true
-	}
-	if TraceRelayPorts[port] {
-		log.Printf("TRACE nodeport %d: frame senderHost=%s recipientID=%s", port, senderHost, recipientID)
 	}
 	// Identify the sender node by its control-plane public IP (attributed in
 	// listPeersFrom). Without a match there is no sender port to route from.
@@ -964,9 +1013,6 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		senderPort = ns.nodePorts[senderID]
 	}
 	if senderPort == 0 || senderPort == port {
-		if TraceRelayPorts[port] {
-			log.Printf("TRACE nodeport %d: no senderPort (senderID=%q nodePorts=%v) -> drop", port, senderID, ns.nodePorts)
-		}
 		return true
 	}
 	// Destination: the recipient's inbound mapping on the sender's socket.
@@ -974,29 +1020,17 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	// will appear as a flow on the sender's port whose host is the recipient.
 	recipientHost := ns.ctrlHost[recipientID]
 	if recipientHost == "" {
-		if TraceRelayPorts[port] {
-			log.Printf("TRACE nodeport %d: no ctrlHost for recipient %q -> drop (senderPort=%d)", port, recipientID, senderPort)
-		}
 		return true
 	}
 	fls := s.relayFlowsByHost(senderPort, recipientHost)
-	if TraceRelayPorts[port] {
-		log.Printf("TRACE nodeport %d: senderID=%q senderPort=%d hostFlowsOn%d=%v", port, senderID, senderPort, senderPort, fls)
-	}
 	for _, fl := range fls {
 		if fl != sender {
 			s.relaySendFrom(senderPort, fl, data)
-			if TraceRelayPorts[port] {
-				log.Printf("TRACE nodeport %d: forwarded to %s via port %d", port, fl, senderPort)
-			}
 			return true
 		}
 	}
 	// No recipient mapping on the sender's socket yet; the recipient's
 	// keepalives will establish it shortly. Drop to avoid fan-out.
-	if TraceRelayPorts[port] {
-		log.Printf("TRACE nodeport %d: no recipient flow on sender port %d (host=%q) -> drop", port, senderPort, recipientHost)
-	}
 	return true
 }
 
@@ -1031,13 +1065,31 @@ func (s *Store) OnRelayFlow(port int, addr string) {
 	if err != nil {
 		return
 	}
-	s.mu.Lock()
+	now := time.Now()
+	// Throttle: this runs per UDP packet, but a node's relay flow only needs
+	// refreshing once about every second. Read the network under RLock so the
+	// hot path never takes the exclusive lock or scans the ctrlHost map.
+	needRefresh := true
+	s.mu.RLock()
 	ns := s.netByPort[port]
+	if ns != nil {
+		if now.Unix()-ns.lastFlowWrite.Load() < 1 {
+			needRefresh = false
+		}
+	}
+	s.mu.RUnlock()
 	if ns == nil {
+		return
+	}
+	if !needRefresh {
+		return
+	}
+	s.mu.Lock()
+	if ns := s.netByPort[port]; ns == nil || now.Unix()-ns.lastFlowWrite.Load() < 1 {
 		s.mu.Unlock()
 		return
 	}
-	now := time.Now()
+	ns.lastFlowWrite.Store(now.Unix())
 	if len(ns.relaySeen) == 0 || now.Unix()%8 == 0 {
 		for a, t := range ns.relaySeen {
 			if now.Sub(t) >= 60*time.Second {
@@ -1083,8 +1135,10 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		visibility = *so.visibility
 	}
 
-	if s.requireDeviceAuth && !s.deviceBoundLocked(deviceID) {
-		return protocol.CreateNetworkResp{}, ErrUnauthorized
+	if s.requireDeviceAuth {
+		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
+			return protocol.CreateNetworkResp{}, err
+		}
 	}
 	if err := validateDeviceID(deviceID); err != nil {
 		return protocol.CreateNetworkResp{}, err
@@ -1278,24 +1332,6 @@ func (s *Store) touchLocked(ns *networkState, now time.Time) {
 	}
 }
 
-// touchLockedAsync is the async version of touchLocked for background persistence.
-// It acquires the lock itself and handles the network state update safely.
-func (s *Store) touchLockedAsync(ns *networkState, now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	ts := now.Unix()
-	if ts <= ns.lastActivityAt {
-		return
-	}
-	ns.lastActivityAt = ts
-	ns.n.LastActivityAt = ts
-	if now.Unix()-ns.lastActWrite >= int64(lastActThrot/time.Second) {
-		ns.lastActWrite = now.Unix()
-		_ = s.persistNetwork(ns)
-	}
-}
-
 func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinResp, error) {
 	code := protocol.NormalizeCode(rawCode)
 	now := time.Now()
@@ -1303,8 +1339,10 @@ func (s *Store) Join(nid, rawCode, publicKey, deviceID string) (protocol.JoinRes
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.requireDeviceAuth && !s.deviceBoundLocked(deviceID) {
-		return protocol.JoinResp{}, ErrUnauthorized
+	if s.requireDeviceAuth {
+		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
+			return protocol.JoinResp{}, err
+		}
 	}
 	if err := validatePublicKey(publicKey); err != nil {
 		return protocol.JoinResp{}, err
@@ -1606,19 +1644,18 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 			ns.ctrlHost[te.NodeID] = remoteHost
 		}
 		if now-ns.lastSeenWrite >= int64(lastSeenThrot/time.Second) {
-			// Async persistence: persist node in background to avoid blocking API
+			// Snapshot the node while s.mu is held; the background
+			// goroutine may run after other writers mutate the live struct.
+			nodeCopy := *me
 			go func(networkID string, node *protocol.Node) {
-				// Create a copy to avoid race
-				n2 := *node
-				_ = s.persistNode(networkID, &n2)
-			}(te.NetworkID, me)
+				_ = s.persistNode(networkID, node)
+			}(te.NetworkID, &nodeCopy)
 			ns.lastSeenWrite = now
 		}
 	}
-	// Async network activity persistence
-	go func(ns *networkState, t time.Time) {
-		s.touchLockedAsync(ns, t)
-	}(ns, time.Now())
+	// Network activity persistence (throttled to one DB write per lastActThrot):
+	// call synchronously since we already hold s.mu and the call is bounded.
+	s.touchLocked(ns, time.Now())
 	if s.relayEnabled() {
 		if err := s.ensureRelayPort(ns); err != nil {
 			return protocol.PeersResp{}, err
@@ -1699,6 +1736,8 @@ func (s *Store) RemoveNode(token string) error {
 	if ns == nil {
 		return ErrNotFound
 	}
+	// Release the node's per-node unicast relay port before dropping the node.
+	s.releaseNodePortLocked(ns, te.NodeID)
 	delete(ns.nodes, te.NodeID)
 	delete(s.byToken, hashToken(token))
 	if err := s.deleteNode(te.NetworkID, te.NodeID); err != nil {
@@ -1790,8 +1829,10 @@ func (s *Store) RegisterDevice(deviceID, publicKey, name string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.requireDeviceAuth && !s.deviceBoundLocked(deviceID) {
-		return ErrUnauthorized
+	if s.requireDeviceAuth {
+		if err := s.checkDeviceAuthLocked(deviceID); err != nil {
+			return err
+		}
 	}
 	return s.upsertDeviceLocked(deviceID, publicKey, name)
 }
@@ -2100,6 +2141,54 @@ func (s *Store) ConsumePending(pendingID string) {
 			return
 		}
 	}
+}
+
+// PendingClaim atomically reads an approved pending request and consumes it in
+// a single critical section, so one-shot credentials are handed out exactly
+// once even when multiple clients poll concurrently. It returns the same shape
+// as PendingStatus, plus a claimed bool that is false for pending/denied/gone
+// statuses (which are not deleted).
+func (s *Store) PendingClaim(pendingID string) (protocol.PendingStatusResp, bool, error) {
+	if pendingID == "" {
+		return protocol.PendingStatusResp{}, false, ErrUnauthorized
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pruneExpiredPendingLocked(s, time.Now())
+	for _, ns := range s.networks {
+		p := ns.pending[pendingID]
+		if p == nil {
+			continue
+		}
+		switch p.Status {
+		case "approved":
+			peers := make([]protocol.Node, 0, len(ns.nodes)-1)
+			for id, n := range ns.nodes {
+				if id != p.NodeID {
+					peers = append(peers, *n)
+				}
+			}
+			resp := protocol.PendingStatusResp{
+				Status:    "approved",
+				NetworkID: ns.n.ID,
+				Name:      ns.n.Name,
+				NodeID:    p.NodeID,
+				IP:        p.IP,
+				Token:     p.Token,
+				Subnet:    p.Subnet,
+				RelayPort: p.RelayPort,
+				Peers:     peers,
+			}
+			delete(ns.pending, pendingID)
+			_ = s.deletePending(pendingID)
+			return resp, true, nil
+		case "denied":
+			return protocol.PendingStatusResp{Status: "denied", NetworkID: ns.n.ID, Name: ns.n.Name}, false, nil
+		default:
+			return protocol.PendingStatusResp{Status: "pending", NetworkID: ns.n.ID, Name: ns.n.Name}, false, nil
+		}
+	}
+	return protocol.PendingStatusResp{Status: "gone"}, false, nil
 }
 
 // OwnerApprove approves a pending join, allocating the node's address and
@@ -2470,6 +2559,9 @@ func (s *Store) DeleteNetwork(token string) error {
 func (s *Store) deleteNetworkLocked(nid string) error {
 	ns := s.networks[nid]
 	if ns != nil {
+		// Return every bound relay socket (broadcast + per-node ports) to the
+		// free pool so ports and send-loop goroutines are not leaked.
+		s.releaseNetworkPortsLocked(ns)
 		for _, p := range ns.pending {
 			if err := s.deletePending(p.ID); err != nil {
 				return err
@@ -2499,11 +2591,10 @@ func (s *Store) MarkRelayActivity(port int) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, ns := range s.networks {
-		if ns.relayPort == port {
-			s.touchLocked(ns, time.Now())
-			return
-		}
+	// O(1) lookup via the port -> network map instead of scanning every network.
+	ns := s.netByPort[port]
+	if ns != nil {
+		s.touchLocked(ns, time.Now())
 	}
 }
 
@@ -2724,28 +2815,59 @@ func clampToLastPage(page, pageSize, total int) int {
 }
 
 func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, page, pageSize int) ([]networkSummary, int, int) {
+	// Phase 1: take a snapshot under lock (fast)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := time.Now()
+	nowUnix := now.Unix()
+	aliveTTL := int64(netAliveTTL / time.Second)
+	
+	type netData struct {
+		n            protocol.Network
+		seq          uint64
+		nodeCount    int
+		relayPort    int
+		lastActivity int64
+		pending      map[string]string // id -> status
+	}
+	
+	data := make([]netData, 0, len(s.networks))
+	for _, ns := range s.networks {
+		pending := make(map[string]string, len(ns.pending))
+		for id, p := range ns.pending {
+			pending[id] = p.Status
+		}
+		data = append(data, netData{
+			n:            ns.n,
+			seq:          ns.seq,
+			nodeCount:    len(ns.nodes),
+			relayPort:    ns.relayPort,
+			lastActivity: ns.lastActivityAt,
+			pending:      pending,
+		})
+	}
+	s.mu.Unlock()
+	
+	// Phase 2: process snapshot without lock
 	page, pageSize = clampPage(page, pageSize)
 	needle := strings.ToLower(strings.TrimSpace(q))
-	out := make([]networkSummary, 0, len(s.networks))
-	for _, ns := range s.networks {
+	out := make([]networkSummary, 0, len(data))
+	
+	for _, d := range data {
 		zombie := false
-		if zombieTTL > 0 && ns.lastActivityAt > 0 && now.Sub(time.Unix(ns.lastActivityAt, 0)) >= zombieTTL {
+		if zombieTTL > 0 && d.lastActivity > 0 && now.Sub(time.Unix(d.lastActivity, 0)) >= zombieTTL {
 			zombie = true
 		}
 		sum := networkSummary{
-			Network:        ns.n,
-			Seq:            ns.seq,
-			NodeCount:      len(ns.nodes),
-			RelayPort:      ns.relayPort,
-			Online:         now.Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second),
+			Network:        d.n,
+			Seq:            d.seq,
+			NodeCount:      d.nodeCount,
+			RelayPort:      d.relayPort,
+			Online:         nowUnix-d.lastActivity < aliveTTL,
 			Zombie:         zombie,
-			LastActivityAt: ns.lastActivityAt,
+			LastActivityAt: d.lastActivity,
 		}
-		for _, p := range ns.pending {
-			if p.Status == "pending" {
+		for _, st := range d.pending {
+			if st == "pending" {
 				sum.PendingCount++
 			}
 		}
@@ -2760,7 +2882,7 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 				continue
 			}
 		case "managed":
-			if !ns.n.Managed {
+			if !d.n.Managed {
 				continue
 			}
 		case "zombie":
@@ -2775,7 +2897,7 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 			continue // unknown status matches nothing
 		}
 		if needle != "" {
-			hay := strings.ToLower(ns.n.Name + " " + ns.n.ID + " " + ns.n.Subnet)
+			hay := strings.ToLower(d.n.Name + " " + d.n.ID + " " + d.n.Subnet)
 			if !strings.Contains(hay, needle) {
 				continue
 			}
@@ -2849,8 +2971,8 @@ func (s *Store) AdminDevices() []protocol.Device {
 // AdminDevicesPage returns one page of registered devices sorted by creation
 // time (newest first), optionally filtered by q across id/name/public key.
 func (s *Store) AdminDevicesPage(q string, page, pageSize int) ([]protocol.Device, int, int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	page, pageSize = clampPage(page, pageSize)
 	needle := strings.ToLower(strings.TrimSpace(q))
 	out := make([]protocol.Device, 0, len(s.devices))
@@ -2885,8 +3007,8 @@ func (s *Store) AdminDevicesPage(q string, page, pageSize int) ([]protocol.Devic
 
 // DeviceNetworks returns the networks a device holds a node in.
 func (s *Store) DeviceNetworks(deviceID string) []protocol.Network {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var out []protocol.Network
 	for _, ns := range s.networks {
 		for _, n := range ns.nodes {
@@ -3011,14 +3133,14 @@ func (s *Store) ValidateDeviceToken(deviceID, token string) bool {
 	if deviceID == "" || token == "" {
 		return false
 	}
-	s.mu.Lock()
+	s.mu.RLock()
 	d := s.devices[deviceID]
 	if d == nil || d.DeviceToken == "" {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		return false
 	}
 	stored := d.DeviceToken
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	return subtle.ConstantTimeCompare([]byte(stored), []byte(token)) == 1
 }
 
@@ -3104,6 +3226,8 @@ func (s *Store) AdminRemoveNode(nid, nodeID string) error {
 	if ns.nodes[nodeID] == nil {
 		return ErrNotFound
 	}
+	// Release the node's per-node unicast relay port before dropping the node.
+	s.releaseNodePortLocked(ns, nodeID)
 	delete(ns.nodes, nodeID)
 	for h, te := range s.byToken {
 		if te.NetworkID == nid && te.NodeID == nodeID {
@@ -3213,8 +3337,8 @@ func (s *Store) SetRequireDeviceAuth(on bool) {
 
 // RequireDeviceAuth reports whether the enrollment gate is on.
 func (s *Store) RequireDeviceAuth() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.requireDeviceAuth
 }
 
@@ -3292,38 +3416,44 @@ func maskCode(code string) string {
 }
 
 // AdminGenerateAuthCodes creates count fresh authorization codes, each able to
-// bind up to maxBindings devices, and returns their plaintext plus the public
-// IDs used for later revocation. Plaintext is also persisted so the admin
-// console can display codes at any time.
-func (s *Store) AdminGenerateAuthCodes(count, maxBindings int) ([]string, []string, error) {
+// bind up to maxBindings devices, with optional expiration time. It returns
+// full AuthCodeInfo structs including status.
+func (s *Store) AdminGenerateAuthCodes(count, maxBindings int, expiresAt *time.Time) ([]protocol.AuthCodeInfo, error) {
 	if count < 1 {
 		count = 1
 	}
 	if count > 100 {
-		return nil, nil, errors.New("count must be between 1 and 100")
+		return nil, errors.New("count must be between 1 and 100")
 	}
 	if maxBindings < 1 {
 		maxBindings = 1
 	}
 	if maxBindings > 100 {
-		return nil, nil, errors.New("maxBindings must be between 1 and 100")
+		return nil, errors.New("maxBindings must be between 1 and 100")
 	}
+	
+	// Validate expiration time
+	if expiresAt != nil && expiresAt.Before(time.Now()) {
+		return nil, errors.New("expiration time cannot be in the past")
+	}
+	
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	codes := make([]string, 0, count)
-	ids := make([]string, 0, count)
+	
+	result := make([]protocol.AuthCodeInfo, 0, count)
 	for i := 0; i < count; i++ {
 		code, err := randomString(protocol.AuthCodeLen)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		id, err := randomString(authCodeIDLen)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		for s.authCodes[id] != nil {
 			id, _ = randomString(authCodeIDLen)
 		}
+		
 		ac := &authCodeRecord{
 			ID:          id,
 			CodePlain:   protocol.NormalizeCode(code),
@@ -3331,53 +3461,154 @@ func (s *Store) AdminGenerateAuthCodes(count, maxBindings int) ([]string, []stri
 			Hint:        maskCode(code),
 			CreatedAt:   time.Now().UTC(),
 			MaxBindings: maxBindings,
+			ExpiresAt:   expiresAt,
 		}
 		s.authCodes[id] = ac
 		if err := s.persistAuthCode(ac); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		codes = append(codes, protocol.NormalizeCode(code))
-		ids = append(ids, id)
+		
+		result = append(result, s.authCodeToInfoLocked(ac))
 	}
-	return codes, ids, nil
+	return result, nil
+}
+
+// AdminRenewAuthCode updates the expiration time of an authorization code.
+func (s *Store) AdminRenewAuthCode(codeID string, expiresAt *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	ac := s.authCodes[codeID]
+	if ac == nil {
+		return ErrNotFound
+	}
+	
+	// Validate expiration time
+	if expiresAt != nil && expiresAt.Before(time.Now()) {
+		return errors.New("expiration time cannot be in the past")
+	}
+	
+	ac.ExpiresAt = expiresAt
+	return s.persistAuthCode(ac)
+}
+
+// CheckDeviceAuth checks if a device is bound to a valid (non-expired) auth code.
+// Returns ErrUnauthorized if not bound, ErrAuthCodeExpired if bound but expired.
+func (s *Store) CheckDeviceAuth(deviceID string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.requireDeviceAuth {
+		return nil
+	}
+
+	return s.checkDeviceAuthLocked(deviceID)
+}
+
+func (s *Store) checkDeviceAuthLocked(deviceID string) error {
+	bound := false
+	var expiresAt *time.Time
+	
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			bound = true
+			expiresAt = ac.ExpiresAt
+			break
+		}
+	}
+	
+	if !bound {
+		return ErrUnauthorized
+	}
+	
+	// Check expiration
+	if expiresAt != nil && time.Now().After(*expiresAt) {
+		return ErrAuthCodeExpired
+	}
+	
+	return nil
+}
+
+// GetDeviceAuthStatus returns the authentication status for a device.
+func (s *Store) GetDeviceAuthStatus(deviceID string) protocol.DeviceAuthStatusResp {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	resp := protocol.DeviceAuthStatusResp{Bound: false}
+	
+	for _, ac := range s.authCodes {
+		if ac.bindingIndex(deviceID) >= 0 {
+			resp.Bound = true
+			resp.AuthCodeID = ac.ID
+			resp.ExpiresAt = ac.ExpiresAt
+			
+			if ac.ExpiresAt != nil && time.Now().After(*ac.ExpiresAt) {
+				resp.Expired = true
+				resp.Message = "授权码已过期，所有网络离线，请续期或更换授权码"
+			}
+			break
+		}
+	}
+	
+	return resp
+}
+
+// authCodeToInfoLocked converts an authCodeRecord to AuthCodeInfo. Caller holds s.mu.
+func (s *Store) authCodeToInfoLocked(ac *authCodeRecord) protocol.AuthCodeInfo {
+	code := ac.CodePlain
+	if code == "" {
+		code = ac.Hint // legacy record: plaintext was never stored
+	}
+	
+	info := protocol.AuthCodeInfo{
+		ID:          ac.ID,
+		Code:        code,
+		CreatedAt:   ac.CreatedAt.UTC().Format(time.RFC3339),
+		MaxBindings: ac.MaxBindings,
+		BoundCount:  len(ac.Bindings),
+	}
+	
+	// Set expiration info
+	if ac.ExpiresAt != nil {
+		info.ExpiresAt = ac.ExpiresAt.UTC().Format(time.RFC3339)
+		if time.Now().After(*ac.ExpiresAt) {
+			info.Status = "expired"
+		} else {
+			info.Status = "active"
+		}
+	} else {
+		info.Status = "permanent"
+	}
+	
+	// Add binding info
+	for _, b := range ac.Bindings {
+		bi := protocol.AuthCodeBindingInfo{
+			DeviceID: b.DeviceID,
+			BoundAt:  b.BoundAt.UTC().Format(time.RFC3339),
+		}
+		if d := s.devices[b.DeviceID]; d != nil {
+			bi.DeviceName = d.Name
+		}
+		info.BoundDevices = append(info.BoundDevices, bi)
+	}
+	
+	if len(ac.Bindings) > 0 {
+		info.BoundToDevice = ac.Bindings[0].DeviceID
+		info.BoundAt = ac.Bindings[0].BoundAt.UTC().Format(time.RFC3339)
+	}
+	
+	return info
 }
 
 // AdminAuthCodes lists all authorization codes with their plaintext (masked
 // hint only for legacy records whose plaintext was never stored), binding
 // capacity and bound devices, newest first.
-// AdminAuthCodes lists all auth codes with their bindings. Pure read operation.
 func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
-	s.mu.RLock()  // Use RLock for read-only operations
+	s.mu.RLock()
 	defer s.mu.RUnlock()
+	
 	out := make([]protocol.AuthCodeInfo, 0, len(s.authCodes))
 	for _, ac := range s.authCodes {
-		code := ac.CodePlain
-		if code == "" {
-			code = ac.Hint // legacy record: plaintext was never stored
-		}
-		info := protocol.AuthCodeInfo{
-			ID:          ac.ID,
-			Code:        code,
-			CreatedAt:   ac.CreatedAt.UTC().Format(time.RFC3339),
-			MaxBindings: ac.MaxBindings,
-			BoundCount:  len(ac.Bindings),
-		}
-		for _, b := range ac.Bindings {
-			bi := protocol.AuthCodeBindingInfo{
-				DeviceID: b.DeviceID,
-				BoundAt:  b.BoundAt.UTC().Format(time.RFC3339),
-			}
-			if d := s.devices[b.DeviceID]; d != nil {
-				bi.DeviceName = d.Name
-			}
-			info.BoundDevices = append(info.BoundDevices, bi)
-		}
-		if len(ac.Bindings) > 0 {
-			// Backward-compatible single-device fields mirror the first binding.
-			info.BoundToDevice = ac.Bindings[0].DeviceID
-			info.BoundAt = ac.Bindings[0].BoundAt.UTC().Format(time.RFC3339)
-		}
-		out = append(out, info)
+		out = append(out, s.authCodeToInfoLocked(ac))
 	}
 	return out
 }
@@ -3416,48 +3647,88 @@ type AdminOverview struct {
 }
 
 // AdminOverview computes the aggregate stats for the admin console.
+// It takes a snapshot under lock and processes outside the lock to minimize
+// contention with the relay hot path (OnRelayFlow, MarkRelayActivity).
 func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
-	ov := AdminOverview{}
+	// Phase 1: take a snapshot under lock (fast)
 	s.mu.Lock()
 	now := time.Now()
-	recent := make([]networkSummary, 0, len(s.networks))
+	nowUnix := now.Unix()
+	aliveTTL := int64(netAliveTTL / time.Second)
+	
+	type netSnap struct {
+		n             protocol.Network
+		nodeCount     int
+		relayPort     int
+		lastActivity  int64
+		pendingCount  int
+	}
+	type pendingSnap struct {
+		status string
+	}
+	
+	netSnaps := make([]netSnap, 0, len(s.networks))
 	for _, ns := range s.networks {
-		online := now.Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second)
+		ps := make([]pendingSnap, 0, len(ns.pending))
+		for _, p := range ns.pending {
+			ps = append(ps, pendingSnap{status: p.Status})
+		}
+		netSnaps = append(netSnaps, netSnap{
+			n:            ns.n,
+			nodeCount:    len(ns.nodes),
+			relayPort:    ns.relayPort,
+			lastActivity: ns.lastActivityAt,
+			pendingCount: len(ps), // approximation: count all pending
+		})
+	}
+	deviceCount := len(s.devices)
+	
+	type codeSnap struct {
+		bindings int
+	}
+	codeSnaps := make([]codeSnap, 0, len(s.authCodes))
+	for _, ac := range s.authCodes {
+		codeSnaps = append(codeSnaps, codeSnap{bindings: len(ac.Bindings)})
+	}
+	s.mu.Unlock()
+	
+	// Phase 2: process the snapshot without the lock
+	ov := AdminOverview{}
+	recent := make([]networkSummary, 0, len(netSnaps))
+	
+	for _, snap := range netSnaps {
+		online := nowUnix-snap.lastActivity < aliveTTL
 		ov.NetworksTotal++
 		if online {
 			ov.NetworksOnline++
 		}
-		ov.NodesTotal += len(ns.nodes)
-		ov.PendingTotal += len(ns.pending)
+		ov.NodesTotal += snap.nodeCount
+		ov.PendingTotal += snap.pendingCount
 		zombie := false
-		if zombieTTL > 0 && ns.lastActivityAt > 0 && now.Sub(time.Unix(ns.lastActivityAt, 0)) >= zombieTTL {
+		if zombieTTL > 0 && snap.lastActivity > 0 && now.Sub(time.Unix(snap.lastActivity, 0)) >= zombieTTL {
 			zombie = true
 		}
 		recent = append(recent, networkSummary{
-			Network:        ns.n,
-			NodeCount:      len(ns.nodes),
-			RelayPort:      ns.relayPort,
+			Network:        snap.n,
+			NodeCount:      snap.nodeCount,
+			RelayPort:      snap.relayPort,
 			Online:         online,
 			Zombie:         zombie,
-			LastActivityAt: ns.lastActivityAt,
+			LastActivityAt: snap.lastActivity,
 		})
-		for _, p := range ns.pending {
-			if p.Status == "pending" {
-				recent[len(recent)-1].PendingCount++
-			}
-		}
 	}
-	ov.DevicesTotal = len(s.devices)
-	for _, ac := range s.authCodes {
+	
+	ov.DevicesTotal = deviceCount
+	for _, cs := range codeSnaps {
 		ov.CodesTotal++
-		if len(ac.Bindings) > 0 {
+		if cs.bindings > 0 {
 			ov.CodesBound++
 		} else {
 			ov.CodesFree++
 		}
 	}
+	
 	sort.Slice(recent, func(i, j int) bool { return recent[i].LastActivityAt > recent[j].LastActivityAt })
-	s.mu.Unlock()
 	if len(recent) > 6 {
 		recent = recent[:6]
 	}
@@ -3724,8 +3995,8 @@ func (s *Store) adminPasswordHashLocked(user string) string {
 
 // adminPasswordHash reads the stored bcrypt hash for user, if any.
 func (s *Store) adminPasswordHash(user string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.adminPasswordHashLocked(user)
 }
 
@@ -3745,8 +4016,8 @@ func (s *Store) putAdminPasswordLocked(user, hash string) error {
 
 // AdminUsernames lists the admin usernames recorded in the store, sorted.
 func (s *Store) AdminUsernames() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.db == nil {
 		return nil
 	}

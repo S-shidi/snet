@@ -50,6 +50,7 @@ const (
 	defaultBindPerMinute      = 20
 	defaultRegisterPerMin     = 30
 	defaultPendingPollsPerMin = 10
+	defaultAuthStatusPerMin   = 60
 	sessionTTL                = 24 * time.Hour
 	limiterPruneInterval      = time.Minute
 )
@@ -67,6 +68,7 @@ type handler struct {
 	logins       *rateLimiter
 	registers    *rateLimiter
 	pendingPolls *rateLimiter
+	authStatus   *rateLimiter
 
 	// adminMu guards adminUser and adminPassHash, which are rotated while
 	// the server is serving (bootstrap wizard, password change).
@@ -103,6 +105,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		logins:       newRateLimiter(5, time.Minute),
 		registers:    newRateLimiter(defaultRegisterPerMin, time.Minute),
 		pendingPolls: newRateLimiter(defaultPendingPollsPerMin, time.Minute),
+		authStatus:   newRateLimiter(defaultAuthStatusPerMin, time.Minute),
 		sessions:     make(map[string]sessionEntry),
 	}
 	if opts.RequireDeviceAuth {
@@ -131,7 +134,7 @@ func NewHandler(s *Store, opts Options) http.Handler {
 		t := time.NewTicker(limiterPruneInterval)
 		defer t.Stop()
 		for range t.C {
-			for _, rl := range []*rateLimiter{h.creates, h.joins, h.binds, h.logins, h.registers, h.pendingPolls} {
+			for _, rl := range []*rateLimiter{h.creates, h.joins, h.binds, h.logins, h.registers, h.pendingPolls, h.authStatus} {
 				rl.prune()
 			}
 		}
@@ -268,6 +271,22 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, protocol.DeviceNetworksResp{Networks: details})
+	})
+
+	// Check device authentication status (bound/expired). Used by clients to
+	// detect expired authorization codes and show appropriate warnings.
+	mux.HandleFunc("GET /api/v1/devices/auth-status", func(w http.ResponseWriter, r *http.Request) {
+		if h.authStatus.blocked(h.clientIP(r)) {
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
+			return
+		}
+		deviceID := r.URL.Query().Get("deviceId")
+		if deviceID == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("missing deviceId"))
+			return
+		}
+		status := s.GetDeviceAuthStatus(deviceID)
+		writeJSON(w, http.StatusOK, status)
 	})
 
 	// Update a node's WireGuard public key. Used after a client reinstall
@@ -426,20 +445,19 @@ func NewHandler(s *Store, opts Options) http.Handler {
 	}))
 
 	// Public pending-join status: the joining client polls this until the
-	// owner approves/denies its request (or it expires).
+	// owner approves/denies its request (or it expires). Approval is
+	// one-shot: PendingClaim reads the status and consumes the record in a
+	// single critical section so concurrent polls never get the same
+	// credentials.
 	mux.HandleFunc("GET /api/v1/pending/{pendingID}", func(w http.ResponseWriter, r *http.Request) {
 		if h.pendingPolls.blocked(h.clientIP(r)) {
 			writeErr(w, http.StatusTooManyRequests, errors.New("too many requests"))
 			return
 		}
-		status, err := s.PendingStatus(r.PathValue("pendingID"))
+		status, _, err := s.PendingClaim(r.PathValue("pendingID"))
 		if err != nil {
 			handleStoreErr(w, err)
 			return
-		}
-		if status.Status == "approved" {
-			// One-shot credentials: hand them out once, then drop the record.
-			s.ConsumePending(r.PathValue("pendingID"))
 		}
 		writeJSON(w, http.StatusOK, status)
 	})
@@ -692,12 +710,18 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			writeErr(w, http.StatusBadRequest, errors.New("maxBindings must be between 1 and 100"))
 			return
 		}
-		codes, ids, err := s.AdminGenerateAuthCodes(req.Count, req.MaxBindings)
+		// Validate expiration time
+		if req.ExpiresAt != nil && req.ExpiresAt.Before(time.Now()) {
+			writeErr(w, http.StatusBadRequest, errors.New("expiration time cannot be in the past"))
+			return
+		}
+
+		codes, err := s.AdminGenerateAuthCodes(req.Count, req.MaxBindings, req.ExpiresAt)
 		if err != nil {
 			handleStoreErr(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, protocol.AdminGenerateAuthCodesResp{Codes: codes, IDs: ids})
+		writeJSON(w, http.StatusOK, protocol.AdminGenerateAuthCodesResp{Codes: codes})
 	}))
 	mux.HandleFunc("GET /admin/devices/authcodes", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		reqPage, pageSize := adminPageParams(r)
@@ -713,6 +737,24 @@ func NewHandler(s *Store, opts Options) http.Handler {
 			return
 		}
 		if err := s.AdminRevokeAuthCode(req.ID); err != nil {
+			handleStoreErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.HandleFunc("PATCH /admin/devices/authcodes/{codeId}/renew", h.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		codeID := r.PathValue("codeId")
+		var req protocol.AdminRenewAuthCodeReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, ErrBadJSON)
+			return
+		}
+		// Validate expiration time
+		if req.ExpiresAt != nil && req.ExpiresAt.Before(time.Now()) {
+			writeErr(w, http.StatusBadRequest, errors.New("expiration time cannot be in the past"))
+			return
+		}
+		if err := s.AdminRenewAuthCode(codeID, req.ExpiresAt); err != nil {
 			handleStoreErr(w, err)
 			return
 		}
@@ -767,12 +809,15 @@ func versionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		vw := &versionRespWriter{ResponseWriter: w}
 		if v := r.Header.Get(protocol.VersionHeader); v != "" {
-			if major, err := strconv.Atoi(v); err == nil && major != protocol.APIVersion {
+			major, err := strconv.Atoi(v)
+			// A non-numeric version header is malformed, not a compat
+			// upgrade: reject it rather than silently treating it as valid.
+			if err != nil || major != protocol.APIVersion {
 				// Advertise the server version even on rejection, so the
 				// client can diagnose and upgrade.
 				vw.stamp()
 				writeErr(vw, http.StatusUpgradeRequired,
-					fmt.Errorf("incompatible api version %d (server supports %d)", major, protocol.APIVersion))
+					fmt.Errorf("incompatible api version %q (server supports %d)", v, protocol.APIVersion))
 				return
 			}
 		}

@@ -1,5 +1,9 @@
 package protocol
 
+import (
+	"time"
+)
+
 const (
 	DefaultMTU           = 1420
 	DefaultWGPort        = 51820
@@ -21,7 +25,7 @@ const APIVersion = 1
 
 // ServerVersion is the human-readable server build version, advertised in
 // /healthz and as X-Snet-Server-Version.
-const ServerVersion = "0.11.0"
+const ServerVersion = "1.0.0"
 
 // VersionHeader names the request/response header carrying the API major
 // version. Absent header (legacy clients/servers) means "no enforcement".
@@ -350,6 +354,8 @@ type AuthCodeInfo struct {
 	BoundAt       string                `json:"boundAt,omitempty"`
 	BoundDevices  []AuthCodeBindingInfo `json:"boundDevices,omitempty"`
 	CreatedAt     string                `json:"createdAt"`
+	ExpiresAt     string                `json:"expiresAt,omitempty"`     // ISO 8601, empty means permanent
+	Status        string                `json:"status"`                  // "active", "expired", "permanent"
 }
 
 // AuthCodeBindingInfo describes one device bound to a shared authorization
@@ -362,13 +368,25 @@ type AuthCodeBindingInfo struct {
 }
 
 type AdminGenerateAuthCodesReq struct {
-	Count       int `json:"count"`
-	MaxBindings int `json:"maxBindings"` // devices a single code may bind; 0 defaults to 1
+	Count       int        `json:"count"`
+	MaxBindings int        `json:"maxBindings"` // devices a single code may bind; 0 defaults to 1
+	ExpiresAt   *time.Time `json:"expiresAt"`   // expiration time, nil means permanent
 }
 
 type AdminGenerateAuthCodesResp struct {
-	Codes []string `json:"codes"`
-	IDs   []string `json:"ids"`
+	Codes []AuthCodeInfo `json:"codes"` // full code info including expiresAt
+}
+
+type AdminRenewAuthCodeReq struct {
+	ExpiresAt *time.Time `json:"expiresAt"` // new expiration time, nil means permanent
+}
+
+type DeviceAuthStatusResp struct {
+	Bound     bool       `json:"bound"`
+	AuthCodeID string    `json:"authCodeId,omitempty"`
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+	Expired    bool       `json:"expired"`
+	Message    string     `json:"message,omitempty"`
 }
 
 type AdminAuthCodesResp struct {

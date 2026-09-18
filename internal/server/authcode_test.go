@@ -13,14 +13,14 @@ import (
 
 func genOneCode(t *testing.T, s *Store) (code, id string) {
 	t.Helper()
-	codes, ids, err := s.AdminGenerateAuthCodes(1, 1)
+	codes, err := s.AdminGenerateAuthCodes(1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(codes) != 1 || len(ids) != 1 {
-		t.Fatalf("generate returned %d codes / %d ids", len(codes), len(ids))
+	if len(codes) != 1 {
+		t.Fatalf("generate returned %d codes", len(codes))
 	}
-	return codes[0], ids[0]
+	return codes[0].Code, codes[0].ID
 }
 
 // TestAuthCodeLifecycle covers generate → list (plaintext) → bind → idempotent
@@ -114,17 +114,17 @@ func TestAuthCodeLifecycle(t *testing.T) {
 func TestAuthCodeCountValidation(t *testing.T) {
 	s := NewStore()
 	// count <= 0 clamps to 1
-	if codes, _, err := s.AdminGenerateAuthCodes(0, 1); err != nil || len(codes) != 1 {
+	if codes, err := s.AdminGenerateAuthCodes(0, 1, nil); err != nil || len(codes) != 1 {
 		t.Fatalf("count 0: %v, %d codes", err, len(codes))
 	}
-	if _, _, err := s.AdminGenerateAuthCodes(101, 1); err == nil {
+	if _, err := s.AdminGenerateAuthCodes(101, 1, nil); err == nil {
 		t.Fatal("count 101 should be rejected")
 	}
 	// maxBindings <= 0 clamps to 1; > 100 rejected
-	if codes, _, err := s.AdminGenerateAuthCodes(1, 0); err != nil || len(codes) != 1 {
+	if codes, err := s.AdminGenerateAuthCodes(1, 0, nil); err != nil || len(codes) != 1 {
 		t.Fatalf("maxBindings 0: %v", err)
 	}
-	if _, _, err := s.AdminGenerateAuthCodes(1, 101); err == nil {
+	if _, err := s.AdminGenerateAuthCodes(1, 101, nil); err == nil {
 		t.Fatal("maxBindings 101 should be rejected")
 	}
 }
@@ -168,11 +168,11 @@ func TestAuthCodePersistenceAcrossRestart(t *testing.T) {
 // bound list via AdminAuthCodes, and that unbinding one device frees a slot.
 func TestAuthCodeMultiBind(t *testing.T) {
 	s := NewStore()
-	codes, ids, err := s.AdminGenerateAuthCodes(1, 3)
+	codes, err := s.AdminGenerateAuthCodes(1, 3, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, id := codes[0], ids[0]
+	code, id := codes[0].Code, codes[0].ID
 
 	if _, err := s.BindDevice(code, "dev-aaa1", testKey(1), ""); err != nil {
 		t.Fatalf("bind 1: %v", err)
@@ -242,15 +242,15 @@ func TestAuthCodeMultiBind(t *testing.T) {
 // from the old code, freeing a slot there.
 func TestAuthCodeRotationFreesSlot(t *testing.T) {
 	s := NewStore()
-	codesA, _, err := s.AdminGenerateAuthCodes(1, 2)
+	codesA, err := s.AdminGenerateAuthCodes(1, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	codesB, _, err := s.AdminGenerateAuthCodes(1, 1)
+	codesB, err := s.AdminGenerateAuthCodes(1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	codeA, codeB := codesA[0], codesB[0]
+	codeA, codeB := codesA[0].Code, codesB[0].Code
 
 	if _, err := s.BindDevice(codeA, "dev-aaa1", testKey(1), ""); err != nil {
 		t.Fatal(err)
@@ -282,14 +282,14 @@ func TestAuthCodeMultiBindPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	codes, _, err := s.AdminGenerateAuthCodes(1, 2)
+	codes, err := s.AdminGenerateAuthCodes(1, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codes[0], "dev-aaa1", testKey(1), ""); err != nil {
+	if _, err := s.BindDevice(codes[0].Code, "dev-aaa1", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codes[0], "dev-bbb2", testKey(2), ""); err != nil {
+	if _, err := s.BindDevice(codes[0].Code, "dev-bbb2", testKey(2), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -306,7 +306,7 @@ func TestAuthCodeMultiBindPersistence(t *testing.T) {
 		t.Fatalf("persisted multi-bind wrong: %+v", c)
 	}
 	// capacity still enforced after restart
-	if _, err := s2.BindDevice(codes[0], "dev-ccc3", testKey(3), ""); !errors.Is(err, ErrAuthCodeFull) {
+	if _, err := s2.BindDevice(codes[0].Code, "dev-ccc3", testKey(3), ""); !errors.Is(err, ErrAuthCodeFull) {
 		t.Fatalf("restart full bind = %v, want ErrAuthCodeFull", err)
 	}
 }
@@ -319,11 +319,11 @@ func TestAuthCodeLegacyMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	codes, ids, err := s.AdminGenerateAuthCodes(1, 1)
+	codes, err := s.AdminGenerateAuthCodes(1, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(codes[0], "dev-old1234", testKey(16), ""); err != nil {
+	if _, err := s.BindDevice(codes[0].Code, "dev-old1234", testKey(16), ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -332,9 +332,9 @@ func TestAuthCodeLegacyMigration(t *testing.T) {
 
 	// Rewrite the persisted record back into the legacy flat format.
 	legacy := authCodeRecord{
-		ID:        ids[0],
-		CodeHash:  hashCode(codes[0]),
-		Hint:      maskCode(codes[0]),
+		ID:        codes[0].ID,
+		CodeHash:  hashCode(codes[0].Code),
+		Hint:      maskCode(codes[0].Code),
 		DeviceID:  "dev-old1234",
 		PublicKey: testKey(16),
 	}
@@ -482,7 +482,7 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 	var gen protocol.AdminGenerateAuthCodesResp
 	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/devices/authcodes/generate", "secret",
 		protocol.AdminGenerateAuthCodesReq{Count: 2}, &gen)
-	if resp.StatusCode != http.StatusOK || len(gen.Codes) != 2 || len(gen.IDs) != 2 {
+	if resp.StatusCode != http.StatusOK || len(gen.Codes) != 2 {
 		t.Fatalf("generate = %d, %+v", resp.StatusCode, gen)
 	}
 
@@ -507,20 +507,20 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || len(gen2.Codes) != 1 {
 		t.Fatalf("multi-bind generate = %d, %+v", resp.StatusCode, gen2)
 	}
-	if _, err := s.BindDevice(gen2.Codes[0], "dev-m1abc", testKey(13), ""); err != nil {
+	if _, err := s.BindDevice(gen2.Codes[0].Code, "dev-m1abc", testKey(13), ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BindDevice(gen2.Codes[0], "dev-m2abc", testKey(14), ""); err != nil {
+	if _, err := s.BindDevice(gen2.Codes[0].Code, "dev-m2abc", testKey(14), ""); err != nil {
 		t.Fatal(err)
 	}
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/v1/devices/bind", "",
-		protocol.BindDeviceReq{Code: gen2.Codes[0], DeviceID: "dev-m3abc", PublicKey: testKey(17)}, nil)
+		protocol.BindDeviceReq{Code: gen2.Codes[0].Code, DeviceID: "dev-m3abc", PublicKey: testKey(17)}, nil)
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("3rd bind on max-2 code = %d, want 409", resp.StatusCode)
 	}
 
 	// bind one code through the device API, then list shows the binding
-	if _, err := s.BindDevice(gen.Codes[0], "dev-aaaa", testKey(1), ""); err != nil {
+	if _, err := s.BindDevice(gen.Codes[0].Code, "dev-aaaa", testKey(1), ""); err != nil {
 		t.Fatal(err)
 	}
 	var listPage struct {
@@ -535,7 +535,7 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 	list := listPage.Items
 	found := false
 	for _, c := range list {
-		if c.ID == gen2.IDs[0] {
+		if c.ID == gen2.Codes[0].ID {
 			if c.MaxBindings != 2 || c.BoundCount != 2 || len(c.BoundDevices) != 2 {
 				t.Fatalf("multi-bind info wrong: %+v", c)
 			}
@@ -552,7 +552,7 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 	// revoke the unbound code (id[1]); the bound ones stay so the devices
 	// keep their bindings until unbind is called below
 	resp = doJSON(t, http.MethodPost, ts.URL+"/admin/devices/authcodes/revoke", "secret",
-		map[string]any{"id": gen.IDs[1]}, nil)
+		map[string]any{"id": gen.Codes[1].ID}, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke = %d, want 204", resp.StatusCode)
 	}

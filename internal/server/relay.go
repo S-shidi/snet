@@ -105,6 +105,11 @@ type relayPair struct {
 	// Async fan-out: send queue for non-blocking writes.
 	sendQueue chan sendJob
 	sendBuf   sync.Pool // buffer pool for zero-allocation sends
+	// done, when closed, tells sendLoop to exit and fan-out enqueuers to
+	// abandon their jobs. Closing this (instead of sendQueue) keeps every
+	// send-on-select safe: a send on a closed channel would panic.
+	done      chan struct{}
+	closeOnce sync.Once // guarantees conn.Close + close(done) happen at most once
 }
 
 // sendJob represents one packet to send asynchronously.
@@ -167,6 +172,7 @@ func (r *Relay) ensure(port int, node bool) error {
 		seen: make(map[string]time.Time), ctrlOnly: make(map[string]bool),
 		ctrlGate: make(map[string]time.Time), frameDup: make(map[string]time.Time),
 		sendQueue: make(chan sendJob, 64), // Buffer 64 packets per port
+		done:      make(chan struct{}),
 		sendBuf: sync.Pool{
 			New: func() any {
 				buf := make([]byte, bufferSize)
@@ -177,10 +183,9 @@ func (r *Relay) ensure(port int, node bool) error {
 
 	r.mu.Lock()
 	// Another goroutine may have bound the same port while we were listening.
-	if existing, ok := r.conns[port]; ok {
+	if _, ok := r.conns[port]; ok {
 		r.mu.Unlock()
 		conn.Close()
-		_ = existing
 		return nil
 	}
 	r.conns[port] = p
@@ -219,14 +224,45 @@ func (r *Relay) Ports() []int {
 	return out
 }
 
-// Close releases all relay sockets.
+// Close releases every relay socket and stops all send loops.
 func (r *Relay) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	conns := make([]*relayPair, 0, len(r.conns))
 	for _, p := range r.conns {
-		p.conn.Close()
+		conns = append(conns, p)
+	}
+	r.conns = make(map[int]*relayPair)
+	r.mu.Unlock()
+	for _, p := range conns {
+		p.close()
 	}
 	return nil
+}
+
+// ClosePort releases a single relay port: it removes the pair from the map,
+// closes its socket, and stops its send loop. Safe to call on an already
+// closed, never-bound, or concurrently closing port.
+func (r *Relay) ClosePort(port int) error {
+	r.mu.Lock()
+	p := r.conns[port]
+	delete(r.conns, port)
+	r.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	p.close()
+	return nil
+}
+
+// close tears down the pair exactly once: socket, done signal (stopping the
+// send loop), and send queue. It never closes the sendQueue channel while a
+// handle() goroutine might still send to it; the done channel makes every
+// select-based enqueue abandon instead of panic.
+func (p *relayPair) close() {
+	p.closeOnce.Do(func() {
+		close(p.done)
+		p.conn.Close()
+	})
 }
 
 // hostNorm normalizes a host for comparison: strips IPv6 brackets and any
@@ -251,19 +287,25 @@ func (p *relayPair) serve() {
 }
 
 // sendLoop drains the sendQueue and writes packets asynchronously,
-// preventing slow receivers from blocking the relay read loop.
+// preventing slow receivers from blocking the relay read loop. It stops when
+// the pair is closed (done channel) to avoid leaking a goroutine per port.
 func (p *relayPair) sendLoop() {
-	for job := range p.sendQueue {
-		if _, err := p.conn.WriteToUDP(job.data, job.dst); err != nil {
-			p.mu.Lock()
-			delete(p.seen, job.dst.String())
-			p.mu.Unlock()
-			log.Printf("relay: async write to %s: %v", job.dst, err)
-		}
-		// Return buffer to pool
-		if cap(job.data) == bufferSize {
-			buf := job.data[:bufferSize]
-			p.sendBuf.Put(&buf)
+	for {
+		select {
+		case job := <-p.sendQueue:
+			if _, err := p.conn.WriteToUDP(job.data, job.dst); err != nil {
+				p.mu.Lock()
+				delete(p.seen, job.dst.String())
+				p.mu.Unlock()
+				log.Printf("relay: async write to %s: %v", job.dst, err)
+			}
+			// Return buffer to pool
+			if cap(job.data) == bufferSize {
+				buf := job.data[:bufferSize]
+				p.sendBuf.Put(&buf)
+			}
+		case <-p.done:
+			return
 		}
 	}
 }
@@ -272,9 +314,14 @@ func (p *relayPair) handle(addr string, data []byte) {
 	now := time.Now()
 	p.mu.Lock()
 
+	// Update the hook throttle under p.mu, but fire the actual callback only
+	// after the lock is released: the activity hook reaches into the store
+	// (s.mu), and holding p.mu across it would invert the store/relay lock
+	// ordering the route callback relies on (s.mu -> pair.mu).
+	var fireHook bool
 	if p.hook != nil && now.Sub(p.lastHook) >= 5*time.Second {
 		p.lastHook = now
-		p.hook(p.port)
+		fireHook = true
 	}
 
 	p.seen[addr] = now
@@ -296,12 +343,18 @@ func (p *relayPair) handle(addr string, data []byte) {
 		p.ctrlOnly[addr] = true
 		p.handleControl(addr, data[len(protocol.RelayCtrlPrefix):])
 		p.mu.Unlock()
+		if fireHook {
+			p.hook(p.port)
+		}
 		return
 	}
 	p.ctrlOnly[addr] = false
 	// Dampen WireGuard control frames before fan-out (see relayPair docs).
 	dampened := p.dampen(addr, data)
 	p.mu.Unlock()
+	if fireHook {
+		p.hook(p.port)
+	}
 	if dampened {
 		return
 	}
@@ -336,10 +389,13 @@ func (p *relayPair) handle(addr string, data []byte) {
 	}
 	p.mu.Unlock()
 
-	// Non-blocking send to queue; if full, drop packet to avoid deadlock.
+	// Non-blocking send to queue; if full or the port is closing, drop packet
+	// to avoid deadlock (dropping is always better than blocking read loop).
 	for _, job := range jobs {
 		select {
 		case p.sendQueue <- job:
+		case <-p.done:
+			return
 		default:
 			// Queue full, drop packet (better than blocking the read loop)
 			log.Printf("relay: send queue full on port %d, dropping packet", p.port)
