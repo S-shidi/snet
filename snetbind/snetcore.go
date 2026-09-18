@@ -13,8 +13,21 @@ import (
 	"time"
 
 	"snet/internal/client"
+	"snet/internal/constants"
 	"snet/internal/protocol"
 )
+
+// enforceFixedServer pins a caller-supplied server address to the product's
+// fixed coordination server: empty resolves to it, anything else is rejected.
+func enforceFixedServer(server string) error {
+	if server == "" {
+		return nil
+	}
+	if client.NormalizeServer(server) != client.NormalizeServer(constants.DefaultServerAddr) {
+		return fmt.Errorf("服务器地址固定为 %s", constants.DefaultServerAddr)
+	}
+	return nil
+}
 
 // SnetCore is the main entry point for Android. All public methods are
 // designed to be callable from gomobile/JNI.
@@ -210,9 +223,14 @@ func (c *SnetCore) Status() string {
 }
 
 // JoinNetwork joins a network. nid is the network ID, code is the pairing code.
-// serverAddr and port can be empty/0 to use the configured server.
+// serverAddr and port can be empty/0 to use the configured (fixed) server.
 func (c *SnetCore) JoinNetwork(nid string, code string, serverAddr string, port int) string {
 	c.mu.Lock()
+	if err := enforceFixedServer(serverAddr); err != nil {
+		c.mu.Unlock()
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+	serverAddr = constants.DefaultServerAddr
 	d, err := c.ensureDaemon()
 	c.mu.Unlock()
 	if err != nil {
@@ -231,6 +249,11 @@ func (c *SnetCore) JoinNetwork(nid string, code string, serverAddr string, port 
 // tagsJSON, when non-empty, is a JSON array of tag strings.
 func (c *SnetCore) CreateNetwork(name string, subnet string, approvalRequired bool, serverAddr string, port int, description string, tagsJSON string, visibility string) string {
 	c.mu.Lock()
+	if err := enforceFixedServer(serverAddr); err != nil {
+		c.mu.Unlock()
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+	serverAddr = constants.DefaultServerAddr
 	d, err := c.ensureDaemon()
 	c.mu.Unlock()
 	if err != nil {
@@ -348,9 +371,15 @@ func (c *SnetCore) GetAllowedSubnets(nid string) string {
 	return string(b)
 }
 
-// Bind binds this device to the server with an authorization code.
+// Bind binds this device to the server with an authorization code. serverAddr
+// is pinned to the fixed product server; any other value is rejected.
 func (c *SnetCore) Bind(serverAddr string, serverCA string, code string) error {
 	c.mu.Lock()
+	if err := enforceFixedServer(serverAddr); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+	serverAddr = constants.DefaultServerAddr
 	d, err := c.ensureDaemon()
 	if err != nil {
 		c.mu.Unlock()
@@ -364,6 +393,11 @@ func (c *SnetCore) Bind(serverAddr string, serverCA string, code string) error {
 // throwing a Go exception. Useful for debugging from Kotlin.
 func (c *SnetCore) BindDebug(serverAddr string, serverCA string, code string) string {
 	c.mu.Lock()
+	if err := enforceFixedServer(serverAddr); err != nil {
+		c.mu.Unlock()
+		return fmt.Sprintf(`{"error":"%s"}`, err.Error())
+	}
+	serverAddr = constants.DefaultServerAddr
 	d, err := c.ensureDaemon()
 	if err != nil {
 		c.mu.Unlock()

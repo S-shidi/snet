@@ -609,6 +609,10 @@ func normalizeServer(s string) string {
 	return strings.TrimRight(s, "/")
 }
 
+// NormalizeServer is the exported form of normalizeServer, used by external
+// binding layers to compare a caller-supplied address against the fixed one.
+func NormalizeServer(s string) string { return normalizeServer(s) }
+
 // serverSwitch tracks a pending effective-server change. The device belongs to
 // exactly one server at a time; switching servers clears every network and
 // pending join created on the previous server. The clear is committed only
@@ -690,6 +694,7 @@ func (d *Daemon) handleUnboundOpErrLocked(target string, err error) {
 		return
 	}
 	if d.cfg.BoundServer != "" && normalizeServer(target) == d.cfg.BoundServer {
+		d.cfg.AuthExpired = false
 		d.clearBindingLocked()
 	}
 }
@@ -742,15 +747,17 @@ func (d *Daemon) verifyBinding() bool {
 	}
 	api := d.apiLocked()
 	deviceID := d.cfg.DeviceID
+	deviceToken := d.cfg.DeviceToken
 	d.mu.Unlock()
 
 	// Query the server for binding and expiration status
-	status, err := api.GetDeviceAuthStatus(deviceID)
+	status, err := api.GetDeviceAuthStatus(deviceID, deviceToken)
 	if err != nil {
 		// A definite "not authorized" answer means the server revoked the
 		// binding. Transient errors (timeouts, DNS) are not a revocation.
 		if isUnboundErr(err) {
 			d.mu.Lock()
+			d.cfg.AuthExpired = false
 			d.clearBindingLocked()
 			d.mu.Unlock()
 			return false
@@ -769,6 +776,7 @@ func (d *Daemon) verifyBinding() bool {
 			}
 			delete(d.nets, nid)
 		}
+		d.cfg.AuthExpired = true
 		d.clearBindingLocked()
 		d.mu.Unlock()
 		return false
@@ -777,6 +785,7 @@ func (d *Daemon) verifyBinding() bool {
 	// Handle revocation
 	if !status.Bound {
 		d.mu.Lock()
+		d.cfg.AuthExpired = false
 		d.clearBindingLocked()
 		d.mu.Unlock()
 		return false
@@ -795,9 +804,10 @@ func (d *Daemon) GetAuthStatus() (protocol.DeviceAuthStatusResp, error) {
 	}
 	api := d.apiLocked()
 	deviceID := d.cfg.DeviceID
+	deviceToken := d.cfg.DeviceToken
 	d.mu.RUnlock()
 
-	return api.GetDeviceAuthStatus(deviceID)
+	return api.GetDeviceAuthStatus(deviceID, deviceToken)
 }
 
 // Create makes a new network on the server and joins this node as owner.
@@ -920,6 +930,8 @@ func (d *Daemon) Bind(serverAddr, caPath, code string) error {
 	}
 	d.commitSwitchLocked(sw)
 	d.cfg.BoundServer = normalizeServer(d.cfg.ServerAddr)
+	d.cfg.AuthExpired = false
+	d.cfg.DeviceToken = resp.DeviceToken
 	if err := d.save(); err != nil {
 		return err
 	}
@@ -2870,8 +2882,8 @@ func (d *Daemon) Status() (map[string]any, error) {
 	}
 	return map[string]any{
 		"deviceId":     d.cfg.DeviceID,
-		"serverAddr":   d.cfg.ServerAddr,
 		"bound":        d.cfg.Bound(),
+		"authExpired":  d.cfg.AuthExpired,
 		"wgPort":       d.cfg.WireguardPort,
 		"networks":     nets,
 		"pendingJoins": pending,

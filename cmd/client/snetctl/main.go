@@ -103,7 +103,6 @@ func main() {
 	switch args[0] {
 	case "create":
 		fs := flag.NewFlagSet("create", flag.ExitOnError)
-		server := fs.String("server", "http://127.0.0.1:8080", "coordination server")
 		port := fs.Int("port", 51820, "wireguard listen port")
 		name := fs.String("name", "", "network display name")
 		subnet := fs.String("subnet", "", "network subnet (default: server auto-assigns)")
@@ -111,14 +110,13 @@ func main() {
 		ca := fs.String("ca-path", "", "path to pinned server TLS certificate (PEM)")
 		fs.Parse(args[1:])
 		var out map[string]any
-		if err := c.do(http.MethodPost, "/ctl/create", map[string]any{"server": *server, "port": *port, "name": *name, "subnet": *subnet, "approvalRequired": *approval, "ca": *ca}, &out); err != nil {
+		if err := c.do(http.MethodPost, "/ctl/create", map[string]any{"port": *port, "name": *name, "subnet": *subnet, "approvalRequired": *approval, "ca": *ca}, &out); err != nil {
 			fatal(err)
 		}
 		printJSON(out)
 
 	case "join":
 		fs := flag.NewFlagSet("join", flag.ExitOnError)
-		server := fs.String("server", "http://127.0.0.1:8080", "coordination server")
 		port := fs.Int("port", 51820, "wireguard listen port")
 		link := fs.String("link", "", "snet:// join link")
 		nid := fs.String("nid", "", "network id")
@@ -126,7 +124,7 @@ func main() {
 		ca := fs.String("ca-path", "", "path to pinned server TLS certificate (PEM)")
 		fs.Parse(args[1:])
 		var out map[string]any
-		if err := c.do(http.MethodPost, "/ctl/join", map[string]any{"server": *server, "port": *port, "link": *link, "nid": *nid, "code": *code, "ca": *ca}, &out); err != nil {
+		if err := c.do(http.MethodPost, "/ctl/join", map[string]any{"port": *port, "link": *link, "nid": *nid, "code": *code, "ca": *ca}, &out); err != nil {
 			fatal(err)
 		}
 		printJSON(out)
@@ -341,16 +339,15 @@ func main() {
 
 	case "bind":
 		fs := flag.NewFlagSet("bind", flag.ExitOnError)
-		server := fs.String("server", "", "coordination server (required)")
 		code := fs.String("code", "", "device authorization code (required)")
 		ca := fs.String("ca-path", "", "path to pinned server TLS certificate (PEM)")
 		fs.Parse(args[1:])
-		if *server == "" || *code == "" {
-			fmt.Fprintln(os.Stderr, "usage: snetctl bind --server URL --code CODE [--ca-path PATH]")
+		if *code == "" {
+			fmt.Fprintln(os.Stderr, "usage: snetctl bind --code CODE [--ca-path PATH]")
 			os.Exit(2)
 		}
 		var out map[string]any
-		if err := c.do(http.MethodPost, "/ctl/bind", map[string]any{"server": *server, "code": *code, "ca": *ca}, &out); err != nil {
+		if err := c.do(http.MethodPost, "/ctl/bind", map[string]any{"code": *code, "ca": *ca}, &out); err != nil {
 			fatal(err)
 		}
 		printJSON(out)
@@ -369,8 +366,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: snetctl [--ctl URL] <command> [flags]
 
 commands:
-  create     --server URL [--port N] [--name NAME] [--subnet CIDR] [--approval]
-  join       --link snet:// | --nid NID --code CODE [--server URL]
+  create     [--port N] [--name NAME] [--subnet CIDR] [--approval]
+  join       --link snet:// | --nid NID --code CODE
   status
   networks
   leave      --nid NID (empty leaves all)
@@ -387,7 +384,7 @@ commands:
   netinfo    --nid NID
   device-id  [--set ID]
   claim      --nid NID
-  bind       --server URL --code CODE [--ca-path PATH]`)
+  bind       --code CODE [--ca-path PATH]`)
 	os.Exit(2)
 }
 

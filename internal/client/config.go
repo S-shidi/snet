@@ -70,6 +70,16 @@ type Config struct {
 	// stale "bound" state behind.
 	BoundServer string `json:"boundServer,omitempty"`
 
+	// DeviceToken is the server-issued token for device-scoped API calls
+	// (network sync, auth-status). Persisted so a restart can still verify
+	// binding against the server without re-entering a code.
+	DeviceToken string `json:"deviceToken,omitempty"`
+
+	// AuthExpired records that this device's authorization code has expired on
+	// the server. Persisted so the UI can show the expired state across
+	// restarts; cleared on re-bind or revocation.
+	AuthExpired bool `json:"authExpired,omitempty"`
+
 	// WebPasswordHash is the bcrypt hash of the web console login password.
 	// Empty means no password is set (authentication disabled).
 	WebPasswordHash string `json:"webPasswordHash,omitempty"`

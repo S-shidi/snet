@@ -6,14 +6,30 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"snet/internal/constants"
 	"snet/internal/protocol"
 )
+
+// enforceServer pins every incoming server address to the product's fixed
+// coordination server. Empty (caller omitted it) resolves to the fixed
+// address; any other address is rejected so no surface can point the daemon
+// at a different server.
+func enforceServer(server string) (string, error) {
+	if server == "" {
+		return constants.DefaultServerAddr, nil
+	}
+	if normalizeServer(server) != normalizeServer(constants.DefaultServerAddr) {
+		return "", fmt.Errorf("服务器地址固定为 %s", constants.DefaultServerAddr)
+	}
+	return constants.DefaultServerAddr, nil
+}
 
 // shutdownGraceDelay is the pause between flushing the shutdown HTTP
 // response and actually stopping the server.  Tests may override it.
@@ -90,7 +106,12 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 		if req.ApprovalRequired != nil {
 			approval = *req.ApprovalRequired
 		}
-		resp, err := d.Create(req.Server, req.Port, req.Name, req.Subnet, approval)
+		server, err := enforceServer(req.Server)
+		if err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		resp, err := d.Create(server, req.Port, req.Name, req.Subnet, approval)
 		if err != nil {
 			d.mu.Lock()
 			d.cfg.ServerCAPath = prevCA
@@ -118,10 +139,19 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			}
 		}
 		// An invite link that carries its own server address wins over the
-		// request field: the join targets the network's own server.
-		server := req.Server
+		// request field: the join targets the network's own server. Both must
+		// point at the fixed coordination server.
+		server, err := enforceServer(req.Server)
+		if err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
 		if linkServer != "" {
-			server = linkServer
+			server, err = enforceServer(linkServer)
+			if err != nil {
+				writeCtlErr(w, 400, err)
+				return
+			}
 		}
 		d.mu.Lock()
 		prevCA := d.cfg.ServerCAPath
@@ -160,7 +190,12 @@ func ServeCtl(d *Daemon, ctlToken, addr string, onShutdown func(*http.Server)) e
 			writeCtlErr(w, 400, errors.New("缺少设备授权码"))
 			return
 		}
-		if err := d.Bind(req.Server, req.CA, req.Code); err != nil {
+		server, err := enforceServer(req.Server)
+		if err != nil {
+			writeCtlErr(w, 400, err)
+			return
+		}
+		if err := d.Bind(server, req.CA, req.Code); err != nil {
 			writeCtlErr(w, 500, err)
 			return
 		}

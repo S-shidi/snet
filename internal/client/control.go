@@ -192,11 +192,34 @@ func (c *apiClient) BindDevice(deviceID, publicKey, code, name string) (protocol
 	return out, err
 }
 
-// GetDeviceAuthStatus queries the server for the device's binding and expiration status.
-func (c *apiClient) GetDeviceAuthStatus(deviceID string) (protocol.DeviceAuthStatusResp, error) {
+// GetDeviceAuthStatus queries the server for the device's binding and
+// expiration status. Bound devices authenticate with the device token from
+// their bind response; unbound devices send none and receive the generic
+// not-bound answer.
+func (c *apiClient) GetDeviceAuthStatus(deviceID, deviceToken string) (protocol.DeviceAuthStatusResp, error) {
 	var out protocol.DeviceAuthStatusResp
-	err := c.do(http.MethodGet, "/api/v1/devices/auth-status?deviceId="+deviceID, "", nil, &out)
-	return out, err
+	req, err := http.NewRequest(http.MethodGet, c.server+"/api/v1/devices/auth-status?deviceId="+deviceID, nil)
+	if err != nil {
+		return out, err
+	}
+	if deviceToken != "" {
+		req.Header.Set("X-Device-Token", deviceToken)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var e protocol.ErrResp
+		_ = json.Unmarshal(data, &e)
+		return out, &httpStatusErr{code: resp.StatusCode, msg: e.Error}
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (c *apiClient) SetNodeDevice(nid, nodeID, token, deviceID string) error {
