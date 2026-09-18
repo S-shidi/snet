@@ -226,8 +226,7 @@ object SnetBridge {
     fun getAuthStatus(): String {
         val c = core ?: return """{"error":"core not initialized"}"""
         return try {
-            // TODO: implement getAuthStatus
-            "{}"
+            c.getAuthStatus(SnetRepository.SERVER_ADDR, "") ?: "{}"
         } catch (e: Exception) {
             """{"error":"${e.message?.replace("\"", "\\\"") ?: "unknown"}"}"""
         }

@@ -25,7 +25,6 @@ fun SettingsScreen(
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     
     // 设置状态
-    var serverAddr by remember { mutableStateOf("https://snet.uizhi.eu.org:8090") }
     var authCode by remember { mutableStateOf("") }
     var caCert by remember { mutableStateOf("") }
     var wgPort by remember { mutableStateOf("51820") }

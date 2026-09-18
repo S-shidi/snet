@@ -70,6 +70,9 @@ class WebBridge(private val activity: MainActivity) {
     private companion object {
         const val TAG = "WebBridge"
 
+        /** Fixed coordination server. Never user-configurable. */
+        const val SERVER_ADDR = "https://snet.uizhi.eu.org:8090"
+
         fun rememberServer(server: String) {
             if (server.isEmpty()) return
             SnetVpnService.serverAddr = server
@@ -154,14 +157,13 @@ class WebBridge(private val activity: MainActivity) {
             val name = p.optString("name", "")
             val subnet = p.optString("subnet", "")
             val approvalRequired = p.optBoolean("approvalRequired", false)
-            val server = p.optString("server", "")
             val port = p.optInt("port", 51820)
             val ca = p.optString("ca", "")
             val description = p.optString("description", "")
             val tags = p.optJSONArray("tags")?.toString() ?: "[]"
             val visibility = p.optString("visibility", "")
-            rememberServer(server)
-            SnetBridge.createNetwork(name, subnet, approvalRequired, server, port, description, tags, visibility)
+            rememberServer(SERVER_ADDR)
+            SnetBridge.createNetwork(name, subnet, approvalRequired, SERVER_ADDR, port, description, tags, visibility)
         } catch (e: Exception) {
             Log.e(TAG, "create failed", e)
             """{"error":"${e.message?.replace("\"", "\\\"")}"}"""
@@ -173,10 +175,9 @@ class WebBridge(private val activity: MainActivity) {
         return try {
             val p = org.json.JSONObject(params)
             var link = p.optString("link", "")
-            val server = p.optString("server", "")
             val port = p.optInt("port", 51820)
             val ca = p.optString("ca", "")
-            rememberServer(server)
+            rememberServer(SERVER_ADDR)
             // Extract nid and code from link or from direct params
             var nid = p.optString("nid", "")
             var code = p.optString("code", "")
@@ -193,7 +194,7 @@ class WebBridge(private val activity: MainActivity) {
                     }
                 }
             }
-            Log.d(TAG, "join nid=$nid server=$server port=$port")
+            Log.d(TAG, "join nid=$nid server=$SERVER_ADDR port=$port")
             // Ensure VPN service (and thus the TUN fd) is running before
             // joining, routing through VPN permission so establish() can obtain
             // the fd (first time shows the system consent dialog).
@@ -201,7 +202,7 @@ class WebBridge(private val activity: MainActivity) {
                 Log.d(TAG, "VPN not running, requesting before join")
                 activity.requestVpnPermission()
             }
-            SnetBridge.joinNetwork(nid, code, server, port)
+            SnetBridge.joinNetwork(nid, code, SERVER_ADDR, port)
             setAutoConnect(true)
             """{"ok":true}"""
         } catch (e: Exception) {
@@ -214,11 +215,10 @@ class WebBridge(private val activity: MainActivity) {
     fun bind(params: String): String {
         return try {
             val p = org.json.JSONObject(params)
-            val server = p.optString("server", "")
             val ca = p.optString("ca", "")
             val code = p.optString("code", "")
-            rememberServer(server)
-            SnetBridge.bind(server, ca, code)
+            rememberServer(SERVER_ADDR)
+            SnetBridge.bind(SERVER_ADDR, ca, code)
             setAutoConnect(true)
             """{"ok":true}"""
         } catch (e: Exception) {
