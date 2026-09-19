@@ -1274,23 +1274,11 @@ function openJoinModal() {
 }
 
 /* ── App settings modal ───────────────────────────────────────── */
-const HELP_ROWS: Array<[string, string, string]> = [
-  ["链接开关", "全部", "开启＝连接该网络隧道；关闭＝断开本机该网络，保留配置与服务器节点，可随时再开"],
-  ["详情", "创建者", "查看服务器上该网络的完整信息（成员、中继端口、在线状态、创建时间等）"],
-  ["成员", "创建者", "查看成员列表与在线状态；批准/拒绝待批准加入请求、踢出成员"],
-  ["设置", "创建者", "修改网络名称、网段，或开启「新成员需批准」"],
-  ["查看配对码", "创建者", "查看当前配对码并复制；可作废旧码并生成新码，旧码立即失效、已加入成员不受影响"],
-  ["删除", "创建者", "彻底删除该网络：所有成员断开、网段释放，不可恢复"],
-  ["退出网络", "成员", "本机移出该网络并遗忘配置，需重新扫码加入；创建者无此按钮"],
-];
-
 function openSettingsModal() {
   const s = loadSettings();
-  const helpRows = HELP_ROWS.map(([op, who, desc]) => `<tr><td>${op}</td><td>${who}</td><td>${desc}</td></tr>`).join("");
   openModal({
     title: "设置",
     body: `<div class="settings-block">
-        <p class="hint" style="margin-bottom:6px">服务器地址已固定：${esc(FIXED_SERVER)}</p>
         <div class="row"><label>设备授权码</label><input id="s-code" type="text" placeholder="管理端生成的设备授权码（仅用于链接，不保存）" autocomplete="off" /></div>
         <div class="row"><label>CA 证书路径</label><input id="s-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
         <div class="settings-actions">
@@ -1305,15 +1293,7 @@ function openSettingsModal() {
           : ""}
       </div>
       <p class="msg" id="s-msg"></p>
-      <details class="help">
-        <summary>操作说明</summary>
-        <div class="tbl-wrap">
-        <table class="help">
-          <thead><tr><th>操作</th><th>适用</th><th>作用</th></tr></thead>
-          <tbody>${helpRows}</tbody>
-        </table>
-        </div>
-      </details>`,
+    `,
     wide: true,
     footer: `<button data-close class="btn ghost">关闭</button>`,
     onBody: (body) => {
@@ -1443,13 +1423,11 @@ async function finishOnboarding() {
 /* ── Status tab ───────────────────────────────────────────────── */
 function renderStatus() {
   const deviceId = $("#device-id");
-  const svcServer = $("#svc-server");
   const svcWgport = $("#svc-wgport");
   const tunnelDetail = $("#tunnel-detail");
   const statusJson = $("#status-json");
   if (!status) {
     if (deviceId) deviceId.textContent = "-";
-    if (svcServer) svcServer.textContent = "-";
     if (svcWgport) svcWgport.textContent = "-";
     const emptyHtml = `<p class="muted">后台服务未运行</p>`;
     if (tunnelDetail && emptyHtml !== lastTunnelHTML) {
@@ -1460,7 +1438,6 @@ function renderStatus() {
     return;
   }
   if (deviceId) deviceId.textContent = status.deviceId || "-";
-  if (svcServer) svcServer.textContent = status.bound ? FIXED_SERVER : "未绑定";
   if (svcWgport) svcWgport.textContent = String(status.wgPort ?? "-");
   const nets = status.networks ?? [];
   if (tunnelDetail) {
