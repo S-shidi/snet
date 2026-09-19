@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"snet/internal/protocol"
 )
@@ -79,6 +80,11 @@ type Config struct {
 	// the server. Persisted so the UI can show the expired state across
 	// restarts; cleared on re-bind or revocation.
 	AuthExpired bool `json:"authExpired,omitempty"`
+
+	// AuthExpiresAt is the authorization expiry the server last reported
+	// during binding-verification polling. nil means the authorization is
+	// permanent or has not been verified yet.
+	AuthExpiresAt *time.Time `json:"authExpiresAt,omitempty"`
 
 	// WebPasswordHash is the bcrypt hash of the web console login password.
 	// Empty means no password is set (authentication disabled).

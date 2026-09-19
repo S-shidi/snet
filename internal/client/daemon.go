@@ -758,12 +758,17 @@ func (d *Daemon) verifyBinding() bool {
 		if isUnboundErr(err) {
 			d.mu.Lock()
 			d.cfg.AuthExpired = false
+			d.cfg.AuthExpiresAt = nil
 			d.clearBindingLocked()
 			d.mu.Unlock()
 			return false
 		}
 		return true
 	}
+
+	d.mu.Lock()
+	d.cfg.AuthExpiresAt = status.ExpiresAt
+	d.mu.Unlock()
 
 	// Handle expiration: stop all networks and clear binding
 	if status.Expired {
@@ -2881,11 +2886,12 @@ func (d *Daemon) Status() (map[string]any, error) {
 		})
 	}
 	return map[string]any{
-		"deviceId":     d.cfg.DeviceID,
-		"bound":        d.cfg.Bound(),
-		"authExpired":  d.cfg.AuthExpired,
-		"wgPort":       d.cfg.WireguardPort,
-		"networks":     nets,
-		"pendingJoins": pending,
+		"deviceId":      d.cfg.DeviceID,
+		"bound":         d.cfg.Bound(),
+		"authExpired":   d.cfg.AuthExpired,
+		"authExpiresAt": d.cfg.AuthExpiresAt,
+		"wgPort":        d.cfg.WireguardPort,
+		"networks":      nets,
+		"pendingJoins":  pending,
 	}, nil
 }

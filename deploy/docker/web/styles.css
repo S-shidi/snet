@@ -344,6 +344,8 @@ input[type=number] { width: 120px; }
 
 .settings-actions { display: flex; gap: 8px; margin: 4px 0 10px; flex-wrap: wrap; }
 .settings-block { border: 1px solid var(--border); border-radius: var(--radius-s); padding: 12px 14px; margin-bottom: 14px; background: var(--bg2); }
+.settings-block .value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.settings-block .value.auth-warn { color: var(--err); }
 
 /* ── subnet controls ────────────────────── */
 .subnet-wrap { margin-top: 4px; }

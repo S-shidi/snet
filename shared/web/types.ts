@@ -33,6 +33,7 @@ export type DaemonStatus = {
   deviceId?: string;
   bound?: boolean;
   authExpired?: boolean;
+  authExpiresAt?: string;
   wgPort?: number;
   networks?: NetInfo[];
   pendingJoins?: PendingJoin[];

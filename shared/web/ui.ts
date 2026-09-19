@@ -1274,11 +1274,26 @@ function openJoinModal() {
 }
 
 /* ── App settings modal ───────────────────────────────────────── */
+function fmtDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function authExpiryLabel(s: DaemonStatus | null): string {
+  if (!s || !s.bound) return "未绑定设备授权";
+  if (s.authExpired) return s.authExpiresAt ? `已于 ${fmtDateTime(s.authExpiresAt)} 过期（请联系管理员续期）` : "已过期（请联系管理员续期）";
+  if (s.authExpiresAt) return `有效期至 ${fmtDateTime(s.authExpiresAt)}`;
+  return "长期有效";
+}
+
 function openSettingsModal() {
   const s = loadSettings();
   openModal({
     title: "设置",
     body: `<div class="settings-block">
+        <div class="row"><label>授权期限</label><span id="s-auth-expiry" class="value">…</span></div>
         <div class="row"><label>设备授权码</label><input id="s-code" type="text" placeholder="管理端生成的设备授权码（仅用于链接，不保存）" autocomplete="off" /></div>
         <div class="row"><label>CA 证书路径</label><input id="s-ca" type="text" value="${esc(s.ca)}" placeholder="公共证书(如 Let's Encrypt)留空；自签名服务器填证书路径" /></div>
         <div class="settings-actions">
@@ -1300,6 +1315,11 @@ function openSettingsModal() {
       const msg = body.querySelector<HTMLElement>("#s-msg")!;
       const bindResult = body.querySelector<HTMLElement>("#s-bind-result")!;
       const bindBtn = body.querySelector<HTMLButtonElement>("#s-bind");
+      const expiryEl = body.querySelector<HTMLElement>("#s-auth-expiry");
+      if (expiryEl) {
+        expiryEl.textContent = authExpiryLabel(status);
+        expiryEl.classList.toggle("auth-warn", !!(status?.bound && status?.authExpired));
+      }
 
       body.querySelector("#s-bind")?.addEventListener("click", async () => {
         const ca = (body.querySelector("#s-ca") as HTMLInputElement).value.trim();
