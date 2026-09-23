@@ -46,7 +46,7 @@
   /* ── header ── */
   header {
     border-bottom:1px solid var(--border);
-    background:rgba(22,28,41,.72); backdrop-filter:blur(8px);
+    backdrop-filter:blur(8px);
     position:sticky; top:0; z-index:20;
   }
   .header-inner {
@@ -69,7 +69,7 @@
 
   /* ── login ── */
   #login-card, #setup-card { margin:auto; width:100%; max-width:390px; }
-  #main { display:none; width:100%; max-width:1040px; margin:0 auto; padding:20px 22px 60px; }
+  #main { display:none; width:100%; max-width:1040px; margin:0 auto; padding:22px; }
   html[data-authed] #main { display:block; }
   #setup-card { display:none; }
   html[data-setup] #setup-card { display:block; }
@@ -215,13 +215,13 @@
   .devnets td { background:var(--bg2); }
 
   /* ⋯ more-actions dropdown on network cards */
-  .net-menu-wrap { position:relative; margin-left:auto; flex:none; }
-  .net-more {
+  .net-menu-wrap { position:relative; margin-left:auto; flex:none; display:flex; gap:6px; }
+  .net-action, .net-more {
     width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center;
     background:transparent; border:1px solid transparent; border-radius:8px; color:var(--dim);
     cursor:pointer; transition:all .12s;
   }
-  .net-more:hover, .net-more.open { color:var(--text); border-color:var(--border2); background:var(--card2); }
+  .net-action:hover, .net-more:hover, .net-more.open { color:var(--text); border-color:var(--border2); background:var(--card2); }
   .net-menu {
     position:absolute; right:0; top:calc(100% + 4px); min-width:150px; z-index:30;
     background:var(--card); border:1px solid var(--border2); border-radius:10px;
@@ -561,7 +561,7 @@
     </div>
     <div class="tbl-wrap">
       <table>
-        <thead><tr><th>设备名称</th><th>设备 ID</th><th>创建时间</th><th>最近活跃</th><th style="width:160px"></th></tr></thead>
+        <thead><tr><th>设备名称</th><th>设备 ID</th><th>所属网络</th><th>创建时间</th><th>最近活跃</th><th style="width:160px"></th></tr></thead>
         <tbody id="dev-body"><tr><td colspan="5"><div class="loading"><span class="spinner"></span>加载中…</div></td></tr></tbody>
       </table>
     </div>
@@ -3551,6 +3551,8 @@ function netCard(n) {
         </div>
       </div>
       <div class="net-menu-wrap">
+        <button type="button" class="net-action" data-act="view-members" data-nid="${esc(net.id)}" title="查看成员">${icon('members')}</button>
+        <button type="button" class="net-action" data-act="invite-net" data-nid="${esc(net.id)}" title="邀请">${icon('invite')}</button>
         <button type="button" class="net-more" data-act="net-menu" data-nid="${esc(net.id)}" title="更多操作" aria-haspopup="menu">${icon('more')}</button>
       </div>
     </div>
@@ -3573,9 +3575,7 @@ function buildNetMenu(nid) {
   menu.className = 'net-menu';
   menu.setAttribute('role', 'menu');
   menu.innerHTML = `
-    <button type="button" data-act="view-members" data-nid="${esc(nid)}">${icon('members')} 查看成员</button>
     <button type="button" data-act="edit-net" data-nid="${esc(nid)}">${icon('settings')} 编辑设置</button>
-    <button type="button" data-act="invite-net" data-nid="${esc(nid)}">${icon('invite')} 邀请</button>
     <button type="button" data-act="view-code" data-nid="${esc(nid)}">${icon('code')} 查看配对码</button>
     <hr/>
     <button type="button" class="danger" data-act="del-net" data-nid="${esc(nid)}">${icon('trash')} 删除网络</button>`;
@@ -3657,13 +3657,13 @@ async function renderMembersModal(nid) {
       rows += `<tr>
         <td class="mono" title="${esc(deviceLabel(nd.deviceName, nd.deviceId))}">${esc(deviceLabel(nd.deviceName, nd.deviceId))}</td>
         <td class="mono">${virtualIP}</td>
-        <td class="mono">${publicIP}</td>
         <td><span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : (nd.lastSeen ? '离线' : '活跃（网络级）')}</span></td>
         <td class="mono">${subnets ? `<span class="subnet-route" title="子网路由：${esc(subnets)}">${esc(subnets)}</span>` : '<span class="hint">-</span>'}</td>
+        <td class="mono">${publicIP}</td>
         <td><button type="button" class="btn danger ghost sm" data-act="kick-node" data-nid="${esc(nid)}" data-node="${esc(nd.id)}">踢出</button></td>
       </tr>`;
     }
-    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>虚拟 IP</th><th>公网 IP</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>虚拟 IP</th><th>状态</th><th>子网路由</th><th>公网 IP</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
   } catch (e) {
     box.innerHTML = '<p class="msg mb0">加载失败：' + esc(friendlyErr(e)) +
       '</p><div class="modal-foot"><button type="button" class="btn ghost" data-act="view-members" data-nid="' + esc(nid) + '">重试</button></div>';
@@ -3997,18 +3997,28 @@ function renderDevices() {
   let rows = '';
   for (const d of list) {
     const displayName = d.name || '未命名';
+    
+    // Build networks cell
+    let networksCell = '<span class="hint">-</span>';
+    if (d.networks && d.networks.length > 0) {
+      const netLabels = d.networks.map(n => {
+        const label = n.name ? `${n.name}（${n.id}）` : n.id;
+        return `<span class="net-label" title="${esc(label)}">${esc(label)}</span>`;
+      });
+      networksCell = netLabels.join(', ');
+    }
+    
     rows += `
       <tr>
         <td><span class="dev-name" data-dev="${esc(d.id)}" title="点击 ✎ 或双击名称编辑">${esc(displayName)}</span><button type="button" class="btn icon sm rename-dev" data-act="rename-dev" data-dev="${esc(d.id)}" title="修改设备名称" aria-label="修改设备名称">${icon('pencil')}</button></td>
         <td class="mono" title="${esc(d.id)}">${esc(d.id.length > 8 ? d.id.slice(0, 8) + '…' : d.id)}</td>
+        <td>${networksCell}</td>
         <td>${fmtTime(d.createdAt)}</td>
         <td>${d.lastSeen ? relSec(d.lastSeen) + ' <span class="hint">' + fmtTime(new Date(d.lastSeen * 1000).toISOString()) + '</span>' : '—'}</td>
         <td style="white-space:nowrap">
-          <button type="button" class="btn ghost sm" data-act="dev-nets" data-dev="${esc(d.id)}">所属网络</button>
           <button type="button" class="btn danger ghost sm" data-act="del-dev" data-dev="${esc(d.id)}" data-name="${esc(displayName)}">删除</button>
         </td>
-      </tr>
-      <tr class="devnets" hidden><td colspan="5" id="devnets-${esc(d.id)}"></td></tr>`;
+      </tr>`;
   }
   body.innerHTML = rows;
 }

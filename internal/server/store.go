@@ -2976,12 +2976,16 @@ func (s *Store) AdminDevicesPage(q string, page, pageSize int) ([]protocol.Devic
 	needle := strings.ToLower(strings.TrimSpace(q))
 	out := make([]protocol.Device, 0, len(s.devices))
 	for _, d := range s.devices {
+		// Get networks for this device
+		networks := s.deviceNetworksLocked(d.ID)
+		
 		dev := protocol.Device{
 			ID:        d.ID,
 			PublicKey: d.PublicKey,
 			CreatedAt: d.CreatedAt,
 			LastSeen:  d.LastSeen,
 			Name:      d.Name,
+			Networks:  networks,
 		}
 		if needle != "" {
 			hay := strings.ToLower(dev.ID + " " + dev.Name + " " + dev.PublicKey)
@@ -3018,6 +3022,23 @@ func (s *Store) DeviceNetworks(deviceID string) []protocol.Network {
 				c.Online = time.Now().Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second)
 				c.LastActivityAt = ns.lastActivityAt
 				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// deviceNetworksLocked returns the networks a device belongs to (caller must hold s.mu.RLock).
+func (s *Store) deviceNetworksLocked(deviceID string) []protocol.DeviceNetwork {
+	var out []protocol.DeviceNetwork
+	for _, ns := range s.networks {
+		for _, n := range ns.nodes {
+			if n.DeviceID == deviceID {
+				out = append(out, protocol.DeviceNetwork{
+					ID:   ns.n.ID,
+					Name: ns.n.Name,
+				})
 				break
 			}
 		}

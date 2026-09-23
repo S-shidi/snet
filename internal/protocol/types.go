@@ -255,6 +255,14 @@ type Device struct {
 	PublicIPv4 string `json:"publicIPv4,omitempty"`
 	// PublicIPv6 is the device's last known public IPv6 address (without port).
 	PublicIPv6 string `json:"publicIPv6,omitempty"`
+	// Networks is the list of network IDs this device belongs to.
+	Networks []DeviceNetwork `json:"networks,omitempty"`
+}
+
+// DeviceNetwork represents a network membership for a device.
+type DeviceNetwork struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
 }
 
 type RegisterDeviceReq struct {
