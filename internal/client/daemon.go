@@ -154,11 +154,6 @@ const candProbeSec = 4
 // success probability at the cost of more simultaneous UDP flows.
 const parallelProbes = 5
 
-// lossThreshold is the packet loss rate above which a locked direct path is
-// considered degraded and the daemon falls back to relay (30% loss = poor
-// connectivity on mobile/CGNAT networks).
-const lossThreshold = 0.3
-
 // observedRefreshSec throttles how often the daemon asks the relay for the
 // live peer-mapping list. Each refresh restarts the direct candidate window
 // with the peers' current NAT-observed endpoints first (highest hit rate).
@@ -195,11 +190,6 @@ type peerDirect struct {
 	// handshake latency on symmetric NATs where the correct port may be
 	// far down the candidate list.
 	parallelIdx int // current parallel batch start index
-
-	// Quality-aware path selection: track packet loss to detect degraded
-	// direct paths (e.g., flaky CGNAT) and fall back to relay.
-	lossRate    float64 // recent packet loss rate (0.0-1.0)
-	lossSamples int     // number of samples for loss rate calculation
 }
 
 // Daemon coordinates the local tunnels and the coordination server for any
@@ -1570,26 +1560,7 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 			rt.peerDirect[p.ID] = st2
 		}
 		st2.relay = st.RelayEndpoint
-		// Update packet loss estimation from peer stats.
-		// For direct paths, track the ratio of transmitted vs received bytes.
-		// A high loss rate indicates a degraded direct path (e.g., flaky CGNAT).
-		pStats := stats[p.PublicKey]
-		if pStats.LastHandshakeSec > 0 && st2.mode == "direct" {
-			tx := pStats.TxBytes
-			rx := pStats.RxBytes
-			if tx > 1000 { // Only estimate when there's meaningful traffic
-				// Simple loss estimation: if Tx >> Rx, packets are being lost
-				// (WireGuard retransmits, so some asymmetry is normal)
-				expectedMinRx := tx / 3 // At least 1/3 of sent bytes should come back
-				if rx < expectedMinRx {
-					st2.lossRate = float64(tx-expectedMinRx) / float64(tx)
-					st2.lossSamples++
-				} else {
-					// Good path, gradually reduce loss estimate
-					st2.lossRate *= 0.9
-				}
-			}
-		}
+	
 		// A locked direct path must keep proving itself: WireGuard rekeys
 		// roughly every 120s on a working session, so a lock that saw no new
 		// handshake for directLockStaleSec is stale (the CGNAT hole closed or
@@ -1603,17 +1574,7 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 			st2.dirSince = now
 			st2.mode = "relay"
 		}
-		// Quality-aware fallback: if a locked direct path has high loss,
-		// switch to relay for better reliability.
-		if st2.mode == "direct" && st2.locked && st2.lossRate > lossThreshold && st2.lossSamples >= 3 {
-			log.Printf("path %s: peer %s degraded direct path (%.0f%% loss) -> relay", nid, p.ID, st2.lossRate*100)
-			st2.locked = false
-			st2.cands = nil
-			st2.lossRate = 0
-			st2.lossSamples = 0
-			st2.dirSince = now
-			st2.mode = "relay"
-		}
+
 		if st2.mode == "relay" {
 			// Switch to direct on the first opportunity (candidates just
 			// appeared) and re-probe periodically afterwards.
@@ -1964,8 +1925,20 @@ func (d *Daemon) pollLoop(nid string) {
 			}
 		}
 		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets(), observed)
+		// Per-peer WireGuard tunnel stats straight from the engine, so the
+		// poll line distinguishes a real data-plane handshake from the
+		// relay-group "online" guess (Cc, CJEB, KAYS... consumers poll peers
+		// on every link and used to only see Online, which relays mark true
+		// as soon as any relay group flow is registered, not when the WG
+		// handshake actually completes end to end).
+		pstats, _ := rt.tun.Stats()
 		for i := range peers {
-			log.Printf("poll peers %s: peer %d id=%s pub=%s endpoint=%s local=%s online=%v", nid, i, peers[i].ID, peers[i].PublicKey, peers[i].Endpoint, peers[i].LocalEndpoint, peers[i].Online)
+			ps := pstats[peers[i].PublicKey]
+			hs := int64(0)
+			if ps.LastHandshakeSec > 0 {
+				hs = time.Now().Unix() - ps.LastHandshakeSec
+			}
+			log.Printf("poll peers %s: peer %d id=%s pub=%s endpoint=%s local=%s online=%v hs=%ds rx=%dB tx=%dB", nid, i, peers[i].ID, peers[i].PublicKey, peers[i].Endpoint, peers[i].LocalEndpoint, peers[i].Online, hs, ps.RxBytes, ps.TxBytes)
 		}
 		if len(peers) == 0 {
 			log.Printf("poll peers %s: got 0 peers", nid)
@@ -2812,11 +2785,10 @@ func peerPathInfo(rt *netRuntime) map[string]any {
 	out := make(map[string]any, len(rt.peerDirect))
 	for id, pd := range rt.peerDirect {
 		info := map[string]any{
-			"mode":      pd.mode,
-			"since":     pd.dirSince,
-			"direct":    pd.lastDir,
-			"relay":     pd.relay,
-			"lossRate":  pd.lossRate,
+			"mode":  pd.mode,
+			"since": pd.dirSince,
+			"direct": pd.lastDir,
+			"relay": pd.relay,
 		}
 		if len(pd.cands) > 0 {
 			info["candidates"] = len(pd.cands)
