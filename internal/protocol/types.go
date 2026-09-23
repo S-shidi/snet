@@ -72,6 +72,9 @@ type Node struct {
 	ID        string `json:"id"`
 	NetworkID string `json:"networkId"`
 	IP        string `json:"ip"`
+	// IPv6 is the virtual IPv6 address derived from the IPv4 address and subnet.
+	// For example, 10.88.1.5 in subnet 10.88.1.0/24 becomes fd00:a:58:1::5.
+	IPv6      string `json:"ipv6,omitempty"`
 	PublicKey string `json:"publicKey"`
 	Endpoint  string `json:"endpoint"`
 	// EndpointV6 is the node's global-IPv6 direct endpoint ([v6]:port). IPv6
@@ -103,6 +106,12 @@ type Node struct {
 	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
 	// Role 是节点在网络中的角色："owner" | "admin" | "member"。
 	Role string `json:"role,omitempty"`
+	// PublicIPv4 is the node's public IPv4 address (without port), extracted
+	// from RelayFlow or Endpoint. Shown in the admin console for diagnostics.
+	PublicIPv4 string `json:"publicIPv4,omitempty"`
+	// PublicIPv6 is the node's public IPv6 address (without port), extracted
+	// from EndpointV6. Shown in the admin console for diagnostics.
+	PublicIPv6 string `json:"publicIPv6,omitempty"`
 }
 
 type CreateNetworkReq struct {
@@ -242,6 +251,10 @@ type Device struct {
 	CreatedAt string `json:"createdAt"`
 	LastSeen  int64  `json:"lastSeen,omitempty"`
 	Name      string `json:"name,omitempty"`
+	// PublicIPv4 is the device's last known public IPv4 address (without port).
+	PublicIPv4 string `json:"publicIPv4,omitempty"`
+	// PublicIPv6 is the device's last known public IPv6 address (without port).
+	PublicIPv6 string `json:"publicIPv6,omitempty"`
 }
 
 type RegisterDeviceReq struct {

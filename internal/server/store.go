@@ -3210,6 +3210,8 @@ func (s *Store) AdminNodes(nid string) ([]protocol.Node, error) {
 		if d := s.devices[n.DeviceID]; d != nil {
 			node.DeviceName = d.Name
 		}
+		// Enrich node with IPv6 and public IP information
+		enrichNodeWithIPInfo(&node, ns.n.Subnet)
 		nodes = append(nodes, node)
 	}
 	return nodes, nil
@@ -4132,4 +4134,84 @@ func (s *Store) UpdateAllowedSubnets(token string, subnets []string) error {
 	}
 	me.AllowedSubnets = subnets
 	return s.persistNode(te.NetworkID, me)
+}
+
+// deriveIPv6FromV4 generates a virtual IPv6 address from an IPv4 address and subnet.
+// For example, 10.88.1.5 in subnet 10.88.1.0/24 becomes fd00:a:58:1::5.
+// The algorithm extracts the network part (first 3 octets) and converts to hex,
+// then appends the host part (last octet).
+func deriveIPv6FromV4(ipv4 string, subnet string) string {
+	// Parse IPv4 address
+	ip := net.ParseIP(ipv4)
+	if ip == nil {
+		return ""
+	}
+	ip = ip.To4()
+	if ip == nil {
+		return ""
+	}
+
+	// Extract network part (first 3 octets)
+	// Example: 10.88.1 -> fd00:a:58:1
+	octets := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		octets[i] = fmt.Sprintf("%x", ip[i])
+	}
+
+	// Construct IPv6 prefix: fd00:<octet0>:<octet1>:<octet2>::
+	// Example: fd00:a:58:1::
+	prefix := fmt.Sprintf("fd00:%s:%s:%s::", octets[0], octets[1], octets[2])
+
+	// Append host part (last octet)
+	// Example: ::5
+	host := fmt.Sprintf("%d", ip[3])
+
+	return prefix + host
+}
+
+// extractIPFromEndpoint extracts the IP address (without port) from an endpoint string.
+// Handles both IPv4 ("1.2.3.4:51820") and IPv6 ("[fd00::1]:51820") formats.
+func extractIPFromEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		// If SplitHostPort fails, the endpoint might already be just an IP
+		if ip := net.ParseIP(endpoint); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
+
+	// Remove IPv6 brackets
+	return strings.Trim(host, "[]")
+}
+
+// enrichNodeWithIPInfo fills in the IPv6, PublicIPv4, and PublicIPv6 fields
+// for a node based on its existing IP, subnet, and endpoint information.
+func enrichNodeWithIPInfo(node *protocol.Node, subnet string) {
+	// Derive virtual IPv6 from IPv4
+	if node.IP != "" && subnet != "" {
+		node.IPv6 = deriveIPv6FromV4(node.IP, subnet)
+	}
+
+	// Extract public IPv4 from RelayFlow or Endpoint
+	if node.RelayFlow != "" {
+		node.PublicIPv4 = extractIPFromEndpoint(node.RelayFlow)
+	} else if node.Endpoint != "" {
+		ep := extractIPFromEndpoint(node.Endpoint)
+		// Only set as public if it's not a private/LAN address
+		if ip := net.ParseIP(ep); ip != nil && !ip.IsPrivate() {
+			node.PublicIPv4 = ep
+		}
+	}
+
+	// Extract public IPv6 from EndpointV6
+	if node.EndpointV6 != "" {
+		ep := extractIPFromEndpoint(node.EndpointV6)
+		// IPv6 addresses in EndpointV6 are already global (no NAT)
+		node.PublicIPv6 = ep
+	}
 }

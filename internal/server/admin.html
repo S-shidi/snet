@@ -393,6 +393,11 @@
   .gen-form { padding:8px 0; }
   .gen-form > * + * { margin-top:20px; }
   .gen-form > .form-group:last-child { margin-bottom:0; }
+  
+  /* IP address display */
+  .ip-cell { display:flex; flex-direction:column; gap:2px; }
+  .ip-v4 { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--text); }
+  .ip-v6 { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; color:var(--dim); opacity:0.85; }
 
   .gen-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   .gen-grid .form-group { margin-bottom:0; }
@@ -3628,15 +3633,37 @@ async function renderMembersModal(nid) {
     for (const nd of nodes) {
       const online = nd.lastSeen ? (now - nd.lastSeen) < 60 : false;
       const subnets = (nd.allowedSubnets && nd.allowedSubnets.length) ? nd.allowedSubnets.join(', ') : '';
+      
+      // Build virtual IP cell (IPv4 + IPv6)
+      const virtualIP = nd.ipv6 
+        ? `<div class="ip-cell"><span class="ip-v4">${esc(nd.ip)}</span><span class="ip-v6">${esc(nd.ipv6)}</span></div>`
+        : `<span class="ip-v4">${esc(nd.ip)}</span>`;
+      
+      // Build public IP cell (IPv4 + IPv6)
+      let publicIP = '<span class="hint">-</span>';
+      if (nd.publicIPv4 || nd.publicIPv6) {
+        const parts = [];
+        if (nd.publicIPv4) {
+          parts.push(`<span class="ip-v4" title="公网 IPv4">${esc(nd.publicIPv4)}</span>`);
+        }
+        if (nd.publicIPv6) {
+          parts.push(`<span class="ip-v6" title="公网 IPv6">${esc(nd.publicIPv6)}</span>`);
+        }
+        publicIP = parts.length > 1 
+          ? `<div class="ip-cell">${parts.join('')}</div>`
+          : parts[0];
+      }
+      
       rows += `<tr>
         <td class="mono" title="${esc(deviceLabel(nd.deviceName, nd.deviceId))}">${esc(deviceLabel(nd.deviceName, nd.deviceId))}</td>
-        <td class="mono">${esc(nd.ip)}</td>
+        <td class="mono">${virtualIP}</td>
+        <td class="mono">${publicIP}</td>
         <td><span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : (nd.lastSeen ? '离线' : '活跃（网络级）')}</span></td>
         <td class="mono">${subnets ? `<span class="subnet-route" title="子网路由：${esc(subnets)}">${esc(subnets)}</span>` : '<span class="hint">-</span>'}</td>
         <td><button type="button" class="btn danger ghost sm" data-act="kick-node" data-nid="${esc(nid)}" data-node="${esc(nd.id)}">踢出</button></td>
       </tr>`;
     }
-    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>IP</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    box.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>设备</th><th>虚拟 IP</th><th>公网 IP</th><th>状态</th><th>子网路由</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
   } catch (e) {
     box.innerHTML = '<p class="msg mb0">加载失败：' + esc(friendlyErr(e)) +
       '</p><div class="modal-foot"><button type="button" class="btn ghost" data-act="view-members" data-nid="' + esc(nid) + '">重试</button></div>';
