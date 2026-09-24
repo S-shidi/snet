@@ -1093,8 +1093,18 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	}
 	// Last-resort attribution: the sender's data-plane host may still be
 	// unattributed (throttled flow hook hasn't fired, or the flow is brand
-	// new). Neighbor /23-/16 matching against the port owner's peers resolves
-	// it inline so the very first handshake frames are not dropped.
+	// new). The node's own advertised direct endpoint is the strongest clue —
+	// it matches when the control plane rides a proxy but the data plane
+	// exits the real public address. Then neighbor /23-/16 matching against
+	// the port owner's peers resolves it inline so the very first handshake
+	// frames are not dropped.
+	if senderID == "" {
+		if id := s.attribSelfEndpointHostLocked(ns, senderHost); id != "" {
+			senderID = id
+			s.learnNodeHostLocked(ns, id, senderHost)
+			log.Printf("relay node %d: attributed sender host %s to node %s (self-advertised endpoint)", port, senderHost, id)
+		}
+	}
 	if senderID == "" {
 		if id := s.attribNeighborHostLocked(ns, port, senderHost); id != "" {
 			senderID = id
@@ -1279,6 +1289,51 @@ func net23Of(host string) string {
 // it. This resolves the mobile/CGNAT case where a node's data-plane NAT IP
 // differs from its control-plane IP at the same operator. Returns "" when no
 // unambiguous neighbour match exists. Callers hold s.mu.
+// attribSelfEndpointHostLocked attributes an unclassified data-plane host to
+// a node whose self-advertised control/direct endpoint exactly matches it.
+// The node PUTs its own endpoint on every update, so that address is
+// authoritative for its data plane even when its control-plane egress is
+// routed through a proxy (e.g. a NAS behind a v2ray tunnel on the relay
+// host): the data-plane host may differ from the HTTPS source IP, which the
+// ctrlHost and reverse-index matches both miss. A host matching several
+// nodes' endpoints is ambiguous and never attributed. Callers hold s.mu.
+func (s *Store) attribSelfEndpointHostLocked(ns *networkState, host string) string {
+	if host == "" {
+		return ""
+	}
+	normed := hostNorm(host)
+	match := ""
+	consider := func(nodeID, ep string) {
+		if ep == "" {
+			return
+		}
+		h, _, err := net.SplitHostPort(ep)
+		if err != nil {
+			return
+		}
+		if hostNorm(h) != normed {
+			return
+		}
+		if match != "" && match != nodeID {
+			match = "ambiguous"
+			return
+		}
+		match = nodeID
+	}
+	for id, n := range ns.nodes {
+		if n == nil {
+			continue
+		}
+		consider(id, n.Endpoint)
+		consider(id, n.EndpointV6)
+		consider(id, n.LocalEndpoint)
+	}
+	if match == "" || match == "ambiguous" {
+		return ""
+	}
+	return match
+}
+
 func (s *Store) attribNeighborHostLocked(ns *networkState, port int, host string) string {
 	if ns == nil || ns.nodePorts == nil {
 		return ""
@@ -1442,10 +1497,20 @@ func (s *Store) OnRelayFlow(port int, addr string) {
 	}
 	// A data-plane host that matches no known control/IP host may still be a
 	// peer of the node this port belongs to (its operator NAT pool masks the
-	// node behind a different public IP). Resolve it by /23-/16 adjacency to
-	// the peers' known hosts — catches the mobile/CGNAT case (phone data-plane
+	// node behind a different public IP). Prefer the node's own advertised
+	// endpoint — the strongest identity signal, covering the proxied
+	// control-plane case — then resolve by /23-/16 adjacency to the peers'
+	// known hosts — catches the mobile/CGNAT case (phone data-plane
 	// 223.160.208.21 vs control-plane 223.160.209.21) that otherwise strands
 	// every phone<->Mac handshake on the unknown-sender drop path.
+	if matchNode == "" {
+		if id := s.attribSelfEndpointHostLocked(ns, host); id != "" {
+			ns.relayFlowByNode[id] = addr
+			s.learnNodeHostLocked(ns, id, host)
+			matchNode = id
+			log.Printf("relay flow: attributed %s to node %s (self-advertised endpoint, port %d)", host, id, port)
+		}
+	}
 	if matchNode == "" {
 		if id := s.attribNeighborHostLocked(ns, port, host); id != "" {
 			ns.relayFlowByNode[id] = addr

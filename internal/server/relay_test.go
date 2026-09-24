@@ -972,6 +972,71 @@ func TestStaleDataPlaneHostPruned(t *testing.T) {
 	s.mu.Unlock()
 }
 
+// TestAttribBySelfAdvertisedEndpoint verifies the NAS regression: a node whose
+// control plane rides a v2ray proxy on the relay host (ctrlHost=66.187.6.46)
+// but whose data plane egresses from its real public address, which it
+// self-advertises as its endpoint (39.180.139.10:51820). A data frame from
+// that data-plane host matches neither the control-plane host nor any learned
+// reverse-index host, so it must be attributed from node.Endpoint or it is
+// silently dropped (observed NAS<->everyone loss).
+func TestAttribBySelfAdvertisedEndpoint(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	// NAS (C): control plane is the relay-host proxy, data plane is its real
+	// public address.
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	ns.nodes[net3.c.ID].Endpoint = "39.180.139.10:51820"
+	s.mu.Unlock()
+
+	// Mac (B) keeps its inbound mapping on NAS's socket.
+	s.OnRelayFlow(net3.cPort, "112.10.250.51:12831")
+	net3.flows[net3.cPort] = []string{"112.10.250.51:12831"}
+
+	payload := []byte("nas-to-mac")
+
+	// NAS sends a data frame to Mac's node port from its direct public
+	// address; ctrlHost and reverse-index matches both miss.
+	s.RelayRouteNodePort(net3.bPort, "39.180.139.10:4390", payload)
+
+	if !net3.rec.contains("112.10.250.51:12831", string(payload)) {
+		t.Fatalf("NAS data-plane frame not delivered to Mac; sends=%v", net3.rec.sends)
+	}
+
+	// The self-advertised endpoint must seed the reverse index.
+	s.mu.Lock()
+	ns = s.networks[net3.a.NetworkID]
+	if !ns.nodeByHost["39.180.139.10"][net3.c.ID] {
+		s.mu.Unlock()
+		t.Fatalf("self endpoint host 39.180.139.10 not learned to NAS; nodeByHost=%v", ns.nodeByHost)
+	}
+	s.mu.Unlock()
+
+	ns.lastFlowWrite.Store(0)
+	s.OnRelayFlow(net3.bPort, "39.180.139.10:4390")
+	s.mu.Lock()
+	ns = s.networks[net3.a.NetworkID]
+	if got := ns.relayFlowByNode[net3.c.ID]; got != "39.180.139.10:4390" {
+		s.mu.Unlock()
+		t.Fatalf("relay flow attribution for NAS = %q, want 39.180.139.10:4390", got)
+	}
+	s.mu.Unlock()
+
+	// Two nodes advertising the same *fresh* self endpoint is ambiguous and
+	// must not attribute (prevents a reused/stolen address hijacking a flow).
+	// The host must be one the reverse index has not already learned.
+	s.mu.Lock()
+	ns = s.networks[net3.a.NetworkID]
+	ns.nodes[net3.c.ID].Endpoint = "139.180.139.10:51820"
+	ns.nodes[net3.b.ID].Endpoint = "139.180.139.10:51820"
+	s.mu.Unlock()
+	s.RelayRouteNodePort(net3.bPort, "139.180.139.10:4391", []byte("ambiguous"))
+	if net3.rec.contains("112.10.250.51:12831", "ambiguous") {
+		t.Fatalf("ambiguous self endpoint attributed and delivered; sends=%v", net3.rec.sends)
+	}
+}
+
 // lanIPv4 returns a routable non-loopback IPv4 of this host, or skips the test
 // when none exists (e.g. an offline CI runner).
 func lanIPv4(t *testing.T) string {
