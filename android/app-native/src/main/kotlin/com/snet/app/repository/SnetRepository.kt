@@ -103,12 +103,22 @@ class SnetRepository(private val appContext: Context) {
         true
     }
     
-    suspend fun getNetworkInfo(networkId: String): NetworkInfo = withContext(Dispatchers.IO) {
+    suspend fun getNetworkInfo(network: Network): NetworkInfo = withContext(Dispatchers.IO) {
         try {
-            val infoRaw = SnetBridge.info(networkId)
-            parseNetworkInfo(infoRaw)
+            // Owner can use the owner-only info endpoint (networks/nid), which
+            // includes pairing code, pending approvals and full node list.
+            // Members can only use the member-scoped /peers endpoint, so fall
+            // back to it whenever the owner data is unavailable.
+            if (network.owner) {
+                val infoRaw = SnetBridge.info(network.networkId)
+                val parsed = parseNetworkInfo(infoRaw)
+                if (parsed.nodes.isNotEmpty() || network.isActive) return@withContext parsed
+                // owner flagged but the call still failed privately; keep trying peers
+            }
+            val peersRaw = SnetBridge.peers(network.networkId)
+            parsePeersInfo(network, peersRaw)
         } catch (e: Exception) {
-            NetworkInfo(networkId, networkId, "")
+            NetworkInfo(network.networkId, network.name.ifEmpty { network.networkId }, "")
         }
     }
     
@@ -166,6 +176,23 @@ class SnetRepository(private val appContext: Context) {
                 approvalRequired = net.optBoolean("approvalRequired", false),
                 serverState = net.optString("serverState", null)
             )
+        }
+    }
+    
+    private fun parsePeersInfo(network: Network, peersRaw: String): NetworkInfo {
+        try {
+            val json = JSONObject(peersRaw)
+            return NetworkInfo(
+                networkId = network.networkId,
+                name = json.optString("name", network.name),
+                subnet = json.optString("subnet", ""),
+                pairingCode = null,
+                link = null,
+                nodes = parseMembers(json.optJSONArray("peers")),
+                pending = emptyList()
+            )
+        } catch (e: Exception) {
+            return NetworkInfo(network.networkId, network.name, "")
         }
     }
     

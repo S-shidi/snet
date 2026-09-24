@@ -2,6 +2,7 @@ package com.snet.app
 
 import android.content.Context
 import android.util.Log
+import com.snet.app.repository.SnetRepository
 import snetbind.SnetCore
 import java.util.concurrent.atomic.AtomicBoolean
 

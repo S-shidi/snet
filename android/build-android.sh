@@ -24,17 +24,17 @@ mkdir -p /tmp/snet-aar-extract
 cd /tmp/snet-aar-extract
 unzip -q /tmp/snet.aar
 
-cp classes.jar "$ANDROID/app/libs/snet-classes.jar"
-rm -rf "$ANDROID/app/src/main/jniLibs"
-mkdir -p "$ANDROID/app/src/main/jniLibs"
-cp -r jni/* "$ANDROID/app/src/main/jniLibs/"
+cp classes.jar "$ANDROID/app-native/libs/snet-classes.jar"
+rm -rf "$ANDROID/app-native/src/main/jniLibs"
+mkdir -p "$ANDROID/app-native/src/main/jniLibs"
+cp -r jni/* "$ANDROID/app-native/src/main/jniLibs/"
 
 cd "$ANDROID"
 
 echo "=== Building Android APK ==="
 ./gradlew assembleDebug --no-daemon
 
-APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
+APK="$ROOT/android/app-native/build/outputs/apk/debug/app-native-debug.apk"
 SIZE=$(ls -lh "$APK" | awk '{print $5}')
 echo ""
 echo "=== BUILD COMPLETE ==="

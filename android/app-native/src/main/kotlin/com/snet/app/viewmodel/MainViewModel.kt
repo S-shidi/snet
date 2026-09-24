@@ -267,7 +267,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val info = repository.getNetworkInfo(network.networkId)
+                val info = repository.getNetworkInfo(network)
                 _networkInfo.value = info
                 _members.value = info.nodes
             } catch (e: Exception) {
