@@ -127,6 +127,14 @@ type networkState struct {
 	// ctrlHost records the last public IP each node used for control-plane
 	// (HTTPS) calls; used to attribute relay flows to nodes.
 	ctrlHost map[string]string
+	// nodeByHost is the reverse index: public host (control-plane or observed
+	// data-plane) -> node IDs that have been seen using it. Fed by both
+	// NoteCtrlHost and the relay flow hook, because a node's data-plane NAT
+	// IP can differ from its control-plane IP (e.g. an operator that allocates
+	// a different public address per session or interface). Used by the
+	// per-node router to resolve a sender whose data-plane host does not
+	// equal its control-plane host.
+	nodeByHost map[string]map[string]bool
 	// relayFlowByNode is the most recent attributed relay flow per node.
 	relayFlowByNode map[string]string
 	// lastFlowWrite throttles OnRelayFlow (hit on every UDP packet) to one
@@ -248,9 +256,17 @@ type Store struct {
 	// relayFlows returns the live flows seen on a relay port, filtered to a
 	// host. Set via SetRelayFlowLookup; used by unicast routing.
 	relayFlows func(port int, host string) []string
+	// relayAllFlows returns every live flow seen on a relay port. Set via
+	// SetRelayAllFlows; used by unicast routing to match a recipient against
+	// all the hosts it has been seen using.
+	relayAllFlows func(port int) []string
 	// relaySend writes data from the socket bound to port. Set via
 	// SetRelaySend; used by unicast routing.
 	relaySend func(port int, to string, data []byte) bool
+	// relaySendFanned writes data from the socket bound to port to every live
+	// endpoint seen there, except one. Set via SetRelaySendFanned; used as
+	// the broadcast fallback when unicast routing has no flow yet.
+	relaySendFanned func(port int, except string, data []byte) int
 	// netByPort maps a bound relay UDP port back to the network it serves.
 	// Registered for both the network's broadcast port and any per-node
 	// unicast relay ports (Phase 3).
@@ -357,6 +373,7 @@ func (s *Store) load() error {
 					subnetBase:      base,
 					relaySeen:       make(map[string]time.Time),
 					ctrlHost:        make(map[string]string),
+				nodeByHost:     make(map[string]map[string]bool),
 					relayFlowByNode: make(map[string]string),
 					nodePorts:       make(map[string]int),
 				}
@@ -830,12 +847,42 @@ func (s *Store) SetRelayFlowLookup(fn func(port int, host string) []string) {
 	s.relayFlows = fn
 }
 
+// SetRelayAllFlows registers the function that returns every live flow seen
+// on a relay port. Used by unicast routing to match the recipient across all
+// the hosts it has been seen using.
+func (s *Store) SetRelayAllFlows(fn func(port int) []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayAllFlows = fn
+}
+
 // SetRelaySend registers the function that sends data from a specific relay
 // socket. Used by unicast routing to forward from the sender's port.
 func (s *Store) SetRelaySend(fn func(port int, to string, data []byte) bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.relaySend = fn
+}
+
+// SetRelaySendFanned registers the function that broadcasts data from a
+// specific relay socket to every live endpoint seen there (except one). Used
+// by unicast routing as the fallback when the recipient's flow has not been
+// established yet.
+func (s *Store) SetRelaySendFanned(fn func(port int, except string, data []byte) int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relaySendFanned = fn
+}
+
+// relaySendFannedFrom writes data from the socket bound to port to every
+// live endpoint seen there, skipping except. Requires the route callback's
+// lock discipline (callers hold s.mu; the relay collects its targets under
+// the pair mutex only).
+func (s *Store) relaySendFannedFrom(port int, except string, data []byte) int {
+	if s.relaySendFanned == nil {
+		return 0
+	}
+	return s.relaySendFanned(port, except, data)
 }
 
 // relayEnabled reports whether relay mode is on.
@@ -998,38 +1045,134 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	if err != nil {
 		return true
 	}
-	// Identify the sender node by its control-plane public IP (attributed in
-	// listPeersFrom). Without a match there is no sender port to route from.
+	log.Printf("relay node %d: frame from %s for %s kind=%.1d len=%d", port, sender, recipientID, data[0], len(data))
+	// Identify the sender node. Prefer the control-plane host match; when it
+	// does not match — the sender's data-plane NAT IP can differ from its
+	// control-plane IP (e.g. the phone operator allocates a different public
+	// address per session) — fall back to the reverse index seeded by the
+	// relay flow hook, which records data-plane hosts per node.
 	var senderID string
+	senderNorm := hostNorm(senderHost)
 	for id, c := range ns.ctrlHost {
-		if hostNorm(c) == hostNorm(senderHost) {
+		if hostNorm(c) == senderNorm {
 			senderID = id
 			break
 		}
 	}
-	senderPort := 0
-	if senderID != "" {
-		senderPort = ns.nodePorts[senderID]
+	if senderID == "" {
+		for id := range ns.nodeByHost[senderNorm] {
+			senderID = id
+			break
+		}
 	}
+	// Last-resort attribution: the sender's data-plane host may still be
+	// unattributed (throttled flow hook hasn't fired, or the flow is brand
+	// new). Neighbor /23-/16 matching against the port owner's peers resolves
+	// it inline so the very first handshake frames are not dropped.
+	if senderID == "" {
+		if id := s.attribNeighborHostLocked(ns, port, senderHost); id != "" {
+			senderID = id
+			log.Printf("relay node %d: attributed sender host %s to node %s (router neighbor fallback)", port, senderHost, id)
+		}
+	}
+	// Fall through to broadcast fan-out when the flow has not been
+	// established yet: a sender whose node we recognise (control-plane host
+	// matches) may be mid-handshake, before the recipient has opened a
+	// mapping toward its per-node port. Dropping here silently eats the very
+	// handshake init that would have let the recipient map the flow, so any
+	// node with a known pairing falls back to the shared broadcast fan-out
+	// until its unicast flow is live. Frames from unrecognised senders (no
+	// ctrlHost match, e.g. a stale NAT mapping of an offline peer) are still
+	// dropped to avoid spraying the whole network with noise.
+	log.Printf("relay node %d: sender=%s sendernorm=%q senderID=%q", port, sender, senderNorm, senderID)
+	if senderID == "" {
+		return true
+	}
+	senderPort := ns.nodePorts[senderID]
 	if senderPort == 0 || senderPort == port {
 		return true
 	}
 	// Destination: the recipient's inbound mapping on the sender's socket.
 	// The recipient opens it by keepaliving to relayHost:<sender's port>; it
 	// will appear as a flow on the sender's port whose host is the recipient.
-	recipientHost := ns.ctrlHost[recipientID]
-	if recipientHost == "" {
+	// A node can be reached through several public hosts (control-plane and
+	// data-plane IPs may differ), so collect every host the recipient has
+	// been seen using and match the sender port's live flows against each.
+	recipientHosts := map[string]bool{}
+	// A host is a valid recipient target only when it is exclusively the
+	// recipient's — whether it comes from the authoritative flow, the
+	// control-plane host, or the learned reverse index. A shared host (e.g.
+	// 112.10.250.51 polling both Mac and phone) must never route a
+	// phone-bound frame onto Mac's flow or vice versa, because the flow
+	// picked on the sender port is then the wrong sibling's.
+	addRecipientHost := func(h string) {
+		if h == "" {
+			return
+		}
+		nh := hostNorm(h)
+		// Include a host only when it is unowned (first claim) or owned
+		// exclusively by the recipient. A host shared by several nodes (e.g.
+		// 112.10.250.51 seen from both Mac and phone through a common egress)
+		// is ambiguous and must not select the wrong sibling's flow.
+		owners := ns.nodeByHost[nh]
+		if len(owners) > 1 {
+			return
+		}
+		if len(owners) == 1 && !owners[recipientID] {
+			return
+		}
+		recipientHosts[nh] = true
+	}
+	if rf := ns.relayFlowByNode[recipientID]; rf != "" {
+		if h, _, err := net.SplitHostPort(rf); err == nil {
+			addRecipientHost(h)
+		}
+	}
+	addRecipientHost(ns.ctrlHost[recipientID])
+	for hosts, ids := range ns.nodeByHost {
+		if len(ids) == 1 && ids[recipientID] {
+			recipientHosts[hosts] = true
+		}
+	}
+	if len(recipientHosts) == 0 {
 		return true
 	}
-	fls := s.relayFlowsByHost(senderPort, recipientHost)
+	fls := s.relayFlowsByPort(senderPort)
+	log.Printf("relay node %d: senderPort=%d recipientHosts=%v portflows=%v relayFlowByNode[%q]=%q", port, senderPort, recipientHosts, fls, recipientID, ns.relayFlowByNode[recipientID])
 	for _, fl := range fls {
-		if fl != sender {
-			s.relaySendFrom(senderPort, fl, data)
+		if fl == sender {
+			continue
+		}
+		fh, _, err := net.SplitHostPort(fl)
+		if err != nil {
+			continue
+		}
+		if recipientHosts[hostNorm(fh)] {
+			ok := s.relaySendFrom(senderPort, fl, data)
+			log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
 			return true
 		}
 	}
-	// No recipient mapping on the sender's socket yet; the recipient's
-	// keepalives will establish it shortly. Drop to avoid fan-out.
+	// No matching inbound mapping on the sender socket yet: the recipient has
+	// not opened a flow toward the sender's per-node port. Its authoritative
+	// flow (relayFlowByNode) still identifies a live mapping, and is fully
+	// reliable for a recipient hosted on the relay host itself (the docker
+	// node), whose socket accepts from any server source port. Try it once
+	// from the sender's socket before falling back to broadcast fan-out.
+	if rf := ns.relayFlowByNode[recipientID]; rf != "" && rf != sender {
+		if s.relaySendFrom(senderPort, rf, data) {
+			log.Printf("relay node %d: UNICAST %s senderPort=%d -> flow %s (flow-fallback)", port, recipientID, senderPort, rf)
+			return true
+		}
+		log.Printf("relay node %d: flow-fallback send to %s failed", port, rf)
+	}
+	// No recipient mapping on the sender's socket yet: the recipient has not
+	// opened a flow toward the sender's per-node port, so handing the frame
+	// to the shared broadcast port is the only way it reaches the recipient.
+	// The recipient's keepalives establish the flow shortly thereafter, at
+	// which point the unicast path takes over. Fan out from the network's
+	// broadcast port, excluding the sender's mapping.
+	s.relaySendFannedFrom(ns.relayPort, sender, data)
 	return true
 }
 
@@ -1043,6 +1186,16 @@ func (s *Store) relayFlowsByHost(port int, host string) []string {
 	return s.relayFlows(port, host)
 }
 
+// relayFlowsByPort returns every live flow seen on a relay port. Requires the
+// route callback's lock discipline (callers hold s.mu; this acquires the pair
+// mutex only).
+func (s *Store) relayFlowsByPort(port int) []string {
+	if s.relayAllFlows == nil {
+		return nil
+	}
+	return s.relayAllFlows(port)
+}
+
 // relaySendFrom sends data from the socket bound to port. Requires the route
 // callback's lock discipline (callers hold s.mu; this acquires the relay mutex
 // only).
@@ -1051,6 +1204,126 @@ func (s *Store) relaySendFrom(port int, to string, data []byte) bool {
 		return false
 	}
 	return s.relaySend(port, to, data)
+}
+
+// net16Of returns the /16 prefix of an IPv4 host, or "" when not applicable.
+func net16Of(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() == nil {
+		return ""
+	}
+	v := ip.To4()
+	return fmt.Sprintf("%d.%d", v[0], v[1])
+}
+
+// net23Of returns the /23 prefix of an IPv4 host, or "" when not applicable.
+// Mobile carrier CGNAT pools are frequently allocated in /23 (or smaller)
+// blocks, so two hosts sharing a /23 are good evidence of the same subscriber.
+func net23Of(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() == nil {
+		return ""
+	}
+	v := ip.To4()
+	return fmt.Sprintf("%d.%d.%d", v[0], v[1], v[2]&0xFE)
+}
+
+// attribNeighborHostLocked attributes an unclassified data-plane host to a
+// node by network proximity. A flow seen on node port P is from one of the
+// port owner's peers; when the host's control/database host shares a /23 (or
+// falls back to /16) pool with exactly one peer's known hosts, that peer owns
+// it. This resolves the mobile/CGNAT case where a node's data-plane NAT IP
+// differs from its control-plane IP at the same operator. Returns "" when no
+// unambiguous neighbour match exists. Callers hold s.mu.
+func (s *Store) attribNeighborHostLocked(ns *networkState, port int, host string) string {
+	if ns == nil || ns.nodePorts == nil {
+		return ""
+	}
+	hostNormed := hostNorm(host)
+	if len(ns.ctrlHost) == 0 {
+		return ""
+	}
+	// Only node ports are attributed here: the broadcast port has no owner,
+	// so there is no recipient whose peers can disambiguate the sender.
+	owner := s.portToNode[port]
+	if owner == "" {
+		return ""
+	}
+	// Candidates are the port owner's peers that already have a node port.
+	peers := make([]string, 0, len(ns.nodePorts))
+	for id := range ns.nodePorts {
+		if id != owner {
+			peers = append(peers, id)
+		}
+	}
+	if len(peers) == 0 {
+		return ""
+	}
+	// Known hosts per peer: control-plane plus any already-learned data-plane.
+	known := func(id string) []string {
+		var out []string
+		if c := ns.ctrlHost[id]; c != "" {
+			out = append(out, c)
+		}
+		if f := ns.relayFlowByNode[id]; f != "" {
+			if h, _, err := net.SplitHostPort(f); err == nil {
+				out = append(out, h)
+			}
+		}
+		for k, ids := range ns.nodeByHost {
+			if ids[id] {
+				out = append(out, k)
+			}
+		}
+		return out
+	}
+	// A peer that already claims this exact host wins immediately.
+	for _, p := range peers {
+		if ns.nodeByHost[hostNormed] != nil && ns.nodeByHost[hostNormed][p] {
+			return p
+		}
+	}
+	n23, n16 := net23Of(host), net16Of(host)
+	if n23 == "" || n16 == "" {
+		return ""
+	}
+	// Pass 1: require a /23 match.
+	strong := ""
+	for _, p := range peers {
+		for _, h := range known(p) {
+			if net23Of(h) == n23 {
+				if strong != "" && strong != p {
+					strong = "ambiguous"
+				} else {
+					strong = p
+				}
+				break
+			}
+		}
+	}
+	if strong != "" && strong != "ambiguous" {
+		s.learnNodeHostLocked(ns, strong, host)
+		return strong
+	}
+	// Pass 2: relax to /16.
+	weak := ""
+	for _, p := range peers {
+		for _, h := range known(p) {
+			if net16Of(h) == n16 {
+				if weak != "" && weak != p {
+					weak = "ambiguous"
+				} else {
+					weak = p
+				}
+				break
+			}
+		}
+	}
+	if weak != "" && weak != "ambiguous" {
+		s.learnNodeHostLocked(ns, weak, host)
+		return weak
+	}
+	return ""
 }
 
 // OnRelayFlow is invoked by the relay (from its port read loop) whenever a
@@ -1097,13 +1370,96 @@ func (s *Store) OnRelayFlow(port int, addr string) {
 		}
 	}
 	ns.relaySeen[addr] = now
+	// Attribute the observed data-plane mapping to a node. Prefer the
+	// control-plane host; when it does not match — a node's data-plane NAT IP
+	// can differ from its control-plane IP, e.g. an operator that allocates a
+	// different public address per session — resolve via the reverse index
+	// that NoteCtrlHost seeded from the same node's control-plane calls.
+	matchNode := ""
+	hostNormed := hostNorm(host)
 	for nodeID, c := range ns.ctrlHost {
-		if c == host {
+		if hostNorm(c) == hostNormed {
 			ns.relayFlowByNode[nodeID] = addr
+			s.learnNodeHostLocked(ns, nodeID, host)
+			matchNode = nodeID
 			break
 		}
 	}
+	if matchNode == "" {
+		nodes := ns.nodeByHost[hostNormed]
+		for nodeID := range nodes {
+			ns.relayFlowByNode[nodeID] = addr
+			matchNode = nodeID
+			break
+		}
+	}
+	// A data-plane host that matches no known control/IP host may still be a
+	// peer of the node this port belongs to (its operator NAT pool masks the
+	// node behind a different public IP). Resolve it by /23-/16 adjacency to
+	// the peers' known hosts — catches the mobile/CGNAT case (phone data-plane
+	// 223.160.208.21 vs control-plane 223.160.209.21) that otherwise strands
+	// every phone<->Mac handshake on the unknown-sender drop path.
+	if matchNode == "" {
+		if id := s.attribNeighborHostLocked(ns, port, host); id != "" {
+			ns.relayFlowByNode[id] = addr
+			matchNode = id
+			log.Printf("relay flow: attributed %s to node %s (neighbor /23-/16, port %d)", host, id, port)
+		}
+	}
 	s.mu.Unlock()
+}
+
+// learnNodeHostLocked records that a node has been seen using a public host
+// (control-plane or data-plane), seeding the reverse index used by the
+// per-node router to resolve senders whose data-plane host differs from
+// their control-plane host. Callers hold s.mu.
+func (s *Store) learnNodeHostLocked(ns *networkState, nodeID, host string) {
+	if host == "" {
+		return
+	}
+	normed := hostNorm(host)
+	if ns.nodeByHost[normed] == nil {
+		ns.nodeByHost[normed] = make(map[string]bool)
+	}
+	ns.nodeByHost[normed][nodeID] = true
+}
+
+// unlearnNodeHostLocked removes a node from the reverse index for a host,
+// used when the node's control-plane egress changes and the old host must
+// not keep routing to it. Callers hold s.mu.
+func (s *Store) unlearnNodeHostLocked(ns *networkState, nodeID, host string) {
+	if host == "" {
+		return
+	}
+	normed := hostNorm(host)
+	if ids, ok := ns.nodeByHost[normed]; ok {
+		delete(ids, nodeID)
+		if len(ids) == 0 {
+			delete(ns.nodeByHost, normed)
+		}
+	}
+	if f := ns.relayFlowByNode[nodeID]; f != "" {
+		if h, _, err := net.SplitHostPort(f); err == nil && hostNorm(h) == normed {
+			delete(ns.relayFlowByNode, nodeID)
+		}
+	}
+}
+
+// exclusiveHostOwnerLocked returns the nodeID that exclusively owns a host in
+// the reverse index, or "" when the host is unowned or shared by several
+// nodes. Callers hold s.mu.
+func (s *Store) exclusiveHostOwnerLocked(ns *networkState, host string) string {
+	if host == "" {
+		return ""
+	}
+	ids := ns.nodeByHost[hostNorm(host)]
+	if len(ids) != 1 {
+		return ""
+	}
+	for id := range ids {
+		return id
+	}
+	return ""
 }
 
 // NoteCtrlHost records the public IP a node's control-plane calls come from.
@@ -1232,6 +1588,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		subnetBase:      base,
 		relaySeen:       make(map[string]time.Time),
 		ctrlHost:        make(map[string]string),
+				nodeByHost:     make(map[string]map[string]bool),
 		relayFlowByNode: make(map[string]string),
 		nodePorts:       make(map[string]int),
 	}
@@ -1635,12 +1992,31 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 		now := time.Now().Unix()
 		me.LastSeen = now
 		// Attribute control-plane calls to the caller's public IP for relay
-		// flow mapping — but never to calls that originate from the server
-		// host itself (loopback, or a local monitor reaching its own public
-		// address). Such requests are not the node's real egress and would
-		// poison the flow attribution.
-		if remoteHost != "" && remoteHost != s.relayHost && remoteHost != "127.0.0.1" && remoteHost != "::1" {
-			ns.ctrlHost[te.NodeID] = remoteHost
+		// flow mapping. Loopback is always excluded (a local monitor is not
+		// the node's real egress). Calls arriving from the relay host's own
+		// public IP ARE attributed: a legitimate client hosted on the same
+		// machine (e.g. the web docker client) egresses through that address
+		// and must be routable. If a stray local process ever pollutes the
+		// attribution, unicast flow lookups simply miss and fall back to the
+		// broadcast fan-out below instead of dropping frames.
+		if remoteHost != "" && remoteHost != "127.0.0.1" && remoteHost != "::1" {
+			// Refuse to steal a host that another node already exclusively
+			// owns. A node's control-plane IP can legitimately change (roaming,
+			// home vs office egress), so this only rejects hosts already bound
+			// six ways: if the host is exclusively another node's, the remote
+			// side of this call is not the node's own egress but something that
+			// happens to share the address (e.g. the phone egressing through
+			// the Mac). One node owning the host for its control plane while
+			// this call arrives from the same IP would otherwise flip the
+			// attribution and poison the whole per-node routing.
+			existingOwner := s.exclusiveHostOwnerLocked(ns, remoteHost)
+			if existingOwner == "" || existingOwner == te.NodeID {
+				if old := ns.ctrlHost[te.NodeID]; old != "" && old != remoteHost {
+					s.unlearnNodeHostLocked(ns, te.NodeID, old)
+				}
+				ns.ctrlHost[te.NodeID] = remoteHost
+				s.learnNodeHostLocked(ns, te.NodeID, remoteHost)
+			}
 		}
 		if now-ns.lastSeenWrite >= int64(lastSeenThrot/time.Second) {
 			// Snapshot the node while s.mu is held; the background
@@ -2723,6 +3099,7 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 		subnetBase:      base,
 		relaySeen:       make(map[string]time.Time),
 		ctrlHost:        make(map[string]string),
+				nodeByHost:     make(map[string]map[string]bool),
 		relayFlowByNode: make(map[string]string),
 		nodePorts:       make(map[string]int),
 	}

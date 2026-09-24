@@ -403,6 +403,25 @@ func (p *relayPair) handle(addr string, data []byte) {
 	}
 }
 
+// Flows returns the live relay flows ("ip:port") seen on the socket bound to
+// port. Used by unicast routing to match the recipient against every host it
+// has been seen using (its control-plane and data-plane IPs can differ).
+func (r *Relay) Flows(port int) []string {
+	r.mu.Lock()
+	p := r.conns[port]
+	r.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, 0, len(p.seen))
+	for ep := range p.seen {
+		out = append(out, ep)
+	}
+	return out
+}
+
 // FlowsByHost returns the live relay flows ("ip:port") seen on the socket
 // bound to port whose host part equals host. Used by unicast routing to find
 // the recipient's inbound mapping on the sender's socket.
@@ -443,6 +462,49 @@ func (r *Relay) SendFrom(port int, to string, data []byte) bool {
 		return false
 	}
 	return true
+}
+
+// SendFanned writes data from the socket bound to port to every live endpoint
+// the relay has seen on that port, except the one identified by except. It is
+// the broadcast fallback for unicast per-node routing: when a frame arrives
+// at a node port before the recipient has opened a flow toward the sender's
+// port, the frame is fanned out from the network's shared broadcast port so
+// the handshake still reaches the recipient (whose own keepalives then
+// establish the flow that makes later routing unicast). Returns the number of
+// endpoints the frame was written to.
+func (r *Relay) SendFanned(port int, except string, data []byte) int {
+	r.mu.Lock()
+	p := r.conns[port]
+	r.mu.Unlock()
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	var dsts []net.Conn
+	for ep := range p.seen {
+		if ep == except || p.ctrlOnly[ep] {
+			continue
+		}
+		addr, err := net.ResolveUDPAddr("udp", ep)
+		if err != nil {
+			continue
+		}
+		c, err := net.DialUDP("udp", nil, addr)
+		if err != nil {
+			continue
+		}
+		dsts = append(dsts, c)
+	}
+	p.mu.Unlock()
+
+	sent := 0
+	for _, c := range dsts {
+		if _, err := c.Write(data); err == nil {
+			sent++
+		}
+		c.Close()
+	}
+	return sent
 }
 
 // wgFrameKind classifies a WireGuard datagram by type/length so the relay can

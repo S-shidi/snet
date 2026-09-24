@@ -345,6 +345,86 @@ func TestRelayGroup(t *testing.T) {
 	}
 }
 
+// TestRelayGroupIncludesDataFlows verifies that a group request returns the
+// registered WireGuard data flows (e.g. a phone's keepalive flow) even when
+// the requester probed from a one-shot control socket, while excluding the
+// requester's own socket and any ctrlOnly endpoints. This mirrors the client
+// flow of a phone that registers its data flow then asks the relay which
+// peers to connect to.
+func TestRelayGroupIncludesDataFlows(t *testing.T) {
+	port := freePort(t)
+	r := NewRelay(port, 1)
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	relay := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+
+	// phoneWG is the phone's persistent WireGuard data flow (it sends WG
+	// keepalives, so the relay sees it as a data endpoint, not ctrlOnly).
+	phoneWG := dialUDP(t, port)
+	defer phoneWG.Close()
+	// peer is another node's data flow.
+	peer := dialUDP(t, port)
+	defer peer.Close()
+
+	// Register both data flows with a WG keepalive (type-4, 32 bytes).
+	keep := make([]byte, 32)
+	keep[0] = 4
+	if _, err := phoneWG.WriteToUDP(keep, relay); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.WriteToUDP(keep, relay); err != nil {
+		t.Fatal(err)
+	}
+
+	// phoneCtrl is a one-shot control probe from the phone: it only ever
+	// speaks the SNET1 control protocol, so the relay must mark it ctrlOnly
+	// and never list it as a peer.
+	phoneCtrl := dialUDP(t, port)
+	defer phoneCtrl.Close()
+
+	req := append([]byte("\xfeSNET1"), []byte(`{"op":"group"}`)...)
+	if _, err := phoneCtrl.WriteToUDP(req, relay); err != nil {
+		t.Fatal(err)
+	}
+
+	buf := make([]byte, 4096)
+	_ = phoneCtrl.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := phoneCtrl.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read group reply: %v", err)
+	}
+	var g struct {
+		Op    string   `json:"op"`
+		Peers []string `json:"peers"`
+	}
+	body := buf[len(protocol.RelayCtrlPrefix):n]
+	if err := json.Unmarshal(body, &g); err != nil {
+		t.Fatalf("group reply not JSON: %s (%v)", buf[:n], err)
+	}
+	if g.Op != "group" {
+		t.Fatalf("group op = %q", g.Op)
+	}
+
+	want := map[string]bool{
+		portOf(t, phoneWG): true,
+		portOf(t, peer):    true,
+	}
+	if len(g.Peers) != len(want) {
+		t.Fatalf("group peers = %v, want exactly %v", g.Peers, want)
+	}
+	for _, p := range g.Peers {
+		if !want[portOfPeer(t, p)] {
+			t.Fatalf("unexpected peer %q (want %v)", p, want)
+		}
+	}
+	if _, ok := want[portOf(t, phoneCtrl)]; ok {
+		t.Fatalf("ctrl socket leaked into group peers")
+	}
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
 	lc, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
@@ -353,6 +433,26 @@ func freePort(t *testing.T) int {
 	}
 	p := lc.LocalAddr().(*net.UDPAddr).Port
 	lc.Close()
+	return p
+}
+
+// portOf returns the source port of a local UDP conn ("[::]:59247" -> 59247).
+func portOf(t *testing.T, c *net.UDPConn) string {
+	t.Helper()
+	_, p, err := net.SplitHostPort(c.LocalAddr().String())
+	if err != nil {
+		t.Fatalf("local addr %v: %v", c.LocalAddr(), err)
+	}
+	return p
+}
+
+// portOfPeer returns the port part of a relay-listed peer endpoint string.
+func portOfPeer(t *testing.T, ep string) string {
+	t.Helper()
+	_, p, err := net.SplitHostPort(ep)
+	if err != nil {
+		t.Fatalf("peer endpoint %q: %v", ep, err)
+	}
 	return p
 }
 
@@ -467,6 +567,7 @@ func TestPerNodeUnicastRouting(t *testing.T) {
 	s.SetNodeEnsure(r.EnsureNode)
 	r.SetNodeRoute(s.RelayRouteNodePort)
 	s.SetRelayFlowLookup(r.FlowsByHost)
+	s.SetRelayAllFlows(r.Flows)
 	s.SetRelaySend(r.SendFrom)
 
 	created, err := s.CreateNetwork(testKey(900), "owner-device-0000", "", "", false)
@@ -596,6 +697,186 @@ func TestPerNodeUnicastRouting(t *testing.T) {
 	// port), proving it crossed the NAT via the sender's own mapping.
 	if _, sp, err := net.SplitHostPort(src.String()); err != nil || sp != strconv.Itoa(aPort) {
 		t.Fatalf("B received from %v, want relay src port %d", src, aPort)
+	}
+}
+
+// testNetwork3 returns a store with three nodes A/B/C each owning a distinct
+// node port, with ctrlHost attribution set like the live deployment:
+// A = mobile (control 223.160.209.21), B = Mac (112.10.250.51),
+// C = docker on the relay host (127.0.0.1). The recorder tap and per-port flow
+// listings are wired to the store's fake relay sink.
+type testNetwork3 struct {
+	store  *Store
+	rec    *relayRecorder
+	flows  map[int][]string
+	a, b, c protocol.Node
+	aPort   int
+	bPort   int
+	cPort   int
+}
+
+func buildNetwork3(t *testing.T) *testNetwork3 {
+	t.Helper()
+	base := freePort(t)
+	r := NewRelay(base, 8)
+	t.Cleanup(func() { r.Close() })
+
+	s := NewStore()
+	s.SetRelay("127.0.0.1", base, 8)
+	s.SetRelayEnsure(r.Ensure)
+	s.SetNodeEnsure(r.EnsureNode)
+	s.SetRelayFlowLookup(func(port int, host string) []string { return nil })
+	r.SetNodeRoute(s.RelayRouteNodePort)
+
+	net3 := &testNetwork3{store: s, flows: map[int][]string{}}
+	net3.rec = &relayRecorder{}
+	s.SetRelaySend(func(port int, to string, data []byte) bool {
+		net3.rec.sends = append(net3.rec.sends, sendRec{port, to, string(data)})
+		return true
+	})
+	s.SetRelayAllFlows(func(port int) []string {
+		return net3.flows[port]
+	})
+
+	created, err := s.CreateNetwork(testKey(950), "owner-device-9500", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	join := func(key int, device string) protocol.JoinResp {
+		t.Helper()
+		rj, err := s.Join(created.NetworkID, created.PairingCode, testKey(key), device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rj
+	}
+	la, err := s.ListPeersFrom(created.Token, "223.160.209.21", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	net3.a = *la.Self
+	rb := join(951, "device-b-9501")
+	rc := join(952, "device-c-9502")
+	lb, err := s.ListPeersFrom(rb.Token, "112.10.250.51", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lc, err := s.ListPeersFrom(rc.Token, "66.187.6.46", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	net3.b = *lb.Self
+	net3.c = *lc.Self
+	net3.aPort, net3.bPort, net3.cPort = net3.a.RelayPort, net3.b.RelayPort, net3.c.RelayPort
+	if net3.aPort == 0 || net3.bPort == 0 || net3.cPort == 0 ||
+		net3.aPort == net3.bPort || net3.aPort == net3.cPort || net3.bPort == net3.cPort {
+		t.Fatalf("distinct node ports required: a=%d b=%d c=%d", net3.aPort, net3.bPort, net3.cPort)
+	}
+	return net3
+}
+
+type sendRec struct {
+	port int
+	to   string
+	data string
+}
+type relayRecorder struct {
+	sends []sendRec
+}
+
+func (rr *relayRecorder) contains(to, data string) bool {
+	for _, s := range rr.sends {
+		if s.to == to && s.data == data {
+			return true
+		}
+	}
+	return false
+}
+
+// TestNeighborDataPlaneAttribution verifies that a data-plane flow whose host
+// differs from the node's control-plane host is still attributed by /23-/16
+// operator-pool adjacency: the phone (control 223.160.209.21) reaches the Mac
+// through the same /23 as its control egress (223.160.208.21).
+func TestNeighborDataPlaneAttribution(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	// The phone keepalives toward Mac's node port from its data-plane NAT host,
+	// which matches no stored control/IP address exactly.
+	s.OnRelayFlow(net3.bPort, "223.160.208.21:39802")
+
+	ns := s.networks[net3.a.NetworkID]
+	if ns == nil {
+		t.Fatal("no network state")
+	}
+	if got := s.exclusiveHostOwnerLocked(ns, "223.160.208.21"); got != net3.a.ID {
+		t.Fatalf("data-plane host 223.160.208.21 owner=%q, want A=%q", got, net3.a.ID)
+	}
+}
+
+// TestSharedHostNeverRecipient verifies the mis-route guard: when the reverse
+// index maps one host to more than one node (112.10.250.51 -> {Mac, phone}, a
+// CGNAT/shared-egress collision), a phone-bound frame must never be forwarded
+// to the Mac's flow because the shared host is not a dependable recipient
+// target.
+func TestSharedHostNeverRecipient(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	// Poison the reverse index to model the live bug: 112.10.250.51 is both
+	// Mac (truth) and phone (stale).
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	s.learnNodeHostLocked(ns, net3.a.ID, "112.10.250.51")
+	s.mu.Unlock()
+
+	// Docker (C, the sender) has two inbound mappings on its node port: the
+	// phone's data-plane flow 223.160.208.21:39802 (same /23 as the phone's
+	// control host, attributed on the wire) and Mac's flow under the shared
+	// host 112.10.250.51:12831. The receiver port order matters: the phone's
+	// flow must win, Mac's must be skipped.
+	s.OnRelayFlow(net3.cPort, "223.160.208.21:39802")
+	s.mu.Lock()
+	ns = s.networks[net3.a.NetworkID]
+	if got := s.exclusiveHostOwnerLocked(ns, "223.160.208.21"); got != net3.a.ID {
+		s.mu.Unlock()
+		t.Fatalf("222.160.208.21 data-plane attribution owner=%q, want phone=%q", got, net3.a.ID)
+	}
+	s.mu.Unlock()
+	net3.flows[net3.cPort] = []string{"112.10.250.51:12831", "223.160.208.21:39802"}
+
+	payload := []byte("for-phone")
+
+	// Docker sends to the phone's node port: Mac's flow under the shared host
+	// must be skipped, and the payload must arrive on the phone's own flow.
+	net3.store.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
+
+	for _, snd := range net3.rec.sends {
+		if snd.to == "112.10.250.51:12831" && snd.data == string(payload) {
+			t.Fatalf("phone-bound frame routed to Mac's flow on shared host 112.10.250.51: %+v", net3.rec.sends)
+		}
+	}
+	if !net3.rec.contains("223.160.208.21:39802", string(payload)) {
+		t.Fatalf("phone-bound frame never reached phone flow; sends=%v", net3.rec.sends)
+	}
+}
+
+// TestFlowFallbackActiveNode verifies the period before the recipient opens a
+// flow on the sender's socket: a frame is still delivered via the recipient's
+// authoritative flow (docker on the relay host accepting any server source).
+func TestFlowFallbackActiveNode(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	// Mac (B) sends a data frame to docker (C) before docker has opened any
+	// flow on Mac's socket. Docker's live flow (66.187.6.46:51900) must still
+	// receive it.
+	s.OnRelayFlow(net3.cPort, "66.187.6.46:51900")
+	payload := []byte("mac-to-docker")
+	net3.store.RelayRouteNodePort(net3.cPort, "112.10.250.51:12831", payload)
+
+	if !net3.rec.contains("66.187.6.46:51900", string(payload)) {
+		t.Fatalf("docker never got the frame via authoritative flow; sends=%v", net3.rec.sends)
 	}
 }
 

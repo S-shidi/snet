@@ -70,7 +70,9 @@ func main() {
 		store.SetRelayRelease(relay.ClosePort)
 		relay.SetNodeRoute(store.RelayRouteNodePort)
 		store.SetRelayFlowLookup(relay.FlowsByHost)
+		store.SetRelayAllFlows(relay.Flows)
 		store.SetRelaySend(relay.SendFrom)
+		store.SetRelaySendFanned(relay.SendFanned)
 		defer relay.Close()
 		log.Printf("relay: %d assignable UDP ports from %d via %s (lazy binding)", *relayCount, *relayBase, *relayHost)
 	}
