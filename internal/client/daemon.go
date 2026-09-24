@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -2125,18 +2126,40 @@ func (d *Daemon) selectRelay(nid string, cands []string) string {
 
 	rinkey := func(ep string) string { return nid + "|" + ep }
 	bestEP := ""
-	var bestRTT int64
+	bestRTT := int64(math.MaxInt64)
 	for _, ep := range cands {
 		start := time.Now()
 		_, err := relayWhoami(ep)
 		rtt := time.Since(start).Milliseconds()
+		d.mu.Lock()
 		if err != nil {
+			// The candidate is unreachable right now. Drop any cached RTT so
+			// pickRelayByRTT cannot mistake a dead relay for "within tolerance"
+			// of the best (a stale number that no longer reflects reachability),
+			// which would pin the data plane to a relay that just died.
+			delete(d.relayRTT, rinkey(ep))
+			d.mu.Unlock()
 			continue
 		}
-		d.mu.Lock()
 		d.relayRTT[rinkey(ep)] = rtt
+		// Drop RTT cache entries for candidates the server no longer
+		// advertises (network changed), so selection never consults ghosts.
+		for k := range d.relayRTT {
+			if strings.HasPrefix(k, nid+"|") {
+				known := false
+				for _, c := range cands {
+					if k == nid+"|"+c {
+						known = true
+						break
+					}
+				}
+				if !known {
+					delete(d.relayRTT, k)
+				}
+			}
+		}
 		d.mu.Unlock()
-		if bestEP == "" || rtt < bestRTT {
+		if rtt < bestRTT {
 			bestEP, bestRTT = ep, rtt
 		}
 	}

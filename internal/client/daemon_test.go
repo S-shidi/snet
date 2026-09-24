@@ -1466,3 +1466,60 @@ func TestSelectRelayProbesReachability(t *testing.T) {
 		t.Fatal("selectRelay kept the dead current relay")
 	}
 }
+
+// TestSelectRelayDiesAfterSelection verifies that a relay selected while alive
+// is abandoned when it later stops answering whoami: the stale RTT cached from
+// the healthy probe must not be mistaken for "within tolerance of the best" and
+// keep the data plane pinned to a relay that just died.
+func TestSelectRelayDiesAfterSelection(t *testing.T) {
+	// Two live relays.
+	ports := []int{}
+	for i := 0; i < 2; i++ {
+		lc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := lc.LocalAddr().(*net.UDPAddr).Port
+		lc.Close()
+		rl := server.NewRelay(p, 4)
+		defer rl.Close()
+		if err := rl.Ensure(p); err != nil {
+			t.Fatal(err)
+		}
+		ports = append(ports, p)
+	}
+	e0 := net.JoinHostPort("127.0.0.1", strconv.Itoa(ports[0]))
+	e1 := net.JoinHostPort("127.0.0.1", strconv.Itoa(ports[1]))
+
+	d, _ := newTestDaemon(t)
+	// Select with both alive: the first candidate wins (equal RTT, best tie).
+	d.relaySelAt["net-x"] = 0
+	sel := d.selectRelay("net-x", []string{e0, e1})
+	if sel != e0 {
+		t.Fatalf("want initially %s, got %s", e0, sel)
+	}
+	if rtt, ok := d.relayRTT["net-x|"+e0]; !ok || rtt < 0 {
+		t.Fatalf("expected a cached RTT for the selected relay, got %v/%v", rtt, ok)
+	}
+
+	// The selected relay dies; the other stays up. The stale cache must be
+	// purged on the failed probe so the dead relay is not kept "within tolerance".
+	// (Close over both; the die is simulated by pointing the first at a free
+	// port that answers nothing. Reopen a dead port for e0.)
+	dead, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadPort := dead.LocalAddr().(*net.UDPAddr).Port
+	dead.Close()
+	e0dead := net.JoinHostPort("127.0.0.1", strconv.Itoa(deadPort))
+	d.relayEP["net-x"] = e0 // keep selection pointing at the dying relay
+	d.relaySelAt["net-x"] = 0
+	sel = d.selectRelay("net-x", []string{e0dead, e1})
+	if sel != e1 {
+		t.Fatalf("want failover to %s (relay e0 died), got %s", e1, sel)
+	}
+	if _, ok := d.relayRTT["net-x|"+e0dead]; ok {
+		t.Fatal("stale RTT for the dead relay was not purged")
+	}
+}

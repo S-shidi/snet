@@ -308,3 +308,28 @@ server -relay-host 66.187.6.46 -relay-base 51820 -relay-count 256 -relay-alterna
 server -relay-host <relayB-ip> -relay-base 51820 -relay-count 256 ...
 ```
 备用 relay 需能访问同一 bbolt 拓扑(或后续做轻量拓扑推送);当前 P1 只交付协议与选优,数据面切到备用 relay 的端到端验证待备用实例部署后进行。
+
+### 8.6 端到端验证:候选下发 + 选优 + 故障切换(66.187.6.46 单机,IPv6 作备 relay)
+
+**部署**:主 server 加 `-relay-alternates 2606:65c0:20:493:8209:7d93:3956:e3dd`(VPS 自有公网 IPv6);客户端 snetd 换带 P1 选优逻辑的新构建。无新 server 代码——主 relay 端口本就双栈监听,IPv6 候选在同一进程同一 store 上应答 whoami,故可在不引入第二实例的情况下真实验证客户端选优与故障切换(数据面连续性部分属阶段 2,见下)。
+
+**1. 协议(trace wire 确认)**:`GET /peers` 返回
+`relayEndpoint: 66.187.6.46:51820`,`relayEndpoints: ['66.187.6.46:51820', '[2606:…]:51820']`。
+
+**2. 实测故障切换序列(snetd 日志完整还原)**:
+
+| 时刻 | 动作 | relay select 日志 |
+|------|------|-------------------|
+| 16:50:20 | 首次双候选探测 | `66.187.6.46:51820 (340ms) over `(选 v4 主) |
+| 16:58:07 | `iptables DROP udp dport 51820`(模拟主 relay 死亡) | `[2606:…]:51820 (314ms) over `(切 v6 备) |
+| 17:00:14 | 解封恢复 v4 | `66.187.6.46:51820 (293ms) over [2606:…]:51820`(回到主) |
+
+切换后数据面在 v4 恢复 0% 丢(ping 手机 avg ~756ms);v6 leg 期间 peer endpoint 正确迁移到 `[2606…]:51820/51822`。
+
+**3. 测试暴露并修复的关键 bug(relayRTT 陈旧缓存阻断切换)**:
+- 现象:封掉 v4:51820 后 `relay group` 仍持续打 v4 且 4 分钟不切换。
+- 根因:`selectRelay` 探测失败时仅 `continue`,不清理 `relayRTT`;`pickRelayByRTT` 拿到死 relay 的旧 RTT(如 340ms)与最优(314ms)比较,`340 < 314*1.5+20=491` 落入"容差内"而拒切。
+- 修复:探测失败即 `delete(relayRTT, key)`;每次探测同时清理本网络不再广告的候选;`bestRTT` 初始化为 `math.MaxInt64` 替代 0 哨兵(避免 0ms 候选锁死最优)。
+- 回归测试 `TestSelectRelayDiesAfterSelection`:先选中活 relay,再让该 relay 死亡,断言切到另一候选且死 relay 的缓存被清。
+
+**4. 已知边界(documented,阶段 2)**:任一备 relay 的**数据面完整串通**需要它以相同的 bbolt 拓扑路由(relay 按 v4 host 归因 sender;IPv6 源帧 `senderID=""` 无法回程)。本验证证明的是**选优 + 故障切换决策**;跨 relay 数据连续属阶段 2 拓扑推送课题。
