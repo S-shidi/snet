@@ -179,6 +179,14 @@ type PeersResp struct {
 	// connectivity fallback when a direct (LAN/self-advertised) endpoint
 	// cannot be reached. Empty when relay mode is disabled.
 	RelayEndpoint string `json:"relayEndpoint,omitempty"`
+	// RelayEndpoints lists every candidate relay for the network, with
+	// RelayEndpoint (when non-empty) repeated first as the coordinated
+	// primary. Clients measure latency to each candidate and pick the best
+	// for their data plane; on failure they fall back to the next candidate
+	// rather than dropping off the mesh. Empty when relay mode is disabled
+	// or the server has a single relay (in which case RelayEndpoint alone is
+	// set).
+	RelayEndpoints []string `json:"relayEndpoints,omitempty"`
 }
 
 // ClaimReq claims ownership of a legacy network. Requires the calling device

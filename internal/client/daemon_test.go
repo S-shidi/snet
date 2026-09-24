@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1374,5 +1375,94 @@ func TestRotateKeysAbortsOnBadToken(t *testing.T) {
 	}
 	if d.cfg.PrivateKey != oldKey {
 		t.Fatal("local key changed despite failed rotation")
+	}
+}
+
+// TestPickRelayByRTT verifies the relay-selection policy: pick the fastest
+// reachable candidate, but keep the current relay within tolerance of the best
+// (no flapping), and never keep an unreachable current relay.
+func TestPickRelayByRTT(t *testing.T) {
+	rinkey := func(ep string) string { return "n|" + ep }
+	const (
+		relayA = "relay-a:51820"
+		relayB = "relay-b:51820"
+	)
+	rtts := map[string]int64{}
+	rtts["n|"+relayA] = 40
+	rtts["n|"+relayB] = 10
+	if got := pickRelayByRTT([]string{relayA, relayB}, "", relayB, 10, rtts, rinkey); got != relayB {
+		t.Fatalf("want B (fastest), got %q", got)
+	}
+
+	// Current A (20ms) within tolerance of best B (10ms, tol=35): keep A.
+	rtts["n|"+relayA] = 20
+	if got := pickRelayByRTT([]string{relayA, relayB}, relayA, relayB, 10, rtts, rinkey); got != relayA {
+		t.Fatalf("want A (within tolerance), got %q", got)
+	}
+
+	// Current A goes unreachable (no RTT entry): switch to best B.
+	delete(rtts, "n|"+relayA)
+	if got := pickRelayByRTT([]string{relayA, relayB}, relayA, relayB, 10, rtts, rinkey); got != relayB {
+		t.Fatalf("want B (current unreachable), got %q", got)
+	}
+	rtts["n|"+relayA] = 500 // now way above tolerance: 500 > 10*1.5+20
+	if got := pickRelayByRTT([]string{relayA, relayB}, relayA, relayB, 10, rtts, rinkey); got != relayB {
+		t.Fatalf("want B (current much slower), got %q", got)
+	}
+
+	// Only one candidate, current unknown: nothing beats the fastest.
+	if got := pickRelayByRTT([]string{relayA}, "", relayA, 40, rtts, rinkey); got != relayA {
+		t.Fatalf("want A (single candidate), got %q", got)
+	}
+}
+
+// TestSelectRelayProbesReachability verifies selectRelay picks a reachable
+// relay over an unreachable one by actually probing whoami against a live
+// relay (server.Relay) and a dead UDP endpoint.
+func TestSelectRelayProbesReachability(t *testing.T) {
+	srv := server.NewStore()
+	_ = srv
+	d, _ := newTestDaemon(t)
+
+	// Grab a free UDP port for the live relay and bind it.
+	lc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	livePort := lc.LocalAddr().(*net.UDPAddr).Port
+	lc.Close()
+
+	rl := server.NewRelay(livePort, 4)
+	t.Cleanup(func() { rl.Close() })
+	if err := rl.Ensure(livePort); err != nil {
+		t.Fatal(err)
+	}
+
+	// A dead endpoint: a UDP port nothing is listening on.
+	dead, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadPort := dead.LocalAddr().(*net.UDPAddr).Port
+	dead.Close()
+
+	liveEP := net.JoinHostPort("127.0.0.1", strconv.Itoa(livePort))
+	deadEP := net.JoinHostPort("127.0.0.1", strconv.Itoa(deadPort))
+
+	// Fresh selection with both candidates must prefer the live one.
+	sel := d.selectRelay("net-x", []string{liveEP, deadEP})
+	if sel == "" {
+		t.Fatal("selectRelay returned empty with a reachable candidate")
+	}
+	if sel == deadEP {
+		t.Fatal("selectRelay picked the unreachable candidate")
+	}
+
+	// A current dead relay must be abandoned for the live one.
+	d.relayEP["net-x"] = deadEP
+	d.relaySelAt["net-x"] = 0 // bypass the 30s select throttle
+	sel = d.selectRelay("net-x", []string{liveEP, deadEP})
+	if sel == deadEP {
+		t.Fatal("selectRelay kept the dead current relay")
 	}
 }

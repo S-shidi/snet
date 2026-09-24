@@ -29,6 +29,7 @@ func main() {
 	relayHost := flag.String("relay-host", "", "public relay host (IP) advertised to peers; enables UDP relay mode")
 	relayBase := flag.Int("relay-base", protocol.DefaultWGPort, "base UDP relay port (one per network)")
 	relayCount := flag.Int("relay-count", 256, "number of assignable UDP relay ports (bound lazily per active network)")
+	relayAlternates := flag.String("relay-alternates", "", "comma-separated additional relay hosts advertised for multi-relay selection (each served by its own relay instance)")
 	requireDeviceAuth := flag.Bool("require-device-auth", os.Getenv("SNET_REQUIRE_DEVICE_AUTH") == "1", "only allow devices that bound an admin-generated authorization code to create/join networks (env SNET_REQUIRE_DEVICE_AUTH=1)")
 	adminReset := flag.Bool("admin-reset", false, "force-reset admin password from env/admin-pass and exit")
 	flag.Parse()
@@ -51,6 +52,9 @@ func main() {
 	}
 
 	store.SetRelay(*relayHost, *relayBase, *relayCount)
+	if *relayAlternates != "" {
+		store.SetRelayAlternates(strings.Split(*relayAlternates, ","))
+	}
 
 	var relay *server.Relay
 	if *relayHost != "" {

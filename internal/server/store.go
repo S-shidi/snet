@@ -251,6 +251,13 @@ type Store struct {
 	relayHost  string
 	relayBase  int
 	relayCount int
+	// relayAlternates lists additional public relay hosts advertised to peers
+	// as candidate data planes (multi-relay selection). Each alternate is
+	// expected to serve the same network relay port as the primary; clients
+	// measure latency to every candidate and pick the fastest. Alternate
+	// deployments run their own relay instance; this process only advertises
+	// and never binds their sockets.
+	relayAlternates []string
 	// relayEnsure lazily binds a single relay UDP port. Set via SetRelayEnsure;
 	// read under s.mu in ensureRelayPort.
 	relayEnsure func(port int) error
@@ -818,6 +825,16 @@ func (s *Store) SetRelay(relayHost string, relayBase, relayCount int) {
 	s.relayHost = relayHost
 	s.relayBase = relayBase
 	s.relayCount = relayCount
+}
+
+// SetRelayAlternates registers additional relay hosts advertised to peers as
+// candidate data planes. Each is served by its own relay instance sharing the
+// same coordination; this store only advertises them (see listPeersFrom) and
+// never binds their sockets. Callers must hold no locks.
+func (s *Store) SetRelayAlternates(hosts []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayAlternates = append([]string(nil), hosts...)
 }
 
 // SetRelayEnsure registers the function that lazily binds a single relay UDP
@@ -2142,8 +2159,25 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 		}
 	}
 	relayEP := ""
+	relayEPs := []string(nil)
 	if s.relayEnabled() {
 		relayEP = net.JoinHostPort(s.relayHost, fmt.Sprint(ns.relayPort))
+		// Multi-relay selection: when alternates are configured, advertise
+		// every candidate data plane on the same network relay port, primary
+		// first. Alternates are served by their own relay instance; peers
+		// probe RTT and pick the best. With no alternates the field stays
+		// unset so the wire format is unchanged for single-relay deployments.
+		if len(s.relayAlternates) > 0 {
+			relayEPs = []string{relayEP}
+			seen := map[string]bool{hostNorm(s.relayHost): true}
+			for _, alt := range s.relayAlternates {
+				if alt == "" || seen[hostNorm(alt)] {
+					continue
+				}
+				seen[hostNorm(alt)] = true
+				relayEPs = append(relayEPs, net.JoinHostPort(alt, fmt.Sprint(ns.relayPort)))
+			}
+		}
 	}
 	now := time.Now().Unix()
 	peers := make([]protocol.Node, 0, len(ns.nodes)-1)
@@ -2193,6 +2227,7 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 		Subnet:           ns.n.Subnet,
 		ApprovalRequired: ns.n.ApprovalRequired,
 		RelayEndpoint:    relayEP,
+		RelayEndpoints:   relayEPs,
 	}, nil
 }
 

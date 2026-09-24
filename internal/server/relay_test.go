@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -706,9 +707,9 @@ func TestPerNodeUnicastRouting(t *testing.T) {
 // C = docker on the relay host (127.0.0.1). The recorder tap and per-port flow
 // listings are wired to the store's fake relay sink.
 type testNetwork3 struct {
-	store  *Store
-	rec    *relayRecorder
-	flows  map[int][]string
+	store   *Store
+	rec     *relayRecorder
+	flows   map[int][]string
 	a, b, c protocol.Node
 	aPort   int
 	bPort   int
@@ -999,4 +1000,67 @@ func lanIPv4(t *testing.T) string {
 	}
 	t.Skip("no non-loopback IPv4 interface")
 	return ""
+}
+
+// TestMultiRelayEndpointsAdvertised verifies that when alternate relay hosts
+// are configured, ListPeersFrom advertises every candidate on the network's
+// relay port (primary first, deduplicated by host).
+func TestMultiRelayEndpointsAdvertised(t *testing.T) {
+	s := NewStore()
+	base := freePort(t)
+	s.SetRelay("relay-a.example", base, 8)
+	s.SetRelayAlternates([]string{"relay-b.example", "relay-c.example", "relay-a.example"})
+	created, err := s.CreateNetwork(testKey(960), "dev-relay-multi", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	la, err := s.ListPeersFrom(created.Token, "223.160.209.21", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if la.RelayEndpoint == "" {
+		t.Fatal("primary RelayEndpoint empty")
+	}
+	if len(la.RelayEndpoints) != 3 {
+		t.Fatalf("want 3 candidates, got %v", la.RelayEndpoints)
+	}
+	if la.RelayEndpoints[0] != la.RelayEndpoint {
+		t.Fatalf("primary not first: %v vs %q", la.RelayEndpoints, la.RelayEndpoint)
+	}
+	if la.RelayEndpoints[1] != "relay-b.example:"+fmt.Sprint(created.RelayPort) {
+		t.Fatalf("alternate B wrong: %v (port %d)", la.RelayEndpoints, created.RelayPort)
+	}
+	if la.RelayEndpoints[2] != "relay-c.example:"+fmt.Sprint(created.RelayPort) {
+		t.Fatalf("alternate C wrong: %v", la.RelayEndpoints)
+	}
+	// All candidates share the network's relay port.
+	for _, ep := range la.RelayEndpoints {
+		_, port, err := net.SplitHostPort(ep)
+		if err != nil {
+			t.Fatalf("bad candidate %q: %v", ep, err)
+		}
+		if port != fmt.Sprint(created.RelayPort) {
+			t.Fatalf("candidate %q uses wrong port (want %d)", ep, created.RelayPort)
+		}
+	}
+
+	// Single-relay mode must keep the field unset for backward compatibility.
+	s2 := NewStore()
+	base2 := freePort(t)
+	s2.SetRelay("relay-a.example", base2, 8)
+	created2, err := s2.CreateNetwork(testKey(961), "dev-relay-single", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	la2, err := s2.ListPeersFrom(created2.Token, "223.160.209.21", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if la2.RelayEndpoint == "" {
+		t.Fatal("single relay endpoint empty")
+	}
+	if len(la2.RelayEndpoints) != 0 {
+		t.Fatalf("single-relay mode should not set RelayEndpoints, got %v", la2.RelayEndpoints)
+	}
 }

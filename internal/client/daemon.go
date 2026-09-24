@@ -40,7 +40,7 @@ var (
 			return make([]byte, 512)
 		},
 	}
-	
+
 	// largeBufPool for large UDP responses (65535 bytes)
 	largeBufPool = sync.Pool{
 		New: func() interface{} {
@@ -159,6 +159,13 @@ const parallelProbes = 5
 // with the peers' current NAT-observed endpoints first (highest hit rate).
 const observedRefreshSec = 8
 
+// relaySelectSec is how often the daemon re-measures latency to every relay
+// candidate and re-selects the best one for the data plane. Selection keeps
+// the current relay when it is within tolerance of the best, so a healthy
+// session is not flapped by noise; a dead primary falls back to the next
+// candidate within this window.
+const relaySelectSec = 30
+
 // netRuntime holds the live tunnel + control loops for one joined network.
 type netRuntime struct {
 	tun *Tunnel
@@ -214,9 +221,19 @@ type Daemon struct {
 	// config dir. Explicit path keeps daemons running without $HOME
 	// (e.g. launchd) functional.
 	configPath string
-	// relayEP caches each network's relay endpoint learned from PeersState,
-	// so probeLoop can reuse it for relay-whoami hole punching.
+	// relayEP caches each network's selected relay endpoint (learned from
+	// PeersState and chosen from the candidates by measured latency), so
+	// probeLoop can reuse it for relay-whoami hole punching.
 	relayEP map[string]string
+	// relayCands caches each network's advertised relay candidate list
+	// (RelayEndpoints; falls back to a single [RelayEndpoint]).
+	relayCands map[string][]string
+	// relayRTT caches the last measured RTT per candidate ("relay|ep" -> ms),
+	// so selection can stay put when the current relay stays within tolerance.
+	relayRTT map[string]int64
+	// relaySelAt records the last relay selection time per network (unix ms);
+	// selection is throttled to relaySelectSec.
+	relaySelAt map[string]int64
 	// obsList caches the last good relay peer-mapping list per network; the
 	// candidates are re-resolved into per-peer candidate windows.
 	obsList map[string][]string
@@ -290,6 +307,9 @@ func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 		retryPending:  make(map[string]struct{}),
 		retryAttempts: make(map[string]int),
 		relayEP:       make(map[string]string),
+		relayCands:    make(map[string][]string),
+		relayRTT:      make(map[string]int64),
+		relaySelAt:    make(map[string]int64),
 		obsList:       make(map[string][]string),
 		obsAt:         make(map[string]int64),
 		selfPub:       sp,
@@ -1560,7 +1580,7 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 			rt.peerDirect[p.ID] = st2
 		}
 		st2.relay = st.RelayEndpoint
-	
+
 		// A locked direct path must keep proving itself: WireGuard rekeys
 		// roughly every 120s on a working session, so a lock that saw no new
 		// handshake for directLockStaleSec is stale (the CGNAT hole closed or
@@ -1869,12 +1889,18 @@ func (d *Daemon) pollLoop(nid string) {
 			continue
 		}
 
-		// Cache the relay endpoint (probeLoop uses it for whoami) and refresh
-		// the live peer-mapping list for direct punches.
+		// Cache the relay candidates (probeLoop uses the selected one for
+		// whoami) and refresh the live peer-mapping list for direct punches.
+		cands := st.RelayEndpoints
+		if len(cands) == 0 && st.RelayEndpoint != "" {
+			cands = []string{st.RelayEndpoint}
+		}
+		sel := d.selectRelay(nid, cands)
 		d.mu.Lock()
-		d.relayEP[nid] = st.RelayEndpoint
+		d.relayCands[nid] = cands
+		d.relayEP[nid] = sel
 		d.mu.Unlock()
-		observed := d.refreshObserved(nid, st.RelayEndpoint)
+		observed := d.refreshObserved(nid, sel)
 
 		d.mu.Lock()
 		rt = d.nets[nid]
@@ -1934,6 +1960,11 @@ func (d *Daemon) pollLoop(nid string) {
 				log.Printf("save name %s: %v", nid, err)
 			}
 		}
+		// resolvePeerEndpoints picks, per peer, the endpoint to use. The relay
+		// address fed in is the client-selected candidate (best measured RTT),
+		// not merely the advertised primary; all per-peer relay decisions hang
+		// off the selected relay so failover actually moves the data plane.
+		st.RelayEndpoint = sel
 		peers := d.resolvePeerEndpoints(nid, rt, st, d.DetectLocalSubnets(), observed)
 		// Per-peer WireGuard tunnel stats straight from the engine, so the
 		// poll line distinguishes a real data-plane handshake from the
@@ -2058,6 +2089,97 @@ func (d *Daemon) probeSelfPublicIP(relayAddr, nid, nodeID, token, serverAddr str
 		// Fall through to the dedicated probe on whoami failure.
 	}
 	return probePublicIP(serverProbeAddr(serverAddr), nid, nodeID, token)
+}
+
+// selectRelay picks the best relay candidate for a network's data plane by
+// measuring whoami RTT to every candidate (throttled to relaySelectSec per
+// network). It returns the endpoint to use; callers feed it to the peer
+// resolver and probe loop. Selection logic:
+//
+//   - A single candidate is used without probing (happy path, no relay churn).
+//   - The current selection is kept when its RTT stays within tolerance of
+//     the best (1.5x + 20ms), so small latency noise does not flap the plane.
+//   - A candidate that fails whoami (unreachable relay/dead socket) is treated
+//     as infinitely far and skipped; if all fail, the previous selection is
+//     kept and a later poll re-attempts.
+//
+// The measurement is a network round-trip, so it runs without holding d.mu.
+func (d *Daemon) selectRelay(nid string, cands []string) string {
+	if len(cands) == 0 {
+		return ""
+	}
+	if len(cands) == 1 {
+		// Single candidate: use it directly. Relay data plane is the primary
+		// and only choice; probing would add pointless latency to every poll.
+		return cands[0]
+	}
+	d.mu.Lock()
+	now := time.Now().UnixMilli()
+	if now-d.relaySelAt[nid] < int64(relaySelectSec*1000) {
+		prev := d.relayEP[nid]
+		d.mu.Unlock()
+		return prev
+	}
+	cur := d.relayEP[nid]
+	d.mu.Unlock()
+
+	rinkey := func(ep string) string { return nid + "|" + ep }
+	bestEP := ""
+	var bestRTT int64
+	for _, ep := range cands {
+		start := time.Now()
+		_, err := relayWhoami(ep)
+		rtt := time.Since(start).Milliseconds()
+		if err != nil {
+			continue
+		}
+		d.mu.Lock()
+		d.relayRTT[rinkey(ep)] = rtt
+		d.mu.Unlock()
+		if bestEP == "" || rtt < bestRTT {
+			bestEP, bestRTT = ep, rtt
+		}
+	}
+	if bestEP == "" {
+		// Every candidate unreachable: keep whatever we had; a later poll
+		// re-selects once connectivity returns.
+		d.mu.Lock()
+		prev := d.relayEP[nid]
+		d.relaySelAt[nid] = now
+		d.mu.Unlock()
+		return prev
+	}
+
+	sel := pickRelayByRTT(cands, cur, bestEP, bestRTT, d.relayRTT, rinkey)
+	if sel != cur {
+		log.Printf("relay select %s: %s (%.0fms) over %s", nid, sel, float64(bestRTT), cur)
+	}
+	d.mu.Lock()
+	if sel != d.relayEP[nid] {
+		// The data plane endpoint changed; reset so the observed mapping list
+		// (and the relay whoami probe) is re-learned against the new relay.
+		d.obsList[nid] = nil
+	}
+	d.relayEP[nid] = sel
+	d.relaySelAt[nid] = now
+	d.mu.Unlock()
+	return sel
+}
+
+// pickRelayByRTT is the pure selection policy: pick the best candidate by
+// measured RTT, but keep the current relay when its RTT stays within tolerance
+// of the best (1.5x + 20ms) so healthy sessions are not flapped by noise.
+// rtts is a map (via rinkey) of candidate to last measured millisecond RTT;
+// a missing/zero entry means the candidate was unreachable and never wins.
+func pickRelayByRTT(cands []string, cur, bestEP string, bestRTT int64, rtts map[string]int64, rinkey func(string) string) string {
+	if cur == "" {
+		return bestEP
+	}
+	curRTT := rtts[rinkey(cur)]
+	if curRTT <= 0 || curRTT > bestRTT*3/2+20 {
+		return bestEP
+	}
+	return cur
 }
 
 // refreshObserved asks the relay for the current set of live peer mappings
@@ -2795,10 +2917,10 @@ func peerPathInfo(rt *netRuntime) map[string]any {
 	out := make(map[string]any, len(rt.peerDirect))
 	for id, pd := range rt.peerDirect {
 		info := map[string]any{
-			"mode":  pd.mode,
-			"since": pd.dirSince,
+			"mode":   pd.mode,
+			"since":  pd.dirSince,
 			"direct": pd.lastDir,
-			"relay": pd.relay,
+			"relay":  pd.relay,
 		}
 		if len(pd.cands) > 0 {
 			info["candidates"] = len(pd.cands)

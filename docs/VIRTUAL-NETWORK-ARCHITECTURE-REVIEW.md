@@ -284,3 +284,27 @@ relay 日志确认 `recipientHosts` 持续含手机双地址 `223.160.208.29 / 2
 ### 8.4 代码提交
 
 - 提交范围:internal/server/store.go + internal/server/relay_test.go + internal/client/daemon.go(含回归测试 TestMultiEgressFanOut、TestStaleDataPlaneHostPruned 与既有测试修复),随 commit 一并记录于 git log。
+
+### 8.5 P1 多中继选优:协议 + 客户端选优(最小实现,已落地)
+
+**形态确认**:第二个 relay 数据面如何提供?选**「协议+选优先行(最小实现)」**——第二个 relay 暂用同一 VPS 多地址/端口模拟,协议就绪后另行部署。中继间互不集群、仅共享同一协调协议,数据面在客户端切换。
+
+**改动(服务端)**:
+- `PeersResp` 新增 `RelayEndpoints []string`:全部候选 relay(primary 前,每候选 `host:relayPort`),single-relay 部署下该字段保持未设置(wire 格式向后兼容)。
+- `-relay-alternates` 逗号分隔 flag + `Store.SetRelayAlternates()`,服务端注册额外 relay host 并随 `/peers` 下发;本进程只宣传不绑定备用 relay 套接字。
+- 测试 `TestMultiRelayEndpointsAdvertised`:候选按 `[primary, altB, altC]` 下发(host 去重、同 relay port),single-relay 模式字段为空。
+
+**改动(客户端)**:
+- `selectRelay(nid, cands)`:throttle 到 `relaySelectSec=30s`,对每个候选执行真实 `whoami` RTT 测量;失败候选视为不可达跳过;全失败保留前选,后续 poll 重试。
+- 选优策略 `pickRelayByRTT`:取最短 RTT 候选,但当前 relay 的 RTT 在 `1.5x+20ms` 容差内则保持不动(避免健康会话被噪声抖动);当前 relay 不可达/显著变慢时切到最优。
+- 数据面整体迁移到所选 relay:`d.relayEP` 存选中端,`resolvePeerEndpoints` 用所选候选构造 per-peer relay 端点,WG `ApplyPeers` 拿到当前 relay `host:peerPort`,切换时清空 observed 列表强制重学习。
+- 测试 `TestPickRelayByRTT`(纯策略判稳/切换)+ `TestSelectRelayProbesReachability`(真实 Relay 进程,达选不达者,弃死取活)。
+
+**部署形态(另行)**:
+```bash
+# 主控制器(66.187.6.46)
+server -relay-host 66.187.6.46 -relay-base 51820 -relay-count 256 -relay-alternates <relayB-ip>[,<relayC-ip>]
+# 备用 relay(同一协调网络,独立实例)
+server -relay-host <relayB-ip> -relay-base 51820 -relay-count 256 ...
+```
+备用 relay 需能访问同一 bbolt 拓扑(或后续做轻量拓扑推送);当前 P1 只交付协议与选优,数据面切到备用 relay 的端到端验证待备用实例部署后进行。
