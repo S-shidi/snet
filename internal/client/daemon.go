@@ -1710,26 +1710,36 @@ func buildPeerCandidates(direct, epV6 string, observed []string, excludeHost str
 		seen[ep] = struct{}{}
 		out = append(out, ep)
 	}
-	add(epV6)
-	add(direct)
+	filtered := observed[:0:0]
 	for _, ep := range observed {
 		host, _, err := net.SplitHostPort(ep)
 		if err == nil && host == excludeHost {
 			continue
 		}
+		filtered = append(filtered, ep)
+	}
+	// Bare endpoints first, in priority order: global IPv6 (no NAT), the v4
+	// self-advertised endpoint, then every live relay-observed mapping.
+	add(epV6)
+	add(direct)
+	for _, ep := range filtered {
 		add(ep)
-		// Also expand observed endpoints into candidate windows.
-		// A relay-observed NAT mapping (RelayFlow) is the peer's current live
-		// endpoint, but behind symmetric NAT the actual WireGuard port may be
-		// offset. Expanding both the LAN candidate (if any) and the observed
-		// endpoints maximizes the direct-hit chance.
-		for _, c := range buildCandidates(ep) {
+	}
+	// Then the direct candidate's nearby-port window. The self-advertised
+	// endpoint trails the live mappings so a peer whose real WirelessGuard
+	// port is offset from its advertised one still gets probed: symmetric
+	// NATs allocate ports per destination and the relay mapping is the
+	// freshest observation, while the advertised endpoint may be a stale
+	// pinhole.
+	if direct != "" {
+		for _, c := range buildCandidates(direct) {
 			add(c)
 		}
 	}
-	// Only expand direct if it exists (LAN candidate); otherwise rely on observed.
-	if direct != "" {
-		for _, c := range buildCandidates(direct) {
+	// Last, the windows around each relay-observed mapping: these are the
+	// freshest live endpoints and their offsets are the most likely to hit.
+	for _, ep := range filtered {
+		for _, c := range buildCandidates(ep) {
 			add(c)
 		}
 	}

@@ -880,6 +880,97 @@ func TestFlowFallbackActiveNode(t *testing.T) {
 	}
 }
 
+// TestMultiEgressFanOut verifies the CGNAT multi-egress case: a subscriber
+// holds two live public mappings (the operator rotates egress per flow), so
+// the docker node's socket shows two phone flows under distinct hosts
+// (223.160.208.29, 223.160.209.29). A docker->phone frame must be delivered to
+// BOTH flows, not just the first match — sending one mapping only loses every
+// alternate egress (observed as ~50% loss).
+func TestMultiEgressFanOut(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	// The phone is seen using both egress hosts (each exclusively its own).
+	s.learnNodeHostLocked(ns, net3.a.ID, "223.160.208.29")
+	s.learnNodeHostLocked(ns, net3.a.ID, "223.160.209.29")
+	s.mu.Unlock()
+
+	// Docker (C, sender) has two inbound mappings on its node port: one per
+	// phone egress. Both must receive the data frame.
+	net3.flows[net3.cPort] = []string{"223.160.208.29:39801", "223.160.209.29:39802"}
+
+	payload := []byte("docker-to-phone")
+	net3.store.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
+
+	if !net3.rec.contains("223.160.208.29:39801", string(payload)) {
+		t.Fatalf("payload not delivered to first phone egress; sends=%v", net3.rec.sends)
+	}
+	if !net3.rec.contains("223.160.209.29:39802", string(payload)) {
+		t.Fatalf("payload not delivered to second phone egress; sends=%v", net3.rec.sends)
+	}
+}
+
+// TestStaleDataPlaneHostPruned verifies that a data-plane host which goes
+// idle past the TTL is removed from the reverse index: a CGNAT pool the
+// operator recycled for another subscriber must not keep steering frames
+// toward the old owner's flows. A still-live hold (existing relayFlowByNode
+// mapping or ctrlHost) keeps the host alive.
+func TestStaleDataPlaneHostPruned(t *testing.T) {
+	s := NewStore()
+	created, err := s.CreateNetwork(testKey(960), "device-960", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := s.Join(created.NetworkID, created.PairingCode, testKey(961), "device-c-961")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := s.networks[created.NetworkID]
+	if ns == nil {
+		t.Fatal("no network state")
+	}
+
+	now := time.Now()
+	s.mu.Lock()
+	// Phone learns a data-plane host (e.g. CGNAT egress 223.160.208.29) that
+	// later goes idle.
+	s.learnNodeHostLocked(ns, rc.NodeID, "223.160.208.29")
+	ns.hostSeen["223.160.208.29"] = now.Add(-10 * time.Minute)
+	if _, ok := ns.nodeByHost["223.160.208.29"]; !ok {
+		s.mu.Unlock()
+		t.Fatal("host not in reverse index after learn")
+	}
+	old := len(ns.hostSeen)
+	s.pruneStaleHostsLocked(ns, now)
+	if _, ok := ns.nodeByHost["223.160.208.29"]; ok {
+		s.mu.Unlock()
+		t.Fatalf("stale host still in reverse index after prune")
+	}
+	if len(ns.hostSeen) >= old {
+		s.mu.Unlock()
+		t.Fatalf("hostSeen not pruned (was %d, now %d)", old, len(ns.hostSeen))
+	}
+
+	// A fresh ctrlHost reference must keep the host alive even when old.
+	s.learnNodeHostLocked(ns, rc.NodeID, "223.160.209.21")
+	ns.hostSeen["223.160.209.21"] = now.Add(-30 * time.Second)
+	ns.ctrlHost[rc.NodeID] = "223.160.209.21"
+	ns.hostSeen["223.160.209.21"] = now.Add(-10 * time.Minute)
+	before := len(ns.nodeByHost)
+	s.pruneStaleHostsLocked(ns, now)
+	if _, ok := ns.nodeByHost["223.160.209.21"]; !ok {
+		s.mu.Unlock()
+		t.Fatalf("live ctrlHost pruned from reverse index; nodeByHost=%v", ns.nodeByHost)
+	}
+	if len(ns.nodeByHost) != before {
+		s.mu.Unlock()
+		t.Fatalf("prune removed a live entry")
+	}
+	s.mu.Unlock()
+}
+
 // lanIPv4 returns a routable non-loopback IPv4 of this host, or skips the test
 // when none exists (e.g. an offline CI runner).
 func lanIPv4(t *testing.T) string {

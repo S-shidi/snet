@@ -60,6 +60,7 @@ const (
 	lastSeenThrot   = 30 * time.Second // throttle lastSeen DB writes
 	lastActThrot    = 60 * time.Second // throttle network activity DB writes
 	netAliveTTL     = 90 * time.Second // a network is "online" if active within this window
+	hostStaleTTL    = 5 * time.Minute  // reverse-index host idle this long is pruned
 	idAlphabet      = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 	tokenBytes      = 32
 	networkIDLen    = 8
@@ -135,6 +136,13 @@ type networkState struct {
 	// per-node router to resolve a sender whose data-plane host does not
 	// equal its control-plane host.
 	nodeByHost map[string]map[string]bool
+	// hostSeen tracks the last time each public host in nodeByHost was
+	// observed (control-plane or data-plane), so stale data-plane hosts —
+	// e.g. a CGNAT egress the operator stopped using or reused for another
+	// subscriber — can be pruned from the reverse index. Control-plane hosts
+	// are refreshed by NoteCtrlHost on every HTTPS call; pruning only
+	// removes hosts idle past hostStaleTTL.
+	hostSeen map[string]time.Time
 	// relayFlowByNode is the most recent attributed relay flow per node.
 	relayFlowByNode map[string]string
 	// lastFlowWrite throttles OnRelayFlow (hit on every UDP packet) to one
@@ -373,6 +381,7 @@ func (s *Store) load() error {
 					subnetBase:      base,
 					relaySeen:       make(map[string]time.Time),
 					ctrlHost:        make(map[string]string),
+				hostSeen:        make(map[string]time.Time),
 				nodeByHost:     make(map[string]map[string]bool),
 					relayFlowByNode: make(map[string]string),
 					nodePorts:       make(map[string]int),
@@ -1139,6 +1148,13 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	}
 	fls := s.relayFlowsByPort(senderPort)
 	log.Printf("relay node %d: senderPort=%d recipientHosts=%v portflows=%v relayFlowByNode[%q]=%q", port, senderPort, recipientHosts, fls, recipientID, ns.relayFlowByNode[recipientID])
+	// Multi-egress fan-out: a CGNAT subscriber can hold several live public
+	// mappings (the operator rotates egress per flow) and the recipient opens
+	// one inbound flow toward the sender's node port per egress it uses. Sending
+	// only the first matching flow means half the frames hit a mapping the peer
+	// no longer reads (observed as ~50% loss). Deliver to every live flow whose
+	// host belongs to the recipient, one send per distinct host.
+	sentHosts := make(map[string]bool, len(recipientHosts))
 	for _, fl := range fls {
 		if fl == sender {
 			continue
@@ -1147,11 +1163,22 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		if err != nil {
 			continue
 		}
-		if recipientHosts[hostNorm(fh)] {
-			ok := s.relaySendFrom(senderPort, fl, data)
-			log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
-			return true
+		nh := hostNorm(fh)
+		if !recipientHosts[nh] || sentHosts[nh] {
+			continue
 		}
+		ok := s.relaySendFrom(senderPort, fl, data)
+		log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
+		sentHosts[nh] = true
+		if !ok {
+			// A failed send means the flow went stale between lookup and
+			// write; drop it from the candidate set so a later host-level
+			// send is not skipped by the per-host dedup.
+			delete(recipientHosts, nh)
+		}
+	}
+	if len(sentHosts) > 0 {
+		return true
 	}
 	// No matching inbound mapping on the sender socket yet: the recipient has
 	// not opened a flow toward the sender's per-node port. Its authoritative
@@ -1368,6 +1395,9 @@ func (s *Store) OnRelayFlow(port int, addr string) {
 				delete(ns.relaySeen, a)
 			}
 		}
+		// Prune stale reverse-index hosts on the same periodic sweep so a
+		// CGNAT egress the peer stopped using stops steering frames.
+		s.pruneStaleHostsLocked(ns, now)
 	}
 	ns.relaySeen[addr] = now
 	// Attribute the observed data-plane mapping to a node. Prefer the
@@ -1422,6 +1452,10 @@ func (s *Store) learnNodeHostLocked(ns *networkState, nodeID, host string) {
 		ns.nodeByHost[normed] = make(map[string]bool)
 	}
 	ns.nodeByHost[normed][nodeID] = true
+	if ns.hostSeen == nil {
+		ns.hostSeen = make(map[string]time.Time)
+	}
+	ns.hostSeen[normed] = time.Now()
 }
 
 // unlearnNodeHostLocked removes a node from the reverse index for a host,
@@ -1438,10 +1472,71 @@ func (s *Store) unlearnNodeHostLocked(ns *networkState, nodeID, host string) {
 			delete(ns.nodeByHost, normed)
 		}
 	}
+	if ns.hostSeen != nil {
+		if len(ns.nodeByHost[normed]) == 0 {
+			delete(ns.hostSeen, normed)
+		}
+	}
 	if f := ns.relayFlowByNode[nodeID]; f != "" {
 		if h, _, err := net.SplitHostPort(f); err == nil && hostNorm(h) == normed {
 			delete(ns.relayFlowByNode, nodeID)
 		}
+	}
+}
+
+// pruneStaleHostsLocked removes reverse-index hosts that have seen no
+// control-plane or data-plane traffic for hostStaleTTL. Without this, a
+// data-plane host learned from the relay flow hook lives in nodeByHost
+// forever: an operator that recycles a CGNAT pool can reassign that public
+// address to a different subscriber, and the stale mapping would keep
+// routing frames toward the old owner's flows. Control-plane hosts are
+// refreshed on every HTTPS call, so only genuinely idle hosts are pruned.
+// Callers hold s.mu.
+func (s *Store) pruneStaleHostsLocked(ns *networkState, now time.Time) {
+	if len(ns.hostSeen) == 0 {
+		return
+	}
+	// A host is live when it has a current relay flow (data-plane) or is a
+	// node's current ctrlHost (control-plane). hostSeen only records the
+	// last learn; live flows are tracked in relaySeen per NAT mapping, and
+	// relayFlowByNode holds each node's most recent attributed flow.
+	hostInFlows := func(host string, flows map[string]time.Time) bool {
+		for ep := range flows {
+			if h, _, err := net.SplitHostPort(ep); err == nil && hostNorm(h) == host {
+				return true
+			}
+		}
+		return false
+	}
+	isLive := func(host string) bool {
+		if host == "" {
+			return false
+		}
+		if hostInFlows(host, ns.relaySeen) {
+			return true
+		}
+		for id := range ns.nodes {
+			if c := ns.ctrlHost[id]; hostNorm(c) == host {
+				return true
+			}
+			if f := ns.relayFlowByNode[id]; f != "" {
+				if h, _, err := net.SplitHostPort(f); err == nil && hostNorm(h) == host {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for host, t := range ns.hostSeen {
+		if now.Sub(t) < hostStaleTTL {
+			continue
+		}
+		if isLive(host) {
+			continue
+		}
+		delete(ns.nodeByHost, host)
+		delete(ns.hostSeen, host)
+		log.Printf("relay: pruned stale host %s from reverse index (idle %v)", host, now.Sub(t))
 	}
 }
 
@@ -1588,6 +1683,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		subnetBase:      base,
 		relaySeen:       make(map[string]time.Time),
 		ctrlHost:        make(map[string]string),
+				hostSeen:        make(map[string]time.Time),
 				nodeByHost:     make(map[string]map[string]bool),
 		relayFlowByNode: make(map[string]string),
 		nodePorts:       make(map[string]int),
@@ -3099,6 +3195,7 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 		subnetBase:      base,
 		relaySeen:       make(map[string]time.Time),
 		ctrlHost:        make(map[string]string),
+				hostSeen:        make(map[string]time.Time),
 				nodeByHost:     make(map[string]map[string]bool),
 		relayFlowByNode: make(map[string]string),
 		nodePorts:       make(map[string]int),
