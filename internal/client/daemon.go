@@ -149,6 +149,26 @@ const directLockStaleSec = 240
 // of candidate ports (buildCandidates) raises the direct-hit rate.
 const candProbeSec = 4
 
+// qualityIntervalSec is how often the per-network health watchdog samples the
+// data plane (handshake age + byte deltas) to detect a silently dead relay
+// path.
+const qualityIntervalSec = 10
+
+// qualityDeadBatches is how many consecutive watchdog samples a peer's relay
+// path may look dead (no traffic and a stale handshake) before the watchdog
+// forces a relay re-evaluation / direct retry. The first dead sample starts a
+// window; the path trips once (qualityDeadBatches-1) further samples pass with
+// no liveness. At 3 batches x 10s that is a 30s tolerance, long enough to
+// absorb a quiet lull yet short enough to rescue a peer from a relay that just
+// died.
+const qualityDeadBatches = 3
+
+// qualityHandshakeStaleSec is how old a peer's last handshake may be before
+// the watchdog counts a zero-traffic sample as "dead". WireGuard rekeys a
+// live session roughly every 120s, so anything beyond that with no traffic is
+// genuinely quiet.
+const qualityHandshakeStaleSec = directLockStaleSec
+
 // parallelProbes is the number of candidates to probe concurrently in a batch.
 // With parallelProbes=5 and 17 total candidates, the worst-case handshake time
 // drops from 68s (sequential) to ~20s (3 batches). Higher values increase
@@ -174,6 +194,28 @@ type netRuntime struct {
 	// "relay") so the daemon can attempt direct paths and fall back to the
 	// relay when a direct handshake does not complete in time.
 	peerDirect map[string]*peerDirect
+	// quality tracks the observed data-plane liveness per peer, fed by the
+	// per-network qualityLoop watchdog. It does not drive the direct/relay
+	// state machine directly — the state machine already reacts to handshake
+	// staleness — but it detects a silently dead relay path (no traffic, no
+	// fresh handshake) and forces the relay to be re-evaluated or a direct
+	// retry to begin, so a dead relay does not hold the peer hostage until a
+	// scheduled re-probe happens.
+	quality map[string]*peerQuality
+	// deadSince tracks when a peer's relay path started being observed dead
+	// (unix seconds); zero means currently live/unknown.
+	deadSince map[string]int64
+}
+
+// peerQuality is the per-peer data-plane liveness snapshot produced by the
+// quality watchdog loop. Active is whether traffic is flowing or the handshake
+// is fresh; HandshakeAge is seconds since the last handshake; RxRate/TxRate
+// are per-interval byte deltas (bytes per qualityIntervalSec).
+type peerQuality struct {
+	Active       bool
+	HandshakeAge int64
+	RxRate       int64
+	TxRate       int64
 }
 
 // peerDirect records the endpoint strategy for a single peer.
@@ -1375,6 +1417,7 @@ func (d *Daemon) bringUp(nid string) error {
 	}
 	go d.pollLoop(nid)
 	go d.probeLoop(nid)
+	go d.qualityLoop(nid)
 	return nil
 }
 
@@ -1501,7 +1544,10 @@ func (d *Daemon) localEndpointLocked(port int) (string, error) {
 func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.PeersResp, localSubs []string, observed []string) []protocol.Node {
 	out := make([]protocol.Node, len(st.Peers))
 	copy(out, st.Peers)
-	stats, _ := rt.tun.Stats()
+	var stats map[string]PeerStats
+	if rt != nil && rt.tun != nil {
+		stats, _ = rt.tun.Stats()
+	}
 	now := time.Now().Unix()
 	// The relay reports our own mapping along with the peers'; exclude the
 	// public IP we last advertised so we never punch at ourselves.
@@ -1516,15 +1562,23 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 	}
 	for i := range out {
 		p := &out[i]
+		// The relay host that serves this peer's per-node unicast port. In a
+		// multi-instance topology each node may be served by its own relay
+		// instance: the peer's RelayHostOverride names that instance, and
+		// traffic must go there (not the network's primary relay). Peers
+		// without an override are served by the network's primary relay.
+		// Defaults match the plain single-instance behavior on the wire.
+		relayHost := relayHostNorm
+		if p.RelayHostOverride != "" {
+			relayHost = p.RelayHostOverride
+		}
 		// Per-peer relay endpoint: with a per-node relay port (Phase 3) the
 		// peer is reachable at relayHost:<peer's port> — the recipient's NAT
 		// mapping for exactly that source port — instead of the shared
 		// broadcast port. Legacy peers (RelayPort==0) keep the broadcast port.
 		relayEP := st.RelayEndpoint
 		if relayEP != "" && p.RelayPort > 0 {
-			if h, _, err := net.SplitHostPort(resolveEndpoint(relayEP)); err == nil {
-				relayEP = net.JoinHostPort(h, strconv.Itoa(p.RelayPort))
-			}
+			relayEP = net.JoinHostPort(relayHost, strconv.Itoa(p.RelayPort))
 		}
 		// Choose the best direct candidates for this peer: the global-IPv6
 		// endpoint first (NAT-free), then the v4 self-advertised endpoint and
@@ -1639,11 +1693,13 @@ func (d *Daemon) resolvePeerEndpoints(nid string, rt *netRuntime, st protocol.Pe
 				st2.baseHS = hs
 				st2.locked = false
 			}
-			// Only a handshake whose sender is not the relay proves a working
-			// direct path: a relay-era handshake (endpoint host == relay host)
-			// means the peer is still being reached through the server, so it
-			// must not lock a candidate.
-			if !st2.locked && hs > st2.baseHS && relayReceiveDirect(stats[p.PublicKey].Endpoint, relayHostNorm) {
+			// A handshake whose sender is not this peer's relay instance
+			// proves a working direct path: a relay-era handshake (endpoint
+			// host == the relay instance serving this peer) means the peer is
+			// still being reached through the server, so it must not lock a
+			// candidate. Note this uses the peer's own relay host, which in a
+			// multi-instance topology may differ from the network's primary.
+			if !st2.locked && hs > st2.baseHS && relayReceiveDirect(stats[p.PublicKey].Endpoint, relayHost) {
 				st2.locked = true
 				// Find which candidate matched by checking the handshake endpoint.
 				// For now, just report the current batch leader.
@@ -2073,6 +2129,129 @@ func (d *Daemon) probeLoop(nid string) {
 			log.Printf("v6 endpoint %s: %s", nid, epV6)
 		}
 	}
+}
+
+// qualityLoop is the per-network health watchdog. Every qualityIntervalSec it
+// samples the data plane per peer (handshake age + rx/tx byte deltas) and
+// records liveness in rt.quality. When a peer is being served by the relay and
+// its path looks dead for qualityDeadBatches consecutive samples — no traffic
+// and an old handshake — the watchdog forces the relay to be re-evaluated (all
+// candidates re-probed immediately) and re-arms a direct retry, so a relay
+// that silently died is not allowed to strand the peer until its next
+// scheduled re-probe.
+func (d *Daemon) qualityLoop(nid string) {
+	ticker := time.NewTicker(qualityIntervalSec * time.Second)
+	defer ticker.Stop()
+	last := make(map[string]PeerStats)
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		d.mu.Lock()
+		rt := d.nets[nid]
+		if rt == nil {
+			d.mu.Unlock()
+			return
+		}
+		tun := rt.tun
+		if rt.quality == nil {
+			rt.quality = make(map[string]*peerQuality)
+			rt.deadSince = make(map[string]int64)
+		}
+		if tun == nil {
+			d.mu.Unlock()
+			continue
+		}
+		stats, err := tun.Stats()
+		if err != nil {
+			d.mu.Unlock()
+			continue
+		}
+		forced := d.qualityTick(nid, rt, stats, time.Now().Unix(), last)
+		d.mu.Unlock()
+		if forced && len(d.relayCands[nid]) > 0 {
+			// Re-probe every candidate immediately, outside d.mu.
+			d.selectRelay(nid, d.relayCands[nid])
+		}
+	}
+}
+
+// qualityTick updates rt.quality for every peer in stats from the byte/handshake
+// snapshot, tracks relay-path death, and returns whether the watchdog tripped
+// (a relay-served peer whose path stayed dead across the required batches), in
+// which case the caller must re-select the relay and re-arm direct retries.
+// Caller must hold d.mu. last maps peer public key -> previous snapshot.
+func (d *Daemon) qualityTick(nid string, rt *netRuntime, stats map[string]PeerStats, now int64, last map[string]PeerStats) bool {
+	if rt.quality == nil {
+		rt.quality = make(map[string]*peerQuality)
+		rt.deadSince = make(map[string]int64)
+	}
+	var forced bool
+	for pub, ps := range stats {
+		var lastPS PeerStats
+		if le, ok := last[pub]; ok {
+			lastPS = le
+		} else {
+			lastPS = ps
+		}
+		last[pub] = ps
+		rx := ps.RxBytes - lastPS.RxBytes
+		if rx < 0 {
+			rx = 0
+		}
+		tx := ps.TxBytes - lastPS.TxBytes
+		if tx < 0 {
+			tx = 0
+		}
+		hsAge := now - ps.LastHandshakeSec
+		if hsAge < 0 {
+			hsAge = 0
+		}
+		active := rx > 0 || tx > 0 || hsAge < qualityHandshakeStaleSec
+		q := rt.quality[pub]
+		if q == nil {
+			q = &peerQuality{}
+			rt.quality[pub] = q
+		}
+		q.Active = active
+		q.HandshakeAge = hsAge
+		q.RxRate = rx
+		q.TxRate = tx
+
+		// Only the relay paths are the watchdog's business: a direct path
+		// has its own staleness handling (directLockStaleSec) in the peer
+		// resolution loop. A relay-served peer with a dead path accumulates
+		// batches until it trips the re-evaluation below.
+		pd, ok := rt.peerDirect[pub]
+		if !ok || pd.mode != "relay" {
+			delete(rt.deadSince, pub)
+			continue
+		}
+		if active {
+			delete(rt.deadSince, pub)
+			continue
+		}
+		dead := rt.deadSince[pub]
+		if dead == 0 {
+			rt.deadSince[pub] = now
+			continue
+		}
+		if now-dead < int64((qualityDeadBatches-1)*qualityIntervalSec) {
+			continue
+		}
+		// Relay path has been dead long enough: re-arm a direct attempt
+		// (the state machine re-evaluates at the next poll) and force a
+		// fresh relay selection so a different candidate (or a recovered
+		// primary) can take over.
+		pd.dirSince = 0
+		d.relaySelAt[nid] = 0
+		log.Printf("path %s: peer %s relay path dead for %ds hsa=%ds -> forcing relay re-select + direct retry", nid, pub, now-dead, hsAge)
+		delete(rt.deadSince, pub)
+		forced = true
+	}
+	return forced
 }
 
 // probeSelfPublicIP learns this node's public IP, preferring an in-band relay
@@ -2956,6 +3135,21 @@ func peerPathInfo(rt *netRuntime) map[string]any {
 	return out
 }
 
+// peerQualityInfo renders the per-peer health watchdog snapshot for the
+// control API, alongside peerPaths.
+func peerQualityInfo(rt *netRuntime) map[string]any {
+	out := make(map[string]any, len(rt.quality))
+	for id, q := range rt.quality {
+		out[id] = map[string]any{
+			"active":       q.Active,
+			"handshakeAge": q.HandshakeAge,
+			"rxRate":       q.RxRate,
+			"txRate":       q.TxRate,
+		}
+	}
+	return out
+}
+
 // Status snapshot for the control API.
 func (d *Daemon) Status() (map[string]any, error) {
 	d.mu.Lock()
@@ -2994,6 +3188,7 @@ func (d *Daemon) Status() (map[string]any, error) {
 				}
 			}
 			entry["peerPaths"] = peerPathInfo(rt)
+			entry["peerQuality"] = peerQualityInfo(rt)
 		}
 		if statePtr != nil && *statePtr == "gone" {
 			entry["error"] = netGoneErr.Error()

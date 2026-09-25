@@ -93,6 +93,14 @@ per-peer 状态机：`direct → relay → retry direct`（v0.10 起每 peer 的
 `candProbeSec`（4s），握手成功即锁定该候选，不再切换；预算耗尽仍未握手则
 回到 relay。私网段地址（家宽同一 LAN）不做端口扫描，直接单候选。
 
+**健康看门狗（v-quality）**：每网络每 `qualityIntervalSec`（10s）采样各 peer
+数据面的 rx/tx 字节增量与握手年龄，`/ctl/status` 经 `peerQuality` 暴露活性。
+看门狗只对**当前走 relay** 的 peer 出手：若连 `qualityDeadBatches`（3）次采样
+都无流量且握手超过 `directLockStaleSec` 未更新，即判定该 relay 路径已死，强制
+立即重选 relay（全部候选重新探 RTT）并复位该 peer 的 direct 重试计时——避免
+一个静默死去的 relay 把一个 peer 困到下次定时重探。direct 路径的失效由
+`directLockStaleSec` 状态机自行回退，看门狗不越权干预。
+
 ### 2.5 子网路由
 
 节点可广播 `allowedSubnets`（CIDR），其他节点通过该节点的隧道访问这些子网。用于共享 NAS、打印机等本地资源。

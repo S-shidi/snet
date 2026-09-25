@@ -1523,3 +1523,180 @@ func TestSelectRelayDiesAfterSelection(t *testing.T) {
 		t.Fatal("stale RTT for the dead relay was not purged")
 	}
 }
+
+// resolveEndpointForPeer returns the relay endpoint constructed for one peer
+// given the network relay endpoint and the peer's advertised per-node config,
+// using the same logic path as resolvePeerEndpoints.
+func resolveEndpointForPeer(relayEP string, p protocol.Node) string {
+	endpoint := relayEP
+	if relayHost := p.RelayHostOverride; relayHost != "" && p.RelayPort > 0 {
+		endpoint = net.JoinHostPort(relayHost, strconv.Itoa(p.RelayPort))
+	} else if endpoint != "" && p.RelayPort > 0 {
+		if h, _, err := net.SplitHostPort(resolveEndpoint(endpoint)); err == nil {
+			endpoint = net.JoinHostPort(h, strconv.Itoa(p.RelayPort))
+		}
+	}
+	return endpoint
+}
+
+// TestResolvePeerEndpointsPerPeerRelayHost verifies that with a per-node relay
+// port (Phase 3), the endpoint constructed for a peer uses that peer's own
+// serving relay instance host from RelayHostOverride, falling back to the
+// network relay host when the override is empty.
+func TestResolvePeerEndpointsPerPeerRelayHost(t *testing.T) {
+	relayEP := "relay-a.example:51820"
+	cases := []struct {
+		name string
+		peer protocol.Node
+		want string
+	}{
+		{name: "override-host", peer: protocol.Node{ID: "n1", RelayPort: 51822, RelayHostOverride: "relay-b.example"}, want: "relay-b.example:51822"},
+		{name: "no-override", peer: protocol.Node{ID: "n2", RelayPort: 51823}, want: "relay-a.example:51823"},
+		{name: "no-port-legacy", peer: protocol.Node{ID: "n3"}, want: "relay-a.example:51820"},
+		{name: "override-no-port", peer: protocol.Node{ID: "n4", RelayHostOverride: "relay-c.example"}, want: "relay-a.example:51820"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveEndpointForPeer(relayEP, c.peer); got != c.want {
+				t.Fatalf("endpoint=%q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestResolvePeerEndpointsFull verifies that resolvePeerEndpoints applies the
+// per-peer relay host override end to end: peers with a per-node port get
+// relayHost:<port> where the host is the peer's own serving instance, and the
+// network relay endpoint is used for the remaining fallbacks.
+func TestResolvePeerEndpointsFull(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	rt := &netRuntime{peerDirect: make(map[string]*peerDirect)}
+	st := protocol.PeersResp{
+		RelayEndpoint: "relay-a.example:51820",
+		Peers: []protocol.Node{
+			{ID: "p1", PublicKey: "k1", RelayPort: 51824, RelayHostOverride: "relay-b.example"},
+			{ID: "p2", PublicKey: "k2", RelayPort: 51824},
+			{ID: "p3", PublicKey: "k3"},
+		},
+	}
+	got := d.resolvePeerEndpoints("net1", rt, st, nil, nil)
+	if len(got) != 3 {
+		t.Fatalf("got %d peers, want 3", len(got))
+	}
+	// p1 has no LAN/local candidate and no RelayFlow, so it stays on its
+	// per-peer relay endpoint (override host + its own port).
+	if got[0].Endpoint != "relay-b.example:51824" {
+		t.Fatalf("p1 endpoint=%q, want relay-b.example:51824", got[0].Endpoint)
+	}
+	// p2 shares a port number but no override -> network relay host.
+	if got[1].Endpoint != "relay-a.example:51824" {
+		t.Fatalf("p2 endpoint=%q, want relay-a.example:51824", got[1].Endpoint)
+	}
+	// p3 has no per-node port -> falls back to the network broadcast endpoint.
+	if got[2].Endpoint != "relay-a.example:51820" {
+		t.Fatalf("p3 endpoint=%q, want relay-a.example:51820", got[2].Endpoint)
+	}
+}
+
+// TestQualityWatchdogTrip verifies the health watchdog: a relay-served peer
+// whose path shows no traffic and an old handshake trips only after the
+// configured number of consecutive dead batches, arming both a relay
+// re-selection and a direct retry; active traffic clears the count.
+func TestQualityWatchdogTrip(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	// Relay-served peer, path goes dead.
+	rt := &netRuntime{
+		peerDirect: map[string]*peerDirect{
+			"pk1": {mode: "relay"},
+		},
+	}
+	now := int64(1_000_000)
+	stats := map[string]PeerStats{
+		"pk1": {
+			RxBytes:          0,
+			TxBytes:          0,
+			LastHandshakeSec: now - directLockStaleSec - 1, // stale handshake
+		},
+	}
+	last := make(map[string]PeerStats)
+	// Batch 1: marks the peer dead-since, no trip yet.
+	if forced := d.qualityTick("net1", rt, stats, now, last); forced {
+		t.Fatal("should not trip on the first dead batch")
+	}
+	// Batches until just under the threshold: no trip. Batch 1 set deadSince
+	// (T); with qualityDeadBatches consecutive dead samples required (i.e. the
+	// (qualityDeadBatches-1)-sample gap), batches at T+interval..T+(N-2)*interval
+	// must not trip yet.
+	deadSince := rt.deadSince["pk1"]
+	steps := int(qualityDeadBatches) - 2
+	for i := 0; i < steps; i++ {
+		now += int64(qualityIntervalSec)
+		if forced := d.qualityTick("net1", rt, stats, now, last); forced {
+			t.Fatalf("should not trip at batch %d", i+2)
+		}
+	}
+	if got := rt.deadSince["pk1"]; got != deadSince {
+		t.Fatalf("deadSince moved: %d -> %d", deadSince, got)
+	}
+	// The next batch crosses the deadline: must trip, arm direct retry and
+	// force a fresh relay selection.
+	now += int64(qualityIntervalSec)
+	if forced := d.qualityTick("net1", rt, stats, now, last); !forced {
+		t.Fatal("expected trip once the dead path reaches the threshold")
+	}
+	if rt.peerDirect["pk1"].dirSince != 0 {
+		t.Fatalf("direct retry not re-armed: dirSince=%d", rt.peerDirect["pk1"].dirSince)
+	}
+	if d.relaySelAt["net1"] != 0 {
+		t.Fatalf("relay re-selection not forced: relaySelAt=%d", d.relaySelAt["net1"])
+	}
+	if _, ok := rt.deadSince["pk1"]; ok {
+		t.Fatalf("deadSince not cleared after trip")
+	}
+	// A further active measurement must not re-trip.
+	activeStats := map[string]PeerStats{
+		"pk1": {
+			RxBytes:          4096,
+			TxBytes:          0,
+			LastHandshakeSec: now, // fresh handshake
+		},
+	}
+	if forced := d.qualityTick("net1", rt, activeStats, now+int64(qualityIntervalSec), last); forced {
+		t.Fatal("active path must not trip")
+	}
+	// Recover to relay-again: fresh handshake no longer dead.
+	if forced := d.qualityTick("net1", rt, stats, now+2*int64(qualityIntervalSec), last); forced {
+		t.Fatal("path that tripped must start a fresh dead window")
+	}
+}
+
+// TestQualityWatchdogIgnoresDirect verifies the watchdog never trips for a
+// peer currently on a direct path (that state machine owns its own staleness
+// handling), and records quality metrics regardless.
+func TestQualityWatchdogIgnoresDirect(t *testing.T) {
+	d, _ := newTestDaemon(t)
+	rt := &netRuntime{
+		peerDirect: map[string]*peerDirect{
+			"pkD": {mode: "direct", locked: true},
+		},
+	}
+	now := int64(2_000_000)
+	last := make(map[string]PeerStats)
+	for i := 0; i < qualityDeadBatches+2; i++ {
+		// Even a totally stale direct peer must never trip the watchdog.
+		stale := map[string]PeerStats{
+			"pkD": {
+				RxBytes:          int64(i),
+				TxBytes:          int64(i),
+				LastHandshakeSec: now - 10_000,
+			},
+		}
+		if forced := d.qualityTick("net1", rt, stale, now+int64(i*qualityIntervalSec), last); forced {
+			t.Fatalf("direct peer must not be tripped by the watchdog (batch %d)", i)
+		}
+	}
+	// Regardless of path mode, quality metrics are recorded for every peer.
+	if q := rt.quality["pkD"]; q == nil {
+		t.Fatal("quality not recorded for direct peer")
+	}
+}
