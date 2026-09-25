@@ -158,8 +158,15 @@ type networkState struct {
 	// are refreshed by NoteCtrlHost on every HTTPS call; pruning only
 	// removes hosts idle past hostStaleTTL.
 	hostSeen map[string]time.Time
-	// relayFlowByNode is the most recent attributed relay flow per node.
+	// relayFlowByNode is the most recent attributed relay flow per node,
+	// stored as the full "host:port" NAT mapping ("39.180.139.85:4302").
 	relayFlowByNode map[string]string
+	// flowByNode is the reverse index at full-address granularity: the exact
+	// "host:port" NAT mapping -> node ID. Unlike nodeByHost (host only), it
+	// distinguishes nodes that share a public IP behind a common egress (e.g.
+	// Mac 39.180.139.85:4302 vs NAS 39.180.139.85:1213), so sender attribution
+	// and shared-host recipient routing resolve deterministically.
+	flowByNode map[string]string
 	// lastFlowWrite throttles OnRelayFlow (hit on every UDP packet) to one
 	// locked scan per network per second; updated atomically so the fast path
 	// never takes s.mu.
@@ -413,6 +420,7 @@ func (s *Store) load() error {
 					hostSeen:        make(map[string]time.Time),
 					nodeByHost:      make(map[string]map[string]bool),
 					relayFlowByNode: make(map[string]string),
+					flowByNode:      make(map[string]string),
 					nodePorts:       make(map[string]int),
 				}
 				s.networks[r.ID] = ns
@@ -1295,23 +1303,32 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 		return true
 	}
 	log.Printf("relay node %d: frame from %s for %s kind=%.1d len=%d", port, sender, recipientID, data[0], len(data))
-	// Identify the sender node. Prefer the control-plane host match; when it
-	// does not match — the sender's data-plane NAT IP can differ from its
-	// control-plane IP (e.g. the phone operator allocates a different public
-	// address per session) — fall back to the reverse index seeded by the
-	// relay flow hook, which records data-plane hosts per node.
+	// Identify the sender node. Prefer the exact NAT mapping ("host:port"):
+	// two siblings behind one egress share a public IP but hold distinct NAT
+	// ports (Mac 39.180.139.85:4302 vs NAS 39.180.139.85:1213), which the
+	// full-address reverse index resolves deterministically. Only when the
+	// flow is unknown fall back to the control-plane host match — and when
+	// that does not match either (the sender's data-plane NAT IP can differ
+	// from its control-plane IP, e.g. the phone operator allocates a
+	// different public address per session) — to the reverse index seeded by
+	// the relay flow hook, which records data-plane hosts per node.
 	var senderID string
-	senderNorm := hostNorm(senderHost)
-	for id, c := range ns.ctrlHost {
-		if hostNorm(c) == senderNorm {
-			senderID = id
-			break
-		}
+	if owner := ns.flowByNode[sender]; owner != "" {
+		senderID = owner
 	}
+	senderNorm := hostNorm(senderHost)
 	if senderID == "" {
-		for id := range ns.nodeByHost[senderNorm] {
-			senderID = id
-			break
+		for id, c := range ns.ctrlHost {
+			if hostNorm(c) == senderNorm {
+				senderID = id
+				break
+			}
+		}
+		if senderID == "" {
+			for id := range ns.nodeByHost[senderNorm] {
+				senderID = id
+				break
+			}
 		}
 	}
 	// Last-resort attribution: the sender's data-plane host may still be
@@ -1357,56 +1374,92 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	// A node can be reached through several public hosts (control-plane and
 	// data-plane IPs may differ), so collect every host the recipient has
 	// been seen using and match the sender port's live flows against each.
+	//
+	// Two kinds of target are valid, resolved by increasing specificity:
+	// 1) The recipient's exact NAT mappings ("host:port"), pinned by the
+	//    authoritative flow and the full-address reverse index. These
+	//    disambiguate siblings behind one egress (Mac 39.180.139.85:4302 vs
+	//    NAS 39.180.139.85:1213) even though they share public IP.
+	// 2) Hosts exclusively the recipient's — unowned (first claim) or owned
+	//    only by the recipient — used for CGNAT multi-egress fan-out.
+	// A host shared by several nodes is only reachable through the exact
+	// flows in (1); when the recipient has no pinned flow yet (bootstrap),
+	// fan out to every live flow under the shared host rather than dropping,
+	// because a wrong-sibling copy is dropped harmlessly by its WG session.
+	recipientFlows := map[string]bool{}
+	if rf := ns.relayFlowByNode[recipientID]; rf != "" {
+		recipientFlows[rf] = true
+	}
+	for fl, owner := range ns.flowByNode {
+		if owner == recipientID {
+			recipientFlows[fl] = true
+		}
+	}
 	recipientHosts := map[string]bool{}
-	// A host is a valid recipient target only when it is exclusively the
-	// recipient's — whether it comes from the authoritative flow, the
-	// control-plane host, or the learned reverse index. A shared host (e.g.
-	// 112.10.250.51 polling both Mac and phone) must never route a
-	// phone-bound frame onto Mac's flow or vice versa, because the flow
-	// picked on the sender port is then the wrong sibling's.
+	recipientSharedHosts := map[string]bool{}
 	addRecipientHost := func(h string) {
 		if h == "" {
 			return
 		}
 		nh := hostNorm(h)
-		// Include a host only when it is unowned (first claim) or owned
-		// exclusively by the recipient. A host shared by several nodes (e.g.
-		// 112.10.250.51 seen from both Mac and phone through a common egress)
-		// is ambiguous and must not select the wrong sibling's flow.
 		owners := ns.nodeByHost[nh]
-		if len(owners) > 1 {
-			return
-		}
-		if len(owners) == 1 && !owners[recipientID] {
-			return
-		}
-		recipientHosts[nh] = true
-	}
-	if rf := ns.relayFlowByNode[recipientID]; rf != "" {
-		if h, _, err := net.SplitHostPort(rf); err == nil {
-			addRecipientHost(h)
+		switch {
+		case len(owners) == 0:
+			recipientHosts[nh] = true
+		case len(owners) == 1 && owners[recipientID]:
+			recipientHosts[nh] = true
+		case owners[recipientID]:
+			// Shared host (e.g. Mac and NAS behind one home egress): with no
+			// pinned exact flow, fan out under it.
+			recipientSharedHosts[nh] = true
 		}
 	}
 	addRecipientHost(ns.ctrlHost[recipientID])
 	for hosts, ids := range ns.nodeByHost {
-		if len(ids) == 1 && ids[recipientID] {
-			recipientHosts[hosts] = true
+		if ids[recipientID] {
+			addRecipientHost(hosts)
 		}
 	}
-	if len(recipientHosts) == 0 {
-		return true
+	// A pinned flow's host is always fan-out territory. The flow hook
+	// attributes a data-plane address to a node by matching its control-plane
+	// host, which is a coin-flip when two siblings share one egress IP (Mac
+	// and NAS both connect from 39.180.139.85) — so the "pinned" flow may
+	// actually be the sibling's socket. Spreading under that host guarantees
+	// the recipient's real mapping still receives a copy; the extra copy is
+	// dropped harmlessly by the sibling's WG session.
+	for fl := range recipientFlows {
+		if h, _, err := net.SplitHostPort(fl); err == nil {
+			recipientSharedHosts[hostNorm(h)] = true
+		}
+	}
+	if len(recipientFlows) == 0 && len(recipientHosts) == 0 && len(recipientSharedHosts) == 0 {
+		// No known host or flow for the recipient: cannot reach it, but the
+		// flow-fallback below (authoritative flow) and broadcast fan-out
+		// still have a chance, so do not drop here — keep going.
+		if rf := ns.relayFlowByNode[recipientID]; rf == "" {
+			return true
+		}
 	}
 	fls := s.relayFlowsByPort(senderPort)
-	log.Printf("relay node %d: senderPort=%d recipientHosts=%v portflows=%v relayFlowByNode[%q]=%q", port, senderPort, recipientHosts, fls, recipientID, ns.relayFlowByNode[recipientID])
-	// Multi-egress fan-out: a CGNAT subscriber can hold several live public
-	// mappings (the operator rotates egress per flow) and the recipient opens
-	// one inbound flow toward the sender's node port per egress it uses. Sending
-	// only the first matching flow means half the frames hit a mapping the peer
-	// no longer reads (observed as ~50% loss). Deliver to every live flow whose
-	// host belongs to the recipient, one send per distinct host.
-	sentHosts := make(map[string]bool, len(recipientHosts))
+	log.Printf("relay node %d: senderPort=%d recipientFlows=%v recipientHosts=%v sharedHosts=%v portflows=%v relayFlowByNode[%q]=%q", port, senderPort, recipientFlows, recipientHosts, recipientSharedHosts, fls, recipientID, ns.relayFlowByNode[recipientID])
+	// Deliver to every live flow whose target is the recipient, one send per
+	// distinct flow. Multi-egress fan-out: a CGNAT subscriber can hold
+	// several live public mappings (the operator rotates egress per flow) and
+	// the recipient opens one inbound flow toward the sender's node port per
+	// egress it uses. Sending only the first matching flow means half the
+	// frames hit a mapping the peer no longer reads (~50% loss).
+	sentTo := make(map[string]bool, len(fls))
 	for _, fl := range fls {
 		if fl == sender {
+			continue
+		}
+		if sentTo[fl] {
+			continue
+		}
+		if recipientFlows[fl] {
+			ok := s.relaySendFrom(senderPort, fl, data)
+			log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
+			sentTo[fl] = true
 			continue
 		}
 		fh, _, err := net.SplitHostPort(fl)
@@ -1414,20 +1467,29 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 			continue
 		}
 		nh := hostNorm(fh)
-		if !recipientHosts[nh] || sentHosts[nh] {
+		if recipientHosts[nh] {
+			ok := s.relaySendFrom(senderPort, fl, data)
+			log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
+			sentTo[fl] = true
+			if !ok {
+				// A failed send means the flow went stale between lookup and
+				// write; drop the host so a later host-level send is not
+				// skipped by the per-host dedup.
+				delete(recipientHosts, nh)
+			}
 			continue
 		}
-		ok := s.relaySendFrom(senderPort, fl, data)
-		log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v", port, recipientID, senderPort, fl, ok)
-		sentHosts[nh] = true
-		if !ok {
-			// A failed send means the flow went stale between lookup and
-			// write; drop it from the candidate set so a later host-level
-			// send is not skipped by the per-host dedup.
-			delete(recipientHosts, nh)
+		if recipientSharedHosts[nh] {
+			// Bootstrap fan-out under a shared egress: the recipient's own
+			// flow is among these hosts but not pinned yet; extra sibling
+			// copies are dropped by their own WG session.
+			ok := s.relaySendFrom(senderPort, fl, data)
+			log.Printf("relay node %d: UNICAST %s senderPort=%d -> %s ok=%v (shared-host fan-out)", port, recipientID, senderPort, fl, ok)
+			sentTo[fl] = true
+			continue
 		}
 	}
-	if len(sentHosts) > 0 {
+	if len(sentTo) > 0 {
 		return true
 	}
 	// No matching inbound mapping on the sender socket yet: the recipient has
@@ -1688,6 +1750,7 @@ func (s *Store) OnRelayFlow(port int, addr string) {
 		for a, t := range ns.relaySeen {
 			if now.Sub(t) >= 60*time.Second {
 				delete(ns.relaySeen, a)
+				delete(ns.flowByNode, a)
 			}
 		}
 		// Prune stale reverse-index hosts on the same periodic sweep so a
@@ -1702,12 +1765,22 @@ func (s *Store) OnRelayFlow(port int, addr string) {
 	// that NoteCtrlHost seeded from the same node's control-plane calls.
 	matchNode := ""
 	hostNormed := hostNorm(host)
-	for nodeID, c := range ns.ctrlHost {
-		if hostNorm(c) == hostNormed {
-			ns.relayFlowByNode[nodeID] = addr
-			s.learnNodeHostLocked(ns, nodeID, host)
-			matchNode = nodeID
-			break
+	// A flow first seen by one node keeps its ownership: the exact NAT
+	// mapping (host:port) is a distinct socket, so a shared public IP (home
+	// broadband egress, Mac 39.180.139.85:4302 vs NAS 39.180.139.85:1213)
+	// never flaps attribution between siblings on the host-only key.
+	if owner := ns.flowByNode[addr]; owner != "" {
+		matchNode = owner
+		ns.relayFlowByNode[owner] = addr
+	}
+	if matchNode == "" {
+		for nodeID, c := range ns.ctrlHost {
+			if hostNorm(c) == hostNormed {
+				ns.relayFlowByNode[nodeID] = addr
+				s.learnNodeHostLocked(ns, nodeID, host)
+				matchNode = nodeID
+				break
+			}
 		}
 	}
 	if matchNode == "" {
@@ -1740,6 +1813,15 @@ func (s *Store) OnRelayFlow(port int, addr string) {
 			matchNode = id
 			log.Printf("relay flow: attributed %s to node %s (neighbor /23-/16, port %d)", host, id, port)
 		}
+	}
+	// Record the full "host:port" mapping -> node so the per-node router and
+	// future flow hook calls can resolve by exact address, disambiguating
+	// nodes that share a public IP behind one egress.
+	if matchNode != "" {
+		if ns.flowByNode == nil {
+			ns.flowByNode = make(map[string]string)
+		}
+		ns.flowByNode[addr] = matchNode
 	}
 	s.mu.Unlock()
 }
@@ -1991,6 +2073,7 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		hostSeen:        make(map[string]time.Time),
 		nodeByHost:      make(map[string]map[string]bool),
 		relayFlowByNode: make(map[string]string),
+		flowByNode:      make(map[string]string),
 		nodePorts:       make(map[string]int),
 	}
 	s.netSeq++
@@ -3527,6 +3610,7 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 		hostSeen:        make(map[string]time.Time),
 		nodeByHost:      make(map[string]map[string]bool),
 		relayFlowByNode: make(map[string]string),
+		flowByNode:      make(map[string]string),
 		nodePorts:       make(map[string]int),
 	}
 	s.netSeq++

@@ -816,12 +816,13 @@ func TestNeighborDataPlaneAttribution(t *testing.T) {
 	}
 }
 
-// TestSharedHostNeverRecipient verifies the mis-route guard: when the reverse
-// index maps one host to more than one node (112.10.250.51 -> {Mac, phone}, a
-// CGNAT/shared-egress collision), a phone-bound frame must never be forwarded
-// to the Mac's flow because the shared host is not a dependable recipient
-// target.
-func TestSharedHostNeverRecipient(t *testing.T) {
+// TestSharedHostNeverDropsRecipient verifies that a reverse-index collision on
+// one host (112.10.250.51 -> {Mac, phone}) can no longer swallow a phone-bound
+// frame. The phone's authoritative exact flow is always delivered; the shared
+// host is a fan-out candidate so the recipient's real mapping is reached even
+// when the flow hook pinned a sibling's socket (extra copies are dropped by
+// the sibling's WG session).
+func TestSharedHostNeverDropsRecipient(t *testing.T) {
 	net3 := buildNetwork3(t)
 	s := net3.store
 
@@ -835,8 +836,7 @@ func TestSharedHostNeverRecipient(t *testing.T) {
 	// Docker (C, the sender) has two inbound mappings on its node port: the
 	// phone's data-plane flow 223.160.208.21:39802 (same /23 as the phone's
 	// control host, attributed on the wire) and Mac's flow under the shared
-	// host 112.10.250.51:12831. The receiver port order matters: the phone's
-	// flow must win, Mac's must be skipped.
+	// host 112.10.250.51:12831.
 	s.OnRelayFlow(net3.cPort, "223.160.208.21:39802")
 	s.mu.Lock()
 	ns = s.networks[net3.a.NetworkID]
@@ -849,17 +849,111 @@ func TestSharedHostNeverRecipient(t *testing.T) {
 
 	payload := []byte("for-phone")
 
-	// Docker sends to the phone's node port: Mac's flow under the shared host
-	// must be skipped, and the payload must arrive on the phone's own flow.
+	// Docker sends to the phone's node port: the phone's own exact flow must
+	// always receive the payload — the old code returned early with no sends.
 	net3.store.RelayRouteNodePort(net3.aPort, "66.187.6.46:51900", payload)
 
-	for _, snd := range net3.rec.sends {
-		if snd.to == "112.10.250.51:12831" && snd.data == string(payload) {
-			t.Fatalf("phone-bound frame routed to Mac's flow on shared host 112.10.250.51: %+v", net3.rec.sends)
-		}
-	}
 	if !net3.rec.contains("223.160.208.21:39802", string(payload)) {
 		t.Fatalf("phone-bound frame never reached phone flow; sends=%v", net3.rec.sends)
+	}
+}
+
+// TestSharedHostRecipientBootstrapFanOut models the live bug: Mac and NAS sit
+// behind one home egress (39.180.139.85:4302 and :1213) and a phone-bound
+// frame is sent before Mac's exact flow is pinned. The shared host must not
+// drop the frame (old behaviour) — every live flow under the shared egress is
+// fanned out so the recipient's own WG socket accepts the copy and a wrong
+// sibling drops its copy harmlessly.
+func TestSharedHostRecipientBootstrapFanOut(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	// The shared host 39.180.139.85 is owned by more than one node (Mac, phone)
+	// — a genuine shared egress, not an exclusive host.
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	s.learnNodeHostLocked(ns, net3.b.ID, "39.180.139.85")
+	s.learnNodeHostLocked(ns, net3.a.ID, "39.180.139.85")
+	s.mu.Unlock()
+
+	// Docker (C, sender) socket shows both siblings' flows under the shared
+	// egress; recipient Mac's exact flow has no pin yet.
+	net3.flows[net3.cPort] = []string{"39.180.139.85:4302", "39.180.139.85:1213"}
+
+	payload := []byte("phone-to-mac")
+	net3.store.RelayRouteNodePort(net3.bPort, "66.187.6.46:51900", payload)
+
+	if !net3.rec.contains("39.180.139.85:4302", string(payload)) {
+		t.Fatalf("shared-host fan-out never reached Mac's flow; sends=%v", net3.rec.sends)
+	}
+}
+
+// TestSharedHostRecipientPinnedFlow verifies the deterministic path once the
+// recipient's exact mapping is pinned: a frame bound for Mac is delivered to
+// 39.180.139.85:4302, and because the flow hook can coin-flip which sibling a
+// shared-egress address belongs to, a copy may also land on the sibling's
+// socket (39.180.139.85:1213) where WG drops it harmlessly — the recipient's
+// own mapping must never be skipped.
+func TestSharedHostRecipientPinnedFlow(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	// The shared host is owned by Mac and the phone, and Mac's exact flow is
+	// pinned by the flow hook (full-address reverse index).
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	s.learnNodeHostLocked(ns, net3.b.ID, "39.180.139.85")
+	s.learnNodeHostLocked(ns, net3.a.ID, "39.180.139.85")
+	ns.relayFlowByNode[net3.b.ID] = "39.180.139.85:4302"
+	if ns.flowByNode == nil {
+		ns.flowByNode = make(map[string]string)
+	}
+	ns.flowByNode["39.180.139.85:4302"] = net3.b.ID
+	s.mu.Unlock()
+
+	// Docker (C, sender) socket shows both siblings under the shared egress.
+	net3.flows[net3.cPort] = []string{"39.180.139.85:4302", "39.180.139.85:1213"}
+
+	payload := []byte("phone-to-mac-pinned")
+	net3.store.RelayRouteNodePort(net3.bPort, "66.187.6.46:51900", payload)
+
+	if !net3.rec.contains("39.180.139.85:4302", string(payload)) {
+		t.Fatalf("pinned flow 4302 never got the frame; sends=%v", net3.rec.sends)
+	}
+}
+
+// TestSharedHostSenderExactFlowAttribution verifies the sender side of the
+// same collision: a frame arriving from a shared-egress exact flow is resolved
+// by the full-address reverse index even though the host alone maps to both
+// siblings.
+func TestSharedHostSenderExactFlowAttribution(t *testing.T) {
+	net3 := buildNetwork3(t)
+	s := net3.store
+
+	// Shared host 39.180.139.85 belongs to both Mac (B) and the phone (A).
+	// Mac's exact mapping is pinned via the flow hook.
+	s.mu.Lock()
+	ns := s.networks[net3.a.NetworkID]
+	s.learnNodeHostLocked(ns, net3.b.ID, "39.180.139.85")
+	s.learnNodeHostLocked(ns, net3.a.ID, "39.180.139.85")
+	ns.relayFlowByNode[net3.b.ID] = "39.180.139.85:4302"
+	if ns.flowByNode == nil {
+		ns.flowByNode = make(map[string]string)
+	}
+	ns.flowByNode["39.180.139.85:4302"] = net3.b.ID
+	s.mu.Unlock()
+
+	// Docker (C, recipient) socket holds an inbound flow toward Mac.
+	net3.flows[net3.bPort] = []string{"66.187.6.46:51900"}
+
+	// Mac sends toward docker's node port from its shared-egress exact flow:
+	// attribution must land on Mac by exact flow, not on the host-only
+	// ambiguous sibling (which would be the wrong sender socket).
+	payload := []byte("mac-to-docker-exact")
+	net3.store.RelayRouteNodePort(net3.cPort, "39.180.139.85:4302", payload)
+
+	if !net3.rec.contains("66.187.6.46:51900", string(payload)) {
+		t.Fatalf("docker never received mac frame via exact-flow sender attribution; sends=%v", net3.rec.sends)
 	}
 }
 
