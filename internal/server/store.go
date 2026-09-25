@@ -455,7 +455,13 @@ func (s *Store) load() error {
 				if rec.Port != 0 {
 					ns.nodePorts[nodeID] = rec.Port
 				}
-				if rec.Host != "" {
+				// Honor a persisted serving-host only while it still belongs
+				// to the current instance set (relayHost + relayAlternates).
+				// A single-instance deployment (no alternates) always clears
+				// stale override hosts so nodes fall back to the primary
+				// relay; the port itself is kept so cached peer endpoints
+				// stay valid.
+				if rec.Host != "" && len(s.relayAlternates) > 0 {
 					if s.nodeRelayHost[netID] == nil {
 						s.nodeRelayHost[netID] = make(map[string]string)
 					}

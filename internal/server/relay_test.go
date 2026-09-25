@@ -1309,3 +1309,62 @@ func TestRelayTopoMultiInstanceAssignment(t *testing.T) {
 		t.Fatalf("peer C override=%q, want %q", got, c1.RelayHostOverride)
 	}
 }
+
+// TestRelayTopoHostStaleAfterAlternatesRemoved verifies that persisted
+// RelayHostOverride hosts written while alternates were configured do not
+// survive a restart where the deployment collapsed back to a single
+// instance: the port is kept (cached peer endpoints stay valid) but the
+// stale serving host is cleared so peers fall back to the primary relay.
+func TestRelayTopoHostStaleAfterAlternatesRemoved(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "topo-stale.db")
+
+	s, err := NewStoreAt(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := freePort(t)
+	s.SetRelay("10.0.0.1", base, 32)
+	created, err := s.CreateNetwork(testKey(973), "dev-topo-stale", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokB, err := s.Join(created.NetworkID, created.PairingCode, testKey(974), "dev-topo-stale-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Assign B a port through the normal single-instance path, then simulate
+	// stale persisted topology from a previous multi-instance deployment by
+	// hand-writing an alternate host override for the same node.
+	lb, err := s.ListPeersFrom(tokB.Token, "203.0.113.62", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bPort := lb.Self.RelayPort
+	if bPort == 0 {
+		t.Fatal("B port not assigned")
+	}
+	if err := s.persistRelayTopo(created.NetworkID, lb.Self.ID, bPort, "10.0.0.2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restart as single instance: no alternates.
+	s2, err := NewStoreAt(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2.SetRelay("10.0.0.1", base, 32)
+	lb2, err := s2.ListPeersFrom(tokB.Token, "203.0.113.62", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lb2.Self.RelayPort != bPort {
+		t.Fatalf("B port after collapse=%d, want kept %d", lb2.Self.RelayPort, bPort)
+	}
+	if lb2.Self.RelayHostOverride != "" {
+		t.Fatalf("B stale host after collapse=%q, want empty", lb2.Self.RelayHostOverride)
+	}
+}
