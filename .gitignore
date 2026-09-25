@@ -24,13 +24,20 @@ android/app-native/libs/
 android/app-native/src/main/jniLibs/
 *.bak
 
-# Build binaries
+# Build binaries (built by scripts/rollout-*.sh; never committed)
 /server
 /build/
+
+# Local tooling & generated state (not project artifacts)
+/bin/
+/.claude/
+/.agents/
+skills-lock.json
 
 # Stray local binaries / junk
 .DS_Store
 /server
+/server_linux
 /snetd
 /snetctl
 
