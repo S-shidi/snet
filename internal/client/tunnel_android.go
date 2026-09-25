@@ -45,7 +45,6 @@ func NewTunnelFromFD(fd int, privKeyHex, ip string, port, mtu int) (*Tunnel, err
 		unix.Close(gofd)
 		return nil, fmt.Errorf("create tun from fd: %w", err)
 	}
-	_ = name // Android doesn't need the interface name for routing
 
 	logger := device.NewLogger(device.LogLevelError, "snetd: ")
 	dev := device.NewDevice(t, conn.NewDefaultBind(), logger)

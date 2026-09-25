@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -21,17 +20,6 @@ func GenerateKeyPair() (priv, pub string, err error) {
 		return "", "", err
 	}
 	return base64.StdEncoding.EncodeToString(key), base64.StdEncoding.EncodeToString(point), nil
-}
-
-func DecodePublicKey(b64 string) ([]byte, error) {
-	raw, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) != 32 {
-		return nil, errors.New("public key must be 32 bytes")
-	}
-	return raw, nil
 }
 
 // b64ToHex converts a base64-encoded raw key to hex (wireguard-go UAPI format).

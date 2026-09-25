@@ -73,7 +73,6 @@ func main() {
 		// leaked out of the assignable pool.
 		store.SetRelayRelease(relay.ClosePort)
 		relay.SetNodeRoute(store.RelayRouteNodePort)
-		store.SetRelayFlowLookup(relay.FlowsByHost)
 		store.SetRelayAllFlows(relay.Flows)
 		store.SetRelaySend(relay.SendFrom)
 		store.SetRelaySendFanned(relay.SendFanned)

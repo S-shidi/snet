@@ -524,7 +524,6 @@ func TestAdminAuthCodeEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	var listPage struct {
-		protocol.AdminAuthCodesResp
 		Items []protocol.AuthCodeInfo `json:"items"`
 		Total int                     `json:"total"`
 	}

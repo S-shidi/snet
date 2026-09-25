@@ -144,18 +144,18 @@ type networkState struct {
 	// (HTTPS) calls; used to attribute relay flows to nodes.
 	ctrlHost map[string]string
 	// nodeByHost is the reverse index: public host (control-plane or observed
-	// data-plane) -> node IDs that have been seen using it. Fed by both
-	// NoteCtrlHost and the relay flow hook, because a node's data-plane NAT
-	// IP can differ from its control-plane IP (e.g. an operator that allocates
-	// a different public address per session or interface). Used by the
-	// per-node router to resolve a sender whose data-plane host does not
-	// equal its control-plane host.
+	// data-plane) -> node IDs that have been seen using it. Fed by the control-
+	// plane attribution in the HTTP handlers and by the relay flow hook,
+	// because a node's data-plane NAT IP can differ from its control-plane IP
+	// (e.g. an operator that allocates a different public address per session
+	// or interface). Used by the per-node router to resolve a sender whose
+	// data-plane host does not equal its control-plane host.
 	nodeByHost map[string]map[string]bool
 	// hostSeen tracks the last time each public host in nodeByHost was
 	// observed (control-plane or data-plane), so stale data-plane hosts —
 	// e.g. a CGNAT egress the operator stopped using or reused for another
 	// subscriber — can be pruned from the reverse index. Control-plane hosts
-	// are refreshed by NoteCtrlHost on every HTTPS call; pruning only
+	// are refreshed by the HTTP handlers on every HTTPS call; pruning only
 	// removes hosts idle past hostStaleTTL.
 	hostSeen map[string]time.Time
 	// relayFlowByNode is the most recent attributed relay flow per node,
@@ -290,9 +290,6 @@ type Store struct {
 	// Set via SetRelayRelease; called under s.mu when a network or node is
 	// removed so ports and goroutines are never leaked.
 	relayRelease func(port int) error
-	// relayFlows returns the live flows seen on a relay port, filtered to a
-	// host. Set via SetRelayFlowLookup; used by unicast routing.
-	relayFlows func(port int, host string) []string
 	// relayAllFlows returns every live flow seen on a relay port. Set via
 	// SetRelayAllFlows; used by unicast routing to match a recipient against
 	// all the hosts it has been seen using.
@@ -942,15 +939,6 @@ func (s *Store) SetRelayRelease(fn func(port int) error) {
 	s.relayRelease = fn
 }
 
-// SetRelayFlowLookup registers the function that returns live relay flows for
-// a port, filtered to a specific host. Used by unicast routing to find the
-// recipient's inbound mapping on the sender's socket.
-func (s *Store) SetRelayFlowLookup(fn func(port int, host string) []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.relayFlows = fn
-}
-
 // SetRelayAllFlows registers the function that returns every live flow seen
 // on a relay port. Used by unicast routing to match the recipient across all
 // the hosts it has been seen using.
@@ -1515,16 +1503,6 @@ func (s *Store) RelayRouteNodePort(port int, sender string, data []byte) bool {
 	return true
 }
 
-// relayFlowsByHost returns the live flows seen on a relay port whose host
-// equals host. Requires the route callback's lock discipline (callers hold
-// s.mu; this acquires the pair mutex, never a store lock).
-func (s *Store) relayFlowsByHost(port int, host string) []string {
-	if s.relayFlows == nil {
-		return nil
-	}
-	return s.relayFlows(port, host)
-}
-
 // relayFlowsByPort returns every live flow seen on a relay port. Requires the
 // route callback's lock discipline (callers hold s.mu; this acquires the pair
 // mutex only).
@@ -1762,7 +1740,7 @@ func (s *Store) OnRelayFlow(port int, addr string) {
 	// control-plane host; when it does not match — a node's data-plane NAT IP
 	// can differ from its control-plane IP, e.g. an operator that allocates a
 	// different public address per session — resolve via the reverse index
-	// that NoteCtrlHost seeded from the same node's control-plane calls.
+	// that the control-plane attribution from the same node seeded.
 	matchNode := ""
 	hostNormed := hostNorm(host)
 	// A flow first seen by one node keeps its ownership: the exact NAT
@@ -1942,16 +1920,6 @@ func (s *Store) exclusiveHostOwnerLocked(ns *networkState, host string) string {
 		return id
 	}
 	return ""
-}
-
-// NoteCtrlHost records the public IP a node's control-plane calls come from.
-// The relay flow hook uses it to attribute observed NAT mappings to nodes.
-func (s *Store) NoteCtrlHost(nid, nodeID, host string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ns := s.networks[nid]; ns != nil {
-		ns.ctrlHost[nodeID] = host
-	}
 }
 
 // ---- public API ----
@@ -2444,10 +2412,6 @@ func (s *Store) SetEndpointV6(token, endpointV6 string) error {
 	n.LastSeen = time.Now().Unix()
 	s.touchLocked(ns, time.Now())
 	return s.persistNode(te.NetworkID, n)
-}
-
-func (s *Store) ListPeers(token string) (protocol.PeersResp, error) {
-	return s.listPeersFrom(token, "", false)
 }
 
 // ListPeersFrom is ListPeers with the caller's public IP captured from the
@@ -2968,69 +2932,11 @@ func (s *Store) SetNodeRole(token, targetNodeID, role string) error {
 
 // ---- pending joins ----
 
-// PendingStatus reports the state of a pending join request. Only the
-// requesting client (identified by its pending ID) may read it. Status is
-// "pending", "approved" or "denied"; approved responses include the full
-// join payload.
-func (s *Store) PendingStatus(pendingID string) (protocol.PendingStatusResp, error) {
-	if pendingID == "" {
-		return protocol.PendingStatusResp{}, ErrUnauthorized
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	pruneExpiredPendingLocked(s, time.Now())
-	for _, ns := range s.networks {
-		p := ns.pending[pendingID]
-		if p == nil {
-			continue
-		}
-		switch p.Status {
-		case "approved":
-			peers := make([]protocol.Node, 0, len(ns.nodes)-1)
-			for id, n := range ns.nodes {
-				if id != p.NodeID {
-					peers = append(peers, *n)
-				}
-			}
-			return protocol.PendingStatusResp{
-				Status:    "approved",
-				NetworkID: ns.n.ID,
-				Name:      ns.n.Name,
-				NodeID:    p.NodeID,
-				IP:        p.IP,
-				Token:     p.Token,
-				Subnet:    p.Subnet,
-				RelayPort: p.RelayPort,
-				Peers:     peers,
-			}, nil
-		case "denied":
-			return protocol.PendingStatusResp{Status: "denied", NetworkID: ns.n.ID, Name: ns.n.Name}, nil
-		default:
-			return protocol.PendingStatusResp{Status: "pending", NetworkID: ns.n.ID, Name: ns.n.Name}, nil
-		}
-	}
-	return protocol.PendingStatusResp{Status: "gone"}, nil
-}
-
-// ConsumePending deletes an approved pending request once the client has
-// picked up its credentials.
-func (s *Store) ConsumePending(pendingID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, ns := range s.networks {
-		if ns.pending[pendingID] != nil {
-			delete(ns.pending, pendingID)
-			_ = s.deletePending(pendingID)
-			return
-		}
-	}
-}
-
 // PendingClaim atomically reads an approved pending request and consumes it in
 // a single critical section, so one-shot credentials are handed out exactly
 // once even when multiple clients poll concurrently. It returns the same shape
-// as PendingStatus, plus a claimed bool that is false for pending/denied/gone
-// statuses (which are not deleted).
+// as the pending status response, plus a claimed bool that is false for
+// pending/denied/gone statuses (which are not deleted).
 func (s *Store) PendingClaim(pendingID string) (protocol.PendingStatusResp, bool, error) {
 	if pendingID == "" {
 		return protocol.PendingStatusResp{}, false, ErrUnauthorized
@@ -3803,29 +3709,6 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 	return items, total, page
 }
 
-// AdminNetworks lists all networks with summary stats. Pure read operation.
-func (s *Store) AdminNetworks(zombieTTL time.Duration) []networkSummary {
-	s.mu.RLock() // Use RLock for read-only operations
-	defer s.mu.RUnlock()
-	now := time.Now()
-	out := make([]networkSummary, 0, len(s.networks))
-	for _, ns := range s.networks {
-		zombie := false
-		if zombieTTL > 0 && ns.lastActivityAt > 0 && now.Sub(time.Unix(ns.lastActivityAt, 0)) >= zombieTTL {
-			zombie = true
-		}
-		out = append(out, networkSummary{
-			Network:        ns.n,
-			NodeCount:      len(ns.nodes),
-			RelayPort:      ns.relayPort,
-			Online:         now.Unix()-ns.lastActivityAt < int64(netAliveTTL/time.Second),
-			Zombie:         zombie,
-			LastActivityAt: ns.lastActivityAt,
-		})
-	}
-	return out
-}
-
 // NodeNetwork returns the network ID that a coordination token belongs to. Pure read operation.
 func (s *Store) NodeNetwork(token string) (string, error) {
 	s.mu.RLock() // Use RLock for read-only operations
@@ -3835,23 +3718,6 @@ func (s *Store) NodeNetwork(token string) (string, error) {
 		return "", ErrUnauthorized
 	}
 	return te.NetworkID, nil
-}
-
-// AdminDevices lists all registered device identities. Pure read operation.
-func (s *Store) AdminDevices() []protocol.Device {
-	s.mu.RLock() // Use RLock for read-only operations
-	defer s.mu.RUnlock()
-	out := make([]protocol.Device, 0, len(s.devices))
-	for _, d := range s.devices {
-		out = append(out, protocol.Device{
-			ID:        d.ID,
-			PublicKey: d.PublicKey,
-			CreatedAt: d.CreatedAt,
-			LastSeen:  d.LastSeen,
-			Name:      d.Name,
-		})
-	}
-	return out
 }
 
 // AdminDevicesPage returns one page of registered devices sorted by creation
@@ -4011,27 +3877,6 @@ func (s *Store) rotateNodeTokenLocked(netID, nodeID, newToken string) error {
 		return fmt.Errorf("persist new token: %w", err)
 	}
 	return nil
-}
-
-// GenerateDeviceToken creates (or rotates) a device-level bearer token that
-// authenticates device-scoped API calls (e.g. fetching network details after
-// a reinstall). The token is persisted in the device record.
-func (s *Store) GenerateDeviceToken(deviceID string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	d := s.devices[deviceID]
-	if d == nil {
-		return "", ErrNotFound
-	}
-	tok, err := randomToken()
-	if err != nil {
-		return "", err
-	}
-	d.DeviceToken = tok
-	if err := s.persistDevice(d); err != nil {
-		return "", err
-	}
-	return tok, nil
 }
 
 // ValidateDeviceToken checks whether the presented token matches the stored
@@ -4244,13 +4089,6 @@ func (s *Store) SetRequireDeviceAuth(on bool) {
 	s.requireDeviceAuth = on
 }
 
-// RequireDeviceAuth reports whether the enrollment gate is on.
-func (s *Store) RequireDeviceAuth() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.requireDeviceAuth
-}
-
 // DeviceBound reports whether deviceID has successfully bound an
 // authorization code.
 func (s *Store) DeviceBound(deviceID string) bool {
@@ -4399,18 +4237,6 @@ func (s *Store) AdminRenewAuthCode(codeID string, expiresAt *time.Time) error {
 
 	ac.ExpiresAt = expiresAt
 	return s.persistAuthCode(ac)
-}
-
-// CheckDeviceAuth checks if a device is bound to a valid (non-expired) auth code.
-// Returns ErrUnauthorized if not bound, ErrAuthCodeExpired if bound but expired.
-func (s *Store) CheckDeviceAuth(deviceID string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !s.requireDeviceAuth {
-		return nil
-	}
-
-	return s.checkDeviceAuthLocked(deviceID)
 }
 
 func (s *Store) checkDeviceAuthLocked(deviceID string) error {

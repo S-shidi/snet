@@ -155,17 +155,6 @@ func (t *Tunnel) ApplyPeers(peers []protocol.Node, subnet, relayEP string) error
 	return nil
 }
 
-// Peers returns a snapshot of the current peer set. Callers must not modify
-// the returned map.
-func (t *Tunnel) Peers() map[string]protocol.Node {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.peers
-}
-
-// Iface returns the TUN interface name.
-func (t *Tunnel) Iface() string { return t.iface }
-
 // RemoveAllPeers removes all OS routes for every peer in the tunnel.
 // Used during tunnel teardown before closing the interface.
 func (t *Tunnel) RemoveAllPeers() {
@@ -272,7 +261,6 @@ type PeerStats struct {
 }
 
 func (t *Tunnel) InterfaceName() string { return t.iface }
-func (t *Tunnel) IP() string            { return t.ip }
 
 func (t *Tunnel) Close() {
 	if t.dev != nil {

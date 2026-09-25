@@ -136,11 +136,11 @@ func (r *Relay) SetActivityHook(fn func(port int)) {
 }
 
 // Ensure lazily binds a single relay port if it is not already bound and
-// spawns its read loop. Use in production instead of Start(): only ports of
-// networks that actually need relaying are ever bound, so a large port pool
-// costs no sockets and no boot time. Returns nil when the port is already
-// listening. This is for the NETWORK broadcast port (legacy); per-node ports
-// use EnsureNode which sets the unicast route callback.
+// spawns its read loop. Only ports of networks that actually need relaying are
+// ever bound, so a large port pool costs no sockets and no boot time. Returns
+// nil when the port is already listening. This is for the NETWORK broadcast
+// port (legacy); per-node ports use EnsureNode which sets the unicast route
+// callback.
 func (r *Relay) Ensure(port int) error {
 	return r.ensure(port, false)
 }
@@ -202,29 +202,6 @@ func (r *Relay) ensure(port int, node bool) error {
 }
 
 // Start binds every port in the range and spawns a read loop per port.
-func (r *Relay) Start() error {
-	for i := 0; i < r.count; i++ {
-		port := r.base + i
-		if err := r.Ensure(port); err != nil {
-			r.Close()
-			return err
-		}
-	}
-	return nil
-}
-
-// Ports returns the relay ports actually bound.
-func (r *Relay) Ports() []int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]int, 0, len(r.conns))
-	for p := range r.conns {
-		out = append(out, p)
-	}
-	return out
-}
-
-// Close releases every relay socket and stops all send loops.
 func (r *Relay) Close() error {
 	r.mu.Lock()
 	conns := make([]*relayPair, 0, len(r.conns))
@@ -418,28 +395,6 @@ func (r *Relay) Flows(port int) []string {
 	out := make([]string, 0, len(p.seen))
 	for ep := range p.seen {
 		out = append(out, ep)
-	}
-	return out
-}
-
-// FlowsByHost returns the live relay flows ("ip:port") seen on the socket
-// bound to port whose host part equals host. Used by unicast routing to find
-// the recipient's inbound mapping on the sender's socket.
-func (r *Relay) FlowsByHost(port int, host string) []string {
-	r.mu.Lock()
-	p := r.conns[port]
-	r.mu.Unlock()
-	if p == nil {
-		return nil
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var out []string
-	for ep := range p.seen {
-		h, _, err := net.SplitHostPort(ep)
-		if err == nil && hostNorm(h) == hostNorm(host) {
-			out = append(out, ep)
-		}
 	}
 	return out
 }

@@ -7,8 +7,6 @@ import (
 const (
 	DefaultMTU            = 1420
 	DefaultWGPort         = 51820
-	DefaultCtlAddr        = "http://127.0.0.1:19432"
-	NetworkPrefix         = "10.88.0."
 	MaxNodes              = 100
 	KeepaliveInterval     = 10
 	KeepaliveIntervalIdle = 25 // Longer interval when idle (mobile power saving)
@@ -300,10 +298,6 @@ type RegisterDeviceResp struct {
 	Bound *bool `json:"bound,omitempty"`
 }
 
-type AdminNetworksResp struct {
-	Networks []Network `json:"networks"`
-}
-
 // AdminCreateNetworkReq creates a server-managed network. Managed networks
 // have no client owner, are exempt from zombie reaping and cannot be claimed.
 type AdminCreateNetworkReq struct {
@@ -328,14 +322,6 @@ type AdminCreateNetworkResp struct {
 type AdminPasswordReq struct {
 	OldPassword string `json:"oldPassword"`
 	NewPassword string `json:"newPassword"`
-}
-
-type AdminNodesResp struct {
-	Nodes []Node `json:"nodes"`
-}
-
-type AdminDevicesResp struct {
-	Devices []Device `json:"devices"`
 }
 
 // AdminLoginReq authenticates with username+password and returns a session
@@ -423,10 +409,6 @@ type DeviceAuthStatusResp struct {
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	Expired    bool       `json:"expired"`
 	Message    string     `json:"message,omitempty"`
-}
-
-type AdminAuthCodesResp struct {
-	Codes []AuthCodeInfo `json:"codes"`
 }
 
 // DeviceNetworkDetail contains the full information for a device's membership

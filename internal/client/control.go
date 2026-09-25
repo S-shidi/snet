@@ -33,12 +33,10 @@ type apiClient struct {
 	http   *http.Client
 	ctx    context.Context
 
-	// smu guards serverMajor, the API major version reported by the server on
-	// its latest response. 0 means the server did not advertise a version
-	// (legacy server).
-	smu         sync.Mutex
-	serverMajor int
-	warned      bool
+	// smu guards the one-time incompatible-version warning emitted by
+	// noteServerVersion.
+	smu    sync.Mutex
+	warned bool
 }
 
 // newAPIClient builds an HTTP client for the coordination server. For https
@@ -137,20 +135,11 @@ func (c *apiClient) noteServerVersion(v string) {
 	}
 	c.smu.Lock()
 	defer c.smu.Unlock()
-	c.serverMajor = major
 	if major == protocol.APIVersion || c.warned {
 		return
 	}
 	c.warned = true
 	log.Printf("warn: server %s runs api version %d, this client speaks %d; upgrade one side", c.server, major, protocol.APIVersion)
-}
-
-// ServerAPIVersion reports the API major version advertised by the server.
-// The bool is false when no version was advertised (unknown/legacy server).
-func (c *apiClient) ServerAPIVersion() (int, bool) {
-	c.smu.Lock()
-	defer c.smu.Unlock()
-	return c.serverMajor, c.serverMajor != 0
 }
 
 func (c *apiClient) CreateNetwork(publicKey, deviceID, name, subnet string, approvalRequired bool,
@@ -291,12 +280,6 @@ func (c *apiClient) SetEndpointFor(nid, nodeID, token, endpoint, localEndpoint s
 func (c *apiClient) SetEndpointV6For(nid, nodeID, token, endpointV6 string) error {
 	return c.do(http.MethodPut, "/api/v1/networks/"+nid+"/nodes/"+nodeID+"/endpoint",
 		token, protocol.SetEndpointReq{EndpointV6: endpointV6}, nil)
-}
-
-func (c *apiClient) ListPeers(nid, token string) ([]protocol.Node, error) {
-	var out protocol.PeersResp
-	err := c.do(http.MethodGet, "/api/v1/networks/"+nid+"/peers", token, nil, &out)
-	return out.Peers, err
 }
 
 // PeersState returns peers plus the caller's own node (with current IP) and

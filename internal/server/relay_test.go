@@ -438,6 +438,18 @@ func freePort(t *testing.T) int {
 	return p
 }
 
+// flowsContainHost reports whether any "ip:port" flow in flows has host as
+// its host part.
+func flowsContainHost(flows []string, host string) bool {
+	for _, ep := range flows {
+		h, _, err := net.SplitHostPort(ep)
+		if err == nil && hostNorm(h) == hostNorm(host) {
+			return true
+		}
+	}
+	return false
+}
+
 // portOf returns the source port of a local UDP conn ("[::]:59247" -> 59247).
 func portOf(t *testing.T, c *net.UDPConn) string {
 	t.Helper()
@@ -568,7 +580,6 @@ func TestPerNodeUnicastRouting(t *testing.T) {
 	s.SetRelayEnsure(r.Ensure)
 	s.SetNodeEnsure(r.EnsureNode)
 	r.SetNodeRoute(s.RelayRouteNodePort)
-	s.SetRelayFlowLookup(r.FlowsByHost)
 	s.SetRelayAllFlows(r.Flows)
 	s.SetRelaySend(r.SendFrom)
 
@@ -671,7 +682,7 @@ func TestPerNodeUnicastRouting(t *testing.T) {
 	// until B's mapping is actually registered before A's payload can be
 	// routed through it.
 	deadline := time.Now().Add(2 * time.Second)
-	for r.FlowsByHost(aPort, lanIP) == nil {
+	for !flowsContainHost(r.Flows(aPort), lanIP) {
 		if time.Now().After(deadline) {
 			t.Fatalf("B's flow never registered on A's socket :%d", aPort)
 		}
@@ -727,7 +738,6 @@ func buildNetwork3(t *testing.T) *testNetwork3 {
 	s.SetRelay("127.0.0.1", base, 8)
 	s.SetRelayEnsure(r.Ensure)
 	s.SetNodeEnsure(r.EnsureNode)
-	s.SetRelayFlowLookup(func(port int, host string) []string { return nil })
 	r.SetNodeRoute(s.RelayRouteNodePort)
 
 	net3 := &testNetwork3{store: s, flows: map[int][]string{}}

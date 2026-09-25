@@ -192,28 +192,9 @@ func (c *Config) SaveAt(path string) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-// NetworkIDs returns the network IDs this daemon has ever joined.
-func (c *Config) NetworkIDs() []string {
-	ids := make([]string, 0, len(c.Networks))
-	for id := range c.Networks {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
 // Bound reports whether this device has bound to its currently configured
 // server. The binding is tied to the exact normalized server address, so
 // changing the server address clears the effective bound state.
 func (c *Config) Bound() bool {
 	return c.BoundServer != "" && strings.EqualFold(c.BoundServer, c.ServerAddr)
-}
-
-// FindUnusedPort picks a free UDP port in the range starting at base.
-func FindUnusedPort(base int) int {
-	for p := base; p < base+64; p++ {
-		if portFree(p) {
-			return p
-		}
-	}
-	return 0
 }

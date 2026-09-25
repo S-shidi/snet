@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,19 +18,6 @@ import (
 
 	"snet/internal/protocol"
 )
-
-// runWithRecovery wraps a goroutine with panic recovery to prevent crashes.
-// All goroutines should use this wrapper to ensure stability.
-func runWithRecovery(name string, fn func()) {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[PANIC] %s recovered: %v\n%s", name, r, debug.Stack())
-			}
-		}()
-		fn()
-	}()
-}
 
 // Buffer pools for frequently allocated byte slices to reduce GC pressure.
 var (
@@ -324,15 +310,6 @@ type Daemon struct {
 	keyRotating bool
 }
 
-// defaultKeyRotationDays is assumed when KeyRotationDays is unset (<=0) but a
-// caller explicitly enables rotation: 30 days is a sane forward-secrecy
-// interval for home/lab meshes.
-const defaultKeyRotationDays = 30
-
-func NewDaemon(cfg *Config) *Daemon {
-	return NewDaemonAt(cfg, "")
-}
-
 func NewDaemonAt(cfg *Config, configPath string) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
 	sp := make(map[string]string)
@@ -434,21 +411,6 @@ func (d *Daemon) publicKeyLocked() string {
 	return pubKeyB64FromPrivHex(d.cfg.PrivateKey)
 }
 
-func (d *Daemon) hostname() string {
-	d.mu.RLock()
-	if d.hostnameCache != "" {
-		v := d.hostnameCache
-		d.mu.RUnlock()
-		return v
-	}
-	d.mu.RUnlock()
-	h, _ := os.Hostname()
-	d.mu.Lock()
-	d.hostnameCache = h
-	d.mu.Unlock()
-	return h
-}
-
 // hostnameLocked returns the hostname assuming the caller already holds d.mu.
 func (d *Daemon) hostnameLocked() string {
 	if d.hostnameCache != "" {
@@ -508,23 +470,6 @@ func (d *Daemon) ensureKeys(serverAddr string, port int) error {
 		_ = SaveDeviceKeypair(d.deviceIDFile, d.cfg.DeviceID, d.cfg.PrivateKey)
 	}
 	return nil
-}
-
-// SetKeyRotationDays configures the automatic WireGuard key rotation interval
-// in days (0 disables it) and (re)starts the background scheduler when enabled.
-func (d *Daemon) SetKeyRotationDays(days int) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if days <= 0 {
-		d.cfg.KeyRotationDays = 0
-		if d.keyRotationStop != nil {
-			close(d.keyRotationStop)
-			d.keyRotationStop = nil
-		}
-		return
-	}
-	d.cfg.KeyRotationDays = days
-	d.startKeyRotationLocked()
 }
 
 // startKeyRotationLocked starts the daily key-rotation scheduler when it is

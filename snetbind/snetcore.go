@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"time"
 
 	"snet/internal/client"
 	"snet/internal/constants"
@@ -582,5 +581,4 @@ const KeepaliveInterval = protocol.KeepaliveInterval
 
 func init() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	_ = time.Now()
 }
