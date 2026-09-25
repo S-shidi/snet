@@ -78,7 +78,22 @@ var (
 	bktPending   = []byte("pending")
 	bktAdmin     = []byte("admin")
 	bktAuthCodes = []byte("authcodes")
+	// bktRelayTopo persists the per-node relay topology (Phase 3 / multi
+	// relay instance): which per-node unicast relay port a node was assigned
+	// and which relay instance host serves it. Records survive a restart so
+	// the port a node keeps re-announcing (and that peers cache) does not
+	// drift, and so cross-instance routing knows the serving host.
+	bktRelayTopo = []byte("relaytopo")
 )
+
+// relayTopoRecord is the per-node relay topology persisted under
+// bktRelayTopo, keyed "netID/nodeID". Port is the per-node unicast relay
+// port; Host is the relay instance host serving it, empty meaning the
+// network's primary relay host.
+type relayTopoRecord struct {
+	Port int    `json:"port,omitempty"`
+	Host string `json:"host,omitempty"`
+}
 
 const pendingTTL = 24 * time.Hour
 
@@ -291,6 +306,12 @@ type Store struct {
 	// at a node port, the relay looks up the sender and recipient from this
 	// mapping.
 	portToNode map[int]string
+	// nodeRelayHost maps network ID -> node ID -> the relay instance host
+	// that serves that node's per-node unicast relay port. Empty host means
+	// the node is served by the network's primary relay host. Used to fill
+	// Node.RelayHostOverride for peers so cross-instance traffic reaches the
+	// right relay instance. Persisted under bktRelayTopo and restored on load.
+	nodeRelayHost map[string]map[string]string
 }
 
 // NewStore returns a purely in-memory store (no persistence). Used by tests
@@ -304,12 +325,13 @@ func NewStore() *Store {
 // An empty path keeps the store purely in-memory.
 func NewStoreAt(path string) (*Store, error) {
 	s := &Store{
-		networks:   make(map[string]*networkState),
-		byToken:    make(map[string]tokenEntry),
-		devices:    make(map[string]*deviceRecord),
-		authCodes:  make(map[string]*authCodeRecord),
-		netByPort:  make(map[int]*networkState),
-		portToNode: make(map[int]string),
+		networks:      make(map[string]*networkState),
+		byToken:       make(map[string]tokenEntry),
+		devices:       make(map[string]*deviceRecord),
+		authCodes:     make(map[string]*authCodeRecord),
+		netByPort:     make(map[int]*networkState),
+		portToNode:    make(map[int]string),
+		nodeRelayHost: make(map[string]map[string]string),
 	}
 	if path == "" {
 		return s, nil
@@ -388,8 +410,8 @@ func (s *Store) load() error {
 					subnetBase:      base,
 					relaySeen:       make(map[string]time.Time),
 					ctrlHost:        make(map[string]string),
-				hostSeen:        make(map[string]time.Time),
-				nodeByHost:     make(map[string]map[string]bool),
+					hostSeen:        make(map[string]time.Time),
+					nodeByHost:      make(map[string]map[string]bool),
 					relayFlowByNode: make(map[string]string),
 					nodePorts:       make(map[string]int),
 				}
@@ -406,6 +428,38 @@ func (s *Store) load() error {
 				netID := string(k[:strings.IndexByte(string(k), '/')])
 				if ns := s.networks[netID]; ns != nil {
 					ns.nodes[n.ID] = &n
+				}
+			}
+		}
+		// Restore the persisted per-node relay topology (Phase 3): the relay
+		// port each node keeps announcing to peers survives a restart so
+		// cached peer endpoints stay valid, and the serving relay-instance
+		// host survives so cross-instance unicast routing keeps working.
+		if tb := tx.Bucket(bktRelayTopo); tb != nil {
+			c := tb.Cursor()
+			for k, v := c.First(); k != nil; k, v = c.Next() {
+				var rec relayTopoRecord
+				if err := json.Unmarshal(v, &rec); err != nil {
+					return err
+				}
+				key := string(k)
+				slash := strings.IndexByte(key, '/')
+				if slash < 0 {
+					continue
+				}
+				netID, nodeID := key[:slash], key[slash+1:]
+				ns := s.networks[netID]
+				if ns == nil {
+					continue
+				}
+				if rec.Port != 0 {
+					ns.nodePorts[nodeID] = rec.Port
+				}
+				if rec.Host != "" {
+					if s.nodeRelayHost[netID] == nil {
+						s.nodeRelayHost[netID] = make(map[string]string)
+					}
+					s.nodeRelayHost[netID][nodeID] = rec.Host
 				}
 			}
 		}
@@ -502,7 +556,7 @@ func hashToken(tok string) string {
 // ---- persistence helpers (no-op when db == nil) ----
 
 func (s *Store) ensureBuckets(tx *bbolt.Tx) error {
-	for _, b := range [][]byte{bktNetworks, bktNodes, bktTokens, bktDevices, bktPending, bktAdmin, bktAuthCodes} {
+	for _, b := range [][]byte{bktNetworks, bktNodes, bktTokens, bktDevices, bktPending, bktAdmin, bktAuthCodes, bktRelayTopo} {
 		if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 			return err
 		}
@@ -708,6 +762,16 @@ func (s *Store) deleteNetworkRows(netID string) error {
 			c := ndb.Cursor()
 			for k, _ := c.Seek(prefix); k != nil && bytesHasPrefix(k, prefix); k, _ = c.Next() {
 				if err := ndb.Delete(k); err != nil {
+					return err
+				}
+			}
+		}
+		rtb := tx.Bucket(bktRelayTopo)
+		if rtb != nil {
+			prefix := []byte(netID + "/")
+			c := rtb.Cursor()
+			for k, _ := c.Seek(prefix); k != nil && bytesHasPrefix(k, prefix); k, _ = c.Next() {
+				if err := rtb.Delete(k); err != nil {
 					return err
 				}
 			}
@@ -968,10 +1032,37 @@ func (s *Store) ensureNodePort(ns *networkState, nodeID string) error {
 		return nil
 	}
 	if ns.nodePorts[nodeID] != 0 {
+		// Re-bind after a restart that left the node with a persisted port.
+		if s.nodeEnsure != nil {
+			if host := s.nodeRelayHostFor(ns.n.ID, nodeID); host == "" {
+				s.netByPort[ns.nodePorts[nodeID]] = ns
+				s.portToNode[ns.nodePorts[nodeID]] = nodeID
+				if err := s.nodeEnsure(ns.nodePorts[nodeID]); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	}
 	if s.relayCount <= 0 {
 		return errors.New("no relay ports configured")
+	}
+	// A node served by an alternate relay instance gets a deterministic port
+	// (stable hash, linear scan for collisions) so the alternate instance —
+	// running the same pool/base — binds the same number, and its socket (not
+	// ours) serves the node. We only persist the topology here.
+	if host := s.instanceHostForNode(ns, nodeID); host != "" {
+		candidate, err := s.deterministicNodePort(ns, nodeID)
+		if err != nil {
+			return err
+		}
+		ns.nodePorts[nodeID] = candidate
+		if s.nodeRelayHost[ns.n.ID] == nil {
+			s.nodeRelayHost[ns.n.ID] = make(map[string]string)
+		}
+		s.nodeRelayHost[ns.n.ID][nodeID] = host
+		_ = s.persistRelayTopo(ns.n.ID, nodeID, candidate, host)
+		return nil
 	}
 	used := func(candidate int) bool {
 		if s.netByPort[candidate] != nil || s.portToNode[candidate] != "" {
@@ -1004,6 +1095,17 @@ func (s *Store) ensureNodePort(ns *networkState, nodeID string) error {
 		ns.nodePorts[nodeID] = candidate
 		s.netByPort[candidate] = ns
 		s.portToNode[candidate] = nodeID
+		// Persist the node's relay topology (multi-instance): which instance
+		// host serves it and on which port, so a restart keeps the ports peers
+		// already cached and cross-instance routing knows the serving host.
+		host := s.instanceHostForNode(ns, nodeID)
+		if host != "" {
+			if s.nodeRelayHost[ns.n.ID] == nil {
+				s.nodeRelayHost[ns.n.ID] = make(map[string]string)
+			}
+			s.nodeRelayHost[ns.n.ID][nodeID] = host
+		}
+		_ = s.persistRelayTopo(ns.n.ID, nodeID, candidate, host)
 		return nil
 	}
 	return errors.New("no free relay node ports")
@@ -1013,6 +1115,117 @@ func (s *Store) ensureNodePort(ns *networkState, nodeID string) error {
 // node, if any, returning it to the free pool. It removes the socket (stopping
 // its send-loop goroutine) and clears all port bookkeeping. Callers must hold
 // s.mu.
+// instanceHostForNode returns the relay instance host that serves the node's
+// per-node unicast relay port. With no alternates configured every node is
+// served by the network's primary relay host and this returns "", keeping the
+// single-instance topology byte-for-byte unchanged on the wire. With
+// alternates configured, nodes are spread across instances by a stable hash
+// of the node ID so a node's serving instance never changes as peers join or
+// leave. Callers must hold s.mu.
+func (s *Store) instanceHostForNode(ns *networkState, nodeID string) string {
+	if len(s.relayAlternates) == 0 {
+		return ""
+	}
+	hosts := make([]string, 0, 1+len(s.relayAlternates))
+	if s.relayHost != "" {
+		hosts = append(hosts, s.relayHost)
+	}
+	seen := map[string]bool{}
+	for _, alt := range s.relayAlternates {
+		if alt == "" {
+			continue
+		}
+		h := hostNorm(alt)
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		hosts = append(hosts, alt)
+	}
+	if len(hosts) <= 1 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(nodeID))
+	idx := binary.BigEndian.Uint32(sum[:4]) % uint32(len(hosts))
+	host := hosts[idx]
+	if hostNorm(host) == hostNorm(s.relayHost) {
+		return ""
+	}
+	return host
+}
+
+// nodeRelayHostFor returns the relay instance host serving the given node's
+// per-node unicast relay port, or "" when the node is served by the network's
+// primary relay host. Callers must hold s.mu.
+func (s *Store) nodeRelayHostFor(netID, nodeID string) string {
+	if m := s.nodeRelayHost[netID]; m != nil {
+		return m[nodeID]
+	}
+	return ""
+}
+
+// deterministicNodePort computes the per-node unicast relay port an alternate
+// relay instance binds for the node: a stable hash of the network+node ID
+// into the shared pool, walking forward on collision so every instance running
+// the same pool/base resolves the same number.
+func (s *Store) deterministicNodePort(ns *networkState, nodeID string) (int, error) {
+	if s.relayCount <= 0 {
+		return 0, errors.New("no relay ports configured")
+	}
+	seed := sha256.Sum256([]byte(ns.n.ID + "/" + nodeID))
+	start := int(binary.BigEndian.Uint32(seed[:4]) % uint32(s.relayCount))
+	taken := func(c int) bool {
+		for _, p := range ns.nodePorts {
+			if p == c {
+				return true
+			}
+		}
+		return s.netByPort[c] != nil || s.portToNode[c] != ""
+	}
+	for i := 0; i < s.relayCount; i++ {
+		c := s.relayBase + ((start + i) % s.relayCount)
+		if !taken(c) {
+			return c, nil
+		}
+	}
+	return 0, errors.New("no free relay node ports")
+}
+
+// persistRelayTopo writes one node's relay topology record under bktRelayTopo
+// (key "netID/nodeID"). A node served by the primary instance (host=="")
+// still persists its port so the port survives restarts; the host stays empty
+// so no cross-instance mapping is implied.
+func (s *Store) persistRelayTopo(netID, nodeID string, port int, host string) error {
+	if s.db == nil {
+		return nil
+	}
+	rec := relayTopoRecord{Port: port, Host: host}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktRelayTopo).Put([]byte(netID+"/"+nodeID), b)
+	})
+}
+
+// deleteRelayTopo removes one node's relay topology record. Safe on a missing
+// record.
+func (s *Store) deleteRelayTopo(netID, nodeID string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if err := s.ensureBuckets(tx); err != nil {
+			return err
+		}
+		return tx.Bucket(bktRelayTopo).Delete([]byte(netID + "/" + nodeID))
+	})
+}
+
 func (s *Store) releaseNodePortLocked(ns *networkState, nodeID string) {
 	if ns == nil {
 		return
@@ -1024,6 +1237,10 @@ func (s *Store) releaseNodePortLocked(ns *networkState, nodeID string) {
 	delete(ns.nodePorts, nodeID)
 	delete(s.portToNode, port)
 	delete(s.netByPort, port)
+	if s.nodeRelayHost != nil && s.nodeRelayHost[ns.n.ID] != nil {
+		delete(s.nodeRelayHost[ns.n.ID], nodeID)
+	}
+	_ = s.deleteRelayTopo(ns.n.ID, nodeID)
 	if s.relayRelease != nil {
 		_ = s.relayRelease(port)
 	}
@@ -1765,8 +1982,8 @@ func (s *Store) CreateNetwork(publicKey, deviceID, name, subnet string, approval
 		subnetBase:      base,
 		relaySeen:       make(map[string]time.Time),
 		ctrlHost:        make(map[string]string),
-				hostSeen:        make(map[string]time.Time),
-				nodeByHost:     make(map[string]map[string]bool),
+		hostSeen:        make(map[string]time.Time),
+		nodeByHost:      make(map[string]map[string]bool),
 		relayFlowByNode: make(map[string]string),
 		nodePorts:       make(map[string]int),
 	}
@@ -2262,6 +2479,12 @@ func (s *Store) listPeersFrom(token, remoteHost string, relayPorts bool) (protoc
 		// The node's per-node unicast relay port; peers use it to reach
 		// this node via relay without triggering broadcast fan-out.
 		n2.RelayPort = ns.nodePorts[n2.ID]
+		// In a multi-instance topology, tell peers which relay instance host
+		// serves this node's per-node port. Empty (collapsed onto the primary
+		// host) keeps the wire unchanged for single-instance deployments.
+		if m := s.nodeRelayHost[ns.n.ID]; m != nil {
+			n2.RelayHostOverride = m[n2.ID]
+		}
 	}
 	for id, n := range ns.nodes {
 		if id != te.NodeID {
@@ -3295,8 +3518,8 @@ func (s *Store) AdminCreateNetwork(name, subnet string, approvalRequired bool, s
 		subnetBase:      base,
 		relaySeen:       make(map[string]time.Time),
 		ctrlHost:        make(map[string]string),
-				hostSeen:        make(map[string]time.Time),
-				nodeByHost:     make(map[string]map[string]bool),
+		hostSeen:        make(map[string]time.Time),
+		nodeByHost:      make(map[string]map[string]bool),
 		relayFlowByNode: make(map[string]string),
 		nodePorts:       make(map[string]int),
 	}
@@ -3393,7 +3616,7 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 	now := time.Now()
 	nowUnix := now.Unix()
 	aliveTTL := int64(netAliveTTL / time.Second)
-	
+
 	type netData struct {
 		n            protocol.Network
 		seq          uint64
@@ -3402,7 +3625,7 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 		lastActivity int64
 		pending      map[string]string // id -> status
 	}
-	
+
 	data := make([]netData, 0, len(s.networks))
 	for _, ns := range s.networks {
 		pending := make(map[string]string, len(ns.pending))
@@ -3419,12 +3642,12 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 		})
 	}
 	s.mu.Unlock()
-	
+
 	// Phase 2: process snapshot without lock
 	page, pageSize = clampPage(page, pageSize)
 	needle := strings.ToLower(strings.TrimSpace(q))
 	out := make([]networkSummary, 0, len(data))
-	
+
 	for _, d := range data {
 		zombie := false
 		if zombieTTL > 0 && d.lastActivity > 0 && now.Sub(time.Unix(d.lastActivity, 0)) >= zombieTTL {
@@ -3492,7 +3715,7 @@ func (s *Store) AdminNetworksPage(zombieTTL time.Duration, q, status string, pag
 
 // AdminNetworks lists all networks with summary stats. Pure read operation.
 func (s *Store) AdminNetworks(zombieTTL time.Duration) []networkSummary {
-	s.mu.RLock()  // Use RLock for read-only operations
+	s.mu.RLock() // Use RLock for read-only operations
 	defer s.mu.RUnlock()
 	now := time.Now()
 	out := make([]networkSummary, 0, len(s.networks))
@@ -3515,7 +3738,7 @@ func (s *Store) AdminNetworks(zombieTTL time.Duration) []networkSummary {
 
 // NodeNetwork returns the network ID that a coordination token belongs to. Pure read operation.
 func (s *Store) NodeNetwork(token string) (string, error) {
-	s.mu.RLock()  // Use RLock for read-only operations
+	s.mu.RLock() // Use RLock for read-only operations
 	defer s.mu.RUnlock()
 	te, ok := s.byToken[hashToken(token)]
 	if !ok {
@@ -3526,7 +3749,7 @@ func (s *Store) NodeNetwork(token string) (string, error) {
 
 // AdminDevices lists all registered device identities. Pure read operation.
 func (s *Store) AdminDevices() []protocol.Device {
-	s.mu.RLock()  // Use RLock for read-only operations
+	s.mu.RLock() // Use RLock for read-only operations
 	defer s.mu.RUnlock()
 	out := make([]protocol.Device, 0, len(s.devices))
 	for _, d := range s.devices {
@@ -3552,7 +3775,7 @@ func (s *Store) AdminDevicesPage(q string, page, pageSize int) ([]protocol.Devic
 	for _, d := range s.devices {
 		// Get networks for this device
 		networks := s.deviceNetworksLocked(d.ID)
-		
+
 		dev := protocol.Device{
 			ID:        d.ID,
 			PublicKey: d.PublicKey,
@@ -4027,15 +4250,15 @@ func (s *Store) AdminGenerateAuthCodes(count, maxBindings int, expiresAt *time.T
 	if maxBindings > 100 {
 		return nil, errors.New("maxBindings must be between 1 and 100")
 	}
-	
+
 	// Validate expiration time
 	if expiresAt != nil && expiresAt.Before(time.Now()) {
 		return nil, errors.New("expiration time cannot be in the past")
 	}
-	
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	result := make([]protocol.AuthCodeInfo, 0, count)
 	for i := 0; i < count; i++ {
 		code, err := randomString(protocol.AuthCodeLen)
@@ -4049,7 +4272,7 @@ func (s *Store) AdminGenerateAuthCodes(count, maxBindings int, expiresAt *time.T
 		for s.authCodes[id] != nil {
 			id, _ = randomString(authCodeIDLen)
 		}
-		
+
 		ac := &authCodeRecord{
 			ID:          id,
 			CodePlain:   protocol.NormalizeCode(code),
@@ -4063,7 +4286,7 @@ func (s *Store) AdminGenerateAuthCodes(count, maxBindings int, expiresAt *time.T
 		if err := s.persistAuthCode(ac); err != nil {
 			return nil, err
 		}
-		
+
 		result = append(result, s.authCodeToInfoLocked(ac))
 	}
 	return result, nil
@@ -4073,17 +4296,17 @@ func (s *Store) AdminGenerateAuthCodes(count, maxBindings int, expiresAt *time.T
 func (s *Store) AdminRenewAuthCode(codeID string, expiresAt *time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	ac := s.authCodes[codeID]
 	if ac == nil {
 		return ErrNotFound
 	}
-	
+
 	// Validate expiration time
 	if expiresAt != nil && expiresAt.Before(time.Now()) {
 		return errors.New("expiration time cannot be in the past")
 	}
-	
+
 	ac.ExpiresAt = expiresAt
 	return s.persistAuthCode(ac)
 }
@@ -4103,7 +4326,7 @@ func (s *Store) CheckDeviceAuth(deviceID string) error {
 func (s *Store) checkDeviceAuthLocked(deviceID string) error {
 	bound := false
 	var expiresAt *time.Time
-	
+
 	for _, ac := range s.authCodes {
 		if ac.bindingIndex(deviceID) >= 0 {
 			bound = true
@@ -4111,16 +4334,16 @@ func (s *Store) checkDeviceAuthLocked(deviceID string) error {
 			break
 		}
 	}
-	
+
 	if !bound {
 		return ErrUnauthorized
 	}
-	
+
 	// Check expiration
 	if expiresAt != nil && time.Now().After(*expiresAt) {
 		return ErrAuthCodeExpired
 	}
-	
+
 	return nil
 }
 
@@ -4128,15 +4351,15 @@ func (s *Store) checkDeviceAuthLocked(deviceID string) error {
 func (s *Store) GetDeviceAuthStatus(deviceID string) protocol.DeviceAuthStatusResp {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	resp := protocol.DeviceAuthStatusResp{Bound: false}
-	
+
 	for _, ac := range s.authCodes {
 		if ac.bindingIndex(deviceID) >= 0 {
 			resp.Bound = true
 			resp.AuthCodeID = ac.ID
 			resp.ExpiresAt = ac.ExpiresAt
-			
+
 			if ac.ExpiresAt != nil && time.Now().After(*ac.ExpiresAt) {
 				resp.Expired = true
 				resp.Message = "授权码已过期，所有网络离线，请续期或更换授权码"
@@ -4144,7 +4367,7 @@ func (s *Store) GetDeviceAuthStatus(deviceID string) protocol.DeviceAuthStatusRe
 			break
 		}
 	}
-	
+
 	return resp
 }
 
@@ -4154,7 +4377,7 @@ func (s *Store) authCodeToInfoLocked(ac *authCodeRecord) protocol.AuthCodeInfo {
 	if code == "" {
 		code = ac.Hint // legacy record: plaintext was never stored
 	}
-	
+
 	info := protocol.AuthCodeInfo{
 		ID:          ac.ID,
 		Code:        code,
@@ -4162,7 +4385,7 @@ func (s *Store) authCodeToInfoLocked(ac *authCodeRecord) protocol.AuthCodeInfo {
 		MaxBindings: ac.MaxBindings,
 		BoundCount:  len(ac.Bindings),
 	}
-	
+
 	// Set expiration info
 	if ac.ExpiresAt != nil {
 		info.ExpiresAt = ac.ExpiresAt.UTC().Format(time.RFC3339)
@@ -4174,7 +4397,7 @@ func (s *Store) authCodeToInfoLocked(ac *authCodeRecord) protocol.AuthCodeInfo {
 	} else {
 		info.Status = "permanent"
 	}
-	
+
 	// Add binding info
 	for _, b := range ac.Bindings {
 		bi := protocol.AuthCodeBindingInfo{
@@ -4186,12 +4409,12 @@ func (s *Store) authCodeToInfoLocked(ac *authCodeRecord) protocol.AuthCodeInfo {
 		}
 		info.BoundDevices = append(info.BoundDevices, bi)
 	}
-	
+
 	if len(ac.Bindings) > 0 {
 		info.BoundToDevice = ac.Bindings[0].DeviceID
 		info.BoundAt = ac.Bindings[0].BoundAt.UTC().Format(time.RFC3339)
 	}
-	
+
 	return info
 }
 
@@ -4201,7 +4424,7 @@ func (s *Store) authCodeToInfoLocked(ac *authCodeRecord) protocol.AuthCodeInfo {
 func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	out := make([]protocol.AuthCodeInfo, 0, len(s.authCodes))
 	for _, ac := range s.authCodes {
 		out = append(out, s.authCodeToInfoLocked(ac))
@@ -4212,7 +4435,7 @@ func (s *Store) AdminAuthCodes() []protocol.AuthCodeInfo {
 // AdminAuthCodesPage returns one page of auth codes sorted by creation time
 // (newest first). Pure read operation (delegates to AdminAuthCodes which uses RLock).
 func (s *Store) AdminAuthCodesPage(page, pageSize int) ([]protocol.AuthCodeInfo, int, int) {
-	all := s.AdminAuthCodes()  // Already uses RLock
+	all := s.AdminAuthCodes() // Already uses RLock
 	sort.Slice(all, func(i, j int) bool {
 		ti, tj := adminTimeOf(all[i].CreatedAt), adminTimeOf(all[j].CreatedAt)
 		if !ti.Equal(tj) {
@@ -4252,18 +4475,18 @@ func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
 	now := time.Now()
 	nowUnix := now.Unix()
 	aliveTTL := int64(netAliveTTL / time.Second)
-	
+
 	type netSnap struct {
-		n             protocol.Network
-		nodeCount     int
-		relayPort     int
-		lastActivity  int64
-		pendingCount  int
+		n            protocol.Network
+		nodeCount    int
+		relayPort    int
+		lastActivity int64
+		pendingCount int
 	}
 	type pendingSnap struct {
 		status string
 	}
-	
+
 	netSnaps := make([]netSnap, 0, len(s.networks))
 	for _, ns := range s.networks {
 		ps := make([]pendingSnap, 0, len(ns.pending))
@@ -4279,7 +4502,7 @@ func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
 		})
 	}
 	deviceCount := len(s.devices)
-	
+
 	type codeSnap struct {
 		bindings int
 		expired  bool
@@ -4290,11 +4513,11 @@ func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
 			expired: ac.ExpiresAt != nil && now.After(*ac.ExpiresAt)})
 	}
 	s.mu.Unlock()
-	
+
 	// Phase 2: process the snapshot without the lock
 	ov := AdminOverview{}
 	recent := make([]networkSummary, 0, len(netSnaps))
-	
+
 	for _, snap := range netSnaps {
 		online := nowUnix-snap.lastActivity < aliveTTL
 		ov.NetworksTotal++
@@ -4316,7 +4539,7 @@ func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
 			LastActivityAt: snap.lastActivity,
 		})
 	}
-	
+
 	ov.DevicesTotal = deviceCount
 	for _, cs := range codeSnaps {
 		ov.CodesTotal++
@@ -4329,7 +4552,7 @@ func (s *Store) AdminOverview(zombieTTL time.Duration) AdminOverview {
 			ov.CodesFree++
 		}
 	}
-	
+
 	sort.Slice(recent, func(i, j int) bool { return recent[i].LastActivityAt > recent[j].LastActivityAt })
 	if len(recent) > 6 {
 		recent = recent[:6]

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -1127,5 +1128,184 @@ func TestMultiRelayEndpointsAdvertised(t *testing.T) {
 	}
 	if len(la2.RelayEndpoints) != 0 {
 		t.Fatalf("single-relay mode should not set RelayEndpoints, got %v", la2.RelayEndpoints)
+	}
+}
+
+// TestRelayTopoPersistedAcrossRestart verifies that the per-node relay
+// topology (assigned unicast port and serving instance host) survives a store
+// restart: the same port is re-advertised and the RelayHostOverride is
+// preserved, so peers' cached endpoints stay valid and cross-instance routing
+// keeps working.
+func TestRelayTopoPersistedAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "topo.db")
+
+	newStore := func() *Store {
+		t.Helper()
+		s, err := NewStoreAt(dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := freePort(t)
+		// Single-instance store: no alternates, so every node collapses onto
+		// the primary host and RelayHostOverride stays empty on the wire.
+		s.SetRelay("127.0.0.1", base, 16)
+		return s
+	}
+
+	s := newStore()
+	created, err := s.CreateNetwork(testKey(970), "dev-topo-persist", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	join := func(key int, device string) string {
+		t.Helper()
+		rj, err := s.Join(created.NetworkID, created.PairingCode, testKey(key), device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rj.Token
+	}
+	tokA := created.Token
+	tokB := join(971, "dev-topo-b")
+
+	// Both callers poll with per-node ports enabled so ports get allocated.
+	la, err := s.ListPeersFrom(tokA, "203.0.113.41", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb, err := s.ListPeersFrom(tokB, "203.0.113.42", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aPort := la.Self.RelayPort
+	bPort := lb.Self.RelayPort
+	if aPort == 0 || bPort == 0 {
+		t.Fatalf("node ports not assigned: a=%d b=%d", aPort, bPort)
+	}
+	if aPort == bPort {
+		t.Fatalf("node ports must differ: a=%d b=%d", aPort, bPort)
+	}
+	hostOf := func(ps []protocol.Node, id string) string {
+		t.Helper()
+		for _, p := range ps {
+			if p.ID == id {
+				return p.RelayHostOverride
+			}
+		}
+		return ""
+	}
+	// Single instance: no override anywhere.
+	if got := hostOf(la.Peers, lb.Self.ID); got != "" {
+		t.Fatalf("single-instance B RelayHostOverride=%q, want empty", got)
+	}
+	if la.Self.RelayHostOverride != "" {
+		t.Fatalf("single-instance self RelayHostOverride=%q, want empty", la.Self.RelayHostOverride)
+	}
+
+	// Restart the store against the same DB file.
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2 := newStore()
+
+	// The persisted topology must restore the exact same ports and no drift.
+	la2, err := s2.ListPeersFrom(tokA, "203.0.113.41", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb2, err := s2.ListPeersFrom(tokB, "203.0.113.42", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if la2.Self.RelayPort != aPort {
+		t.Fatalf("A port after restart=%d, want persisted %d", la2.Self.RelayPort, aPort)
+	}
+	if lb2.Self.RelayPort != bPort {
+		t.Fatalf("B port after restart=%d, want persisted %d", lb2.Self.RelayPort, bPort)
+	}
+	if got := hostOf(la2.Peers, lb2.Self.ID); got != "" {
+		t.Fatalf("after restart B RelayHostOverride=%q, want empty", got)
+	}
+}
+
+// TestRelayTopoMultiInstanceAssignment verifies that when alternates are
+// configured, each node is assigned a fixed serving instance by stable hash
+// and peers receive that instance's host as RelayHostOverride: repeated calls
+// pick the same instance, and it is never the primary for primary-assigned
+// nodes.
+func TestRelayTopoMultiInstanceAssignment(t *testing.T) {
+	s := NewStore()
+	base := freePort(t)
+	s.SetRelay("10.0.0.1", base, 32)
+	s.SetRelayAlternates([]string{"10.0.0.2", "10.0.0.3"})
+	created, err := s.CreateNetwork(testKey(972), "dev-topo-multi", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	join := func(key int, device string) string {
+		t.Helper()
+		rj, err := s.Join(created.NetworkID, created.PairingCode, testKey(key), device)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rj.Token
+	}
+	tokA := created.Token
+	tokB := join(973, "dev-topo-multi-b")
+	tokC := join(974, "dev-topo-multi-c")
+
+	assign := func(tok, host string) *protocol.Node {
+		t.Helper()
+		resp, err := s.ListPeersFrom(tok, host, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.Self
+	}
+	a1 := assign(tokA, "203.0.113.51")
+	b1 := assign(tokB, "203.0.113.52")
+	c1 := assign(tokC, "203.0.113.53")
+
+	// Hosts are normalized downwards; primary host collapses to "".
+	norm := func(h string) string {
+		if h == "" {
+			return "10.0.0.1"
+		}
+		return h
+	}
+	seen := map[string]bool{norm(a1.RelayHostOverride): true, norm(b1.RelayHostOverride): true, norm(c1.RelayHostOverride): true}
+	if len(seen) == 1 {
+		t.Fatalf("expected nodes spread across instances, all on %v", seen)
+	}
+
+	// Stable: repeated polls return the same instance and the same port.
+	a2 := assign(tokA, "203.0.113.51")
+	if a2.RelayHostOverride != a1.RelayHostOverride {
+		t.Fatalf("A instance changed across polls: %q -> %q", a1.RelayHostOverride, a2.RelayHostOverride)
+	}
+	if a2.RelayPort != a1.RelayPort {
+		t.Fatalf("A port changed across polls: %d -> %d", a1.RelayPort, a2.RelayPort)
+	}
+
+	// Peers advertise the serving instance for each other.
+	la, err := s.ListPeersFrom(tokA, "203.0.113.51", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostOf := func(ps []protocol.Node, id string) string {
+		t.Helper()
+		for _, p := range ps {
+			if p.ID == id {
+				return p.RelayHostOverride
+			}
+		}
+		return ""
+	}
+	if got := hostOf(la.Peers, b1.ID); got != b1.RelayHostOverride {
+		t.Fatalf("peer B override=%q, want %q", got, b1.RelayHostOverride)
+	}
+	if got := hostOf(la.Peers, c1.ID); got != c1.RelayHostOverride {
+		t.Fatalf("peer C override=%q, want %q", got, c1.RelayHostOverride)
 	}
 }

@@ -5,16 +5,16 @@ import (
 )
 
 const (
-	DefaultMTU           = 1420
-	DefaultWGPort        = 51820
-	DefaultCtlAddr       = "http://127.0.0.1:19432"
-	NetworkPrefix        = "10.88.0."
-	MaxNodes             = 100
-	KeepaliveInterval    = 10
+	DefaultMTU            = 1420
+	DefaultWGPort         = 51820
+	DefaultCtlAddr        = "http://127.0.0.1:19432"
+	NetworkPrefix         = "10.88.0."
+	MaxNodes              = 100
+	KeepaliveInterval     = 10
 	KeepaliveIntervalIdle = 25 // Longer interval when idle (mobile power saving)
-	PollIntervalSeconds  = 2
-	ProbeIntervalSeconds = 15
-	ProbePort            = 8091
+	PollIntervalSeconds   = 2
+	ProbeIntervalSeconds  = 15
+	ProbePort             = 8091
 )
 
 // APIVersion is the coordination API major version. Clients send it on every
@@ -99,8 +99,15 @@ type Node struct {
 	// Peers send relay traffic to relayHost:RelayPort instead of the shared
 	// broadcast port, enabling unicast routing without fan-out amplification.
 	// Zero means the node still uses the legacy broadcast port.
-	RelayPort int  `json:"relayPort,omitempty"`
-	Online    bool `json:"online,omitempty"`
+	RelayPort int `json:"relayPort,omitempty"`
+	// RelayHostOverride is the relay instance host that serves this node's
+	// per-node unicast port. In a multi-instance topology (relay alternates)
+	// different nodes of one network may be assigned different relay
+	// instances; peers must send this node's relay traffic to
+	// RelayHostOverride:RelayPort rather than the network's primary relay.
+	// Empty means the node is served by the network's primary relay host.
+	RelayHostOverride string `json:"relayHostOverride,omitempty"`
+	Online            bool   `json:"online,omitempty"`
 	// AllowedSubnets lists CIDR subnets this node advertises for routing.
 	// Other peers route traffic for these subnets through this node's tunnel.
 	AllowedSubnets []string `json:"allowedSubnets,omitempty"`
@@ -383,8 +390,8 @@ type AuthCodeInfo struct {
 	BoundAt       string                `json:"boundAt,omitempty"`
 	BoundDevices  []AuthCodeBindingInfo `json:"boundDevices,omitempty"`
 	CreatedAt     string                `json:"createdAt"`
-	ExpiresAt     string                `json:"expiresAt,omitempty"`     // ISO 8601, empty means permanent
-	Status        string                `json:"status"`                  // "active", "expired", "permanent"
+	ExpiresAt     string                `json:"expiresAt,omitempty"` // ISO 8601, empty means permanent
+	Status        string                `json:"status"`              // "active", "expired", "permanent"
 }
 
 // AuthCodeBindingInfo describes one device bound to a shared authorization
@@ -411,8 +418,8 @@ type AdminRenewAuthCodeReq struct {
 }
 
 type DeviceAuthStatusResp struct {
-	Bound     bool       `json:"bound"`
-	AuthCodeID string    `json:"authCodeId,omitempty"`
+	Bound      bool       `json:"bound"`
+	AuthCodeID string     `json:"authCodeId,omitempty"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	Expired    bool       `json:"expired"`
 	Message    string     `json:"message,omitempty"`
