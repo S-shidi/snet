@@ -18,7 +18,7 @@
 | **数据面** | WireGuard UDP 隧道，优先 NAT 打洞（每 15s 探测 :8091），失败回落 UDP 中继（51820-51883） |
 | **控制面** | 协调面：HTTPS REST JSON :8090；本地控制面：HTTP :19432（loopback） |
 | **存储** | bbolt 7 bucket：`networks / nodes / tokens / devices / pending / admin / authcodes` |
-| **客户端** | Desktop（Tauri v2 + Rust 22 命令代理）/ Android（WebView + Kotlin 桥 + gomobile AAR）/ Docker（snetd + nginx） |
+| **客户端** | Desktop（Tauri v2 + Rust 22 命令代理）/ Android（Compose + Kotlin 桥 + gomobile AAR）/ Docker（snetd + nginx） |
 | **共享 UI** | `shared/web/{ui,types,utils,subnet}.ts` + `index.html` + `styles.css`，由 `scripts/build-web.sh` 同步到 Android 与 Docker |
 | **协议标识** | `snet://join?nid=xxx&code=yyy[&name=xxx][&server=xxx]`（`internal/protocol/link.go`）——`server` 参数仅下游转发用；客户端 create/join/bind 现只接受固定服务器 `https://snet.uizhi.eu.org:8090`，异地址邀请链接将被拒绝，UI 不留服务器输入 |
 | **关键端口** | 8090 协调 / 8091 探测 / 51820-51883 中继 / 51900+ Docker 客户端 / 19432 本地控制 |
@@ -27,7 +27,7 @@
 | **CI** | `.github/workflows/build-windows.yml`（NSIS 安装包） |
 | **部署** | VPS 66.187.6.46（`scripts/rollout-vps.sh`）、Docker（`deploy/docker/`）、macOS launchd、Windows SCM |
 | **绑定域** | 生产：`https://snet.uizhi.eu.org:8090`，CA 固定 |
-| **目录结构入口** | `cmd/{server,client/snetd,client/snetctl}` + `internal/{server,client,protocol}` + `desktop/src-tauri` + `android/app` + `snetbind` + `shared/web` + `deploy/` + `scripts/` |
+| **目录结构入口** | `cmd/{server,client/snetd,client/snetctl}` + `internal/{server,client,protocol}` + `desktop/src-tauri` + `android/app-native` + `snetbind` + `shared/web` + `deploy/` + `scripts/` |
 
 ---
 
@@ -67,7 +67,7 @@
 | 2 | `#snet-arch` | 私有 | 协议演进、DESIGN.md 维护、API 评审、跨切面决策 | arch-bot |
 | 3 | `#snet-backend` | 私有 | Go 服务端 / daemon / gomobile 绑定层 | backend-bot |
 | 4 | `#snet-frontend` | 私有 | Tauri 桌面代理 / 共享 Web UI / 平台适配器 | frontend-bot |
-| 5 | `#snet-mobile` | 私有 | Android（Kotlin + WebView + gomobile AAR）| mobile-bot |
+| 5 | `#snet-mobile` | 私有 | Android（Compose + Kotlin 桥 + gomobile AAR）| mobile-bot |
 | 6 | `#snet-devops` | 私有 | VPS 部署、Docker、CI、Windows 安装包、systemd/launchd/SCM | devops-bot |
 | 7 | `#snet-qa` | 私有 | e2e、单元/集成测试、真机验收、问题回归 | qa-bot |
 
@@ -171,17 +171,17 @@
 | 字段 | 值 |
 |------|-----|
 | **挂靠频道** | `#snet-mobile` |
-| **核心职责** | Android 端：Kotlin 桥 / VPN Service / WebView / gomobile AAR 构建 |
-| **重点文件** | `android/app/src/main/kotlin/com/snet/app/{MainActivity,SnetBridge,SnetVpnService,WebBridge,HardwareID,BootReceiver}.kt`、`android/src/android.ts`、`android/build-android.sh`、`snetbind/snetcore.go` |
+| **核心职责** | Android 端：Kotlin 桥 / VPN Service / Compose UI / gomobile AAR 构建 |
+| **重点文件** | `android/app-native/src/main/kotlin/com/snet/app/{MainActivity,SnetBridge,SnetVpnService,HardwareID,BootReceiver}.kt`、`android/app-native/src/main/kotlin/com/snet/app/{ui,viewmodel}/`、`android/build-android.sh`、`snetbind/snetcore.go` |
 | **触发命令** | `@snet-mobile-bot build-aar`、`@snet-mobile-bot check-bridge` |
 | **必备技能** | `requesting-code-review`（移动端模式）、`systematic-debugging` |
-| **路由规则** | 接收 `kotlin` / `android` / `vpn` / `webview` / `gomobile` / `aar` → 接管 |
-| **关键不变量** | - VPN 路由只隧道 `10.0.0.0/8`（非全局）<br>- VPN Builder 必须排除协调服务器 IP（防路由环路）<br>- `HaltTunnels()` 保留 daemon 状态，VPN 重建后瞬间恢复<br>- `@JavascriptInterface` 重操作（join/leave/remove）必须在单线程 executor 串行化<br>- 设备 ID 派生：`Build.* + ANDROID_ID → SHA-256 → 16 hex` |
+| **路由规则** | 接收 `kotlin` / `android` / `vpn` / `compose` / `gomobile` / `aar` → 接管 |
+| **关键不变量** | - VPN 路由只隧道 `10.0.0.0/8`（非全局）<br>- VPN Builder 必须排除协调服务器 IP（防路由环路）<br>- `HaltTunnels()` 保留 daemon 状态，VPN 重建后瞬间恢复<br>- `SnetBridge.kt` 重操作（join/leave/remove）必须在后台线程执行（`Dispatchers.IO`）<br>- 设备 ID 派生：`Build.* + ANDROID_ID → SHA-256 → 16 hex` |
 
 **专属 checklist**（改 Kotlin 文件时跑）：
 - [ ] 设备 ID 派生是否仍是硬件绑定（避免文件持久化）
 - [ ] VPN Service 是否处理了 `tunFd` 尚未就绪的 `pendingStart` 路径
-- [ ] WebBridge 的 `@JavascriptInterface` 方法是否在后台线程执行
+- [ ] `SnetBridge` / `MainViewModel` 的重操作是否在后台线程执行
 - [ ] `BootReceiver` 注册的 `BOOT_COMPLETED` 权限未漂移
 
 ---

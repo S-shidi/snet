@@ -5,7 +5,7 @@
 - **服务端**（Go）：网络协调、成员管理、NAT 穿透探测、UDP 中继（懒绑定，按需端口）、Web 管理页（分页列表、总览统计）、设备授权码（支持过期/续期/吊销）、设备命名。安全加固：限流、安全头（CSP/HSTS/no-store）、XFF 最右、凭据加锁、引导互斥、auth-status 需设备令牌。协议/API 版本协商（不匹配回 426）。
 - **客户端**（Go daemon + Tauri 桌面端）：macOS（launchd）、Windows（SCM 服务）、Linux 均支持；
   数据面优先 NAT 打洞直连（公网站点做 ±1..±8 候选盲投），打不通时经服务器中继转发；每 peer 直连/中继路径可观测（`/ctl/status` `peerPaths`）。设备名自动上报（首次连接填充，管理端改名优先）。支持密钥定期轮换。协调服务器地址固定为 `https://snet.uizhi.eu.org:8090`，授权码过期时客户端置冻结态并显示过期提示。
-- **Android 端**（WebView UI + gomobile AAR）：内置 VPN 服务，扫码/链接加入网络。设备名取 manufacturer+model。
+- **Android 端**（Compose 原生 + gomobile AAR）：内置 VPN 服务，扫码/链接加入网络。设备名取 manufacturer+model。
 - **Docker 客户端**：支持在 Docker 主机、VPS、群晖 NAS 等环境容器化部署客户端。
 - **手机**：服务器端生成节点配置，用 WireGuard App 导入（见 `deploy/phone-android.conf` 模板）。
 
@@ -20,11 +20,12 @@ internal/
   server/                HTTP API、中继、探测、管理页（admin.html 经 go:embed 内嵌）
   client/                daemon 核心：隧道（ifconfig/netsh）、设备 ID、ctl 接口
   protocol/              客户端-服务端协议类型
-android/                 Android 客户端（Gradle 工程，WebView UI + gomobile AAR）
-  app/src/main/kotlin/com/snet/app/
+android/                 Android 客户端（Gradle 工程 + gomobile AAR，Compose 原生）
+  app-native/src/main/kotlin/com/snet/app/
     HardwareID.kt        Android 设备硬件 ID 派生
-    SnetBridge.kt        gomobile 绑定层（设备名上报、VPN 控制）
-  app/src/main/assets/web/  Android 端 web 资产（由 build-web.sh 生成）
+    SnetBridge.kt        gomobile 绑定层（设备名上报、VPN 控制、网络操作）
+    ui/                   Compose 界面（主界面、详情、对话框、设置）
+  build-android.sh       一键构建（gomobile bind 出 AAR → gradlew assembleDebug）
 desktop/                 Tauri 桌面端（Rust + Vite/TypeScript）
   src-tauri/src/snet/    ctl 封装与各平台服务安装（macos launchd / windows sc.exe）
 deploy/                  部署文档、systemd 服务单元、手机配置
@@ -41,18 +42,19 @@ build/                   各平台已编译产物（linux-amd64/arm64、windows-
 
 ## 构建
 
-### Web 资产（所有平台共享 UI）
+### Web 资产（Docker 控制台）
 
-**重要**：修改 `shared/web/` 中的 TypeScript 源码后，必须运行此脚本同步所有平台：
+**重要**：修改 `shared/web/` 中的 TypeScript 源码后，必须运行此脚本同步 Docker 产物：
 
 ```bash
 ./scripts/build-web.sh
 ```
 
 此脚本会：
-- 从 `android/src/android.ts` 编译 Android `app.js` → `android/app/src/main/assets/web/`
 - 从 `desktop/src/web.ts` 编译 Docker `app.js` → `deploy/docker/web/`
-- 同步 `index.html` + `styles.css` 到两个平台
+- 同步 `index.html` + `styles.css` 到该平台
+
+> Android 客户端为 Compose 原生实现，不依赖 `shared/web`（见 `docs/ANDROID.md`）。
 
 ### Go（本机任意平台，交叉编译零依赖）
 
@@ -82,7 +84,8 @@ npm run tauri build -- --bundles nsis   # Windows 出安装包（须在 Windows 
 ./android/build-android.sh   # gomobile bind 出 snet.aar → gradlew assembleDebug
 ```
 
-构建脚本会自动调用 `build-web.sh` 同步 web 资产。
+构建脚本会依次执行 `gomobile bind`（生成 AAR 并解包到 `app-native/libs` 与 `jniLibs`）和
+`gradlew assembleDebug`；APK 输出于 `android/app-native/build/outputs/apk/debug/`。
 
 ## 测试
 

@@ -20,7 +20,7 @@
         ▼              ▼              ▼
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │ Desktop      │ │ Android      │ │ Docker       │
-│ (Tauri v2)   │ │ (WebView)    │ │ (snetd+nginx)│
+│ (Tauri v2)   │ │ (Compose)    │ │ (snetd+nginx)│
 │ Rust 代理    │ │ Kotlin 壳    │ │ Web 控制台   │
 │ TS 前端      │ │ Go/JNI 核心  │ │ TS 前端      │
 └──────┬───────┘ └──────┬───────┘ └──────────────┘
@@ -138,14 +138,15 @@ internal/
     link.go                   snet:// URI 构建与解析
 
 android/
-  app/src/main/kotlin/com/snet/app/
-    MainActivity.kt           WebView 宿主、权限处理、QR 扫描
-    WebBridge.kt              @JavascriptInterface 桥接层（JSON string RPC）
+  app-native/src/main/kotlin/com/snet/app/
+    MainActivity.kt           Compose 宿主、权限处理、QR 扫描
     SnetBridge.kt             gomobile SnetCore wrapper（单例）
     SnetVpnService.kt         VPN 服务（TUN fd 管理、路由排除）
     HardwareID.kt             硬件绑定设备 ID
     BootReceiver.kt           开机自启
-  src/android.ts              TypeScript Android 适配器（Backend 实现）
+    repository/SnetRepository.kt  挂起函数封装（Dispatchers.IO）
+    ui/                       Compose 界面（Main/Detail/Dialogs/Settings）
+    viewmodel/MainViewModel.kt     UI 状态（StateFlow）
 
 desktop/
   src-tauri/src/
@@ -341,7 +342,7 @@ interface Backend {
   resetCode(nid): Promise<{pairingCode: string}>;
   detectLocalSubnets(): Promise<string[]>;
   ensureDaemon(): Promise<void>;
-  scanQR?(): Promise<string>;         // Android only
+  scanQR?(): Promise<string>;         // 桌面端 QR 扫码（可选）
   hasDaemonControl: boolean;
 }
 ```
@@ -351,7 +352,6 @@ interface Backend {
 | 平台 | 适配器文件 | Backend 实现方式 | hasDaemonControl |
 |------|-----------|-----------------|-----------------|
 | Desktop | `desktop/src/desktop.ts` | Tauri IPC → Rust → /ctl/* | true |
-| Android | `android/src/android.ts` | @JavascriptInterface → Go/JNI | true |
 | Web/Docker | `desktop/src/web.ts` | HTTP /ctl/* + auth | false |
 
 ### 6.3 共享 UI（`shared/web/ui.ts`）
@@ -492,7 +492,7 @@ snet://join?nid=xxx&code=yyy&name=家庭NAS共享[&server=xxx]
 4. **客户端 Daemon 扩展**：Create/UpdateSettings 新增参数，新增 SetRole
 5. **前端类型扩展**：types.ts Backend 接口新增方法
 6. **前端 UI 变更**：创建 modal、设置 modal、成员列表、网络卡片
-7. **平台适配器扩展**：desktop.ts、android.ts、Rust、Kotlin
+7. **平台适配器扩展**：desktop.ts、web.ts、Rust、Kotlin
 
 详细执行计划见项目执行记录。
 

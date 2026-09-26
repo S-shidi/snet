@@ -38,15 +38,9 @@ routes:
   - match: "shared/web/*"
     primary: frontend
     cc: [mobile]
-  - match: "shared/web/*"
-    primary: frontend
-    cc: [mobile]
 
   # ─── 移动端 ───
   - match: "android/**/*.kt"
-    primary: mobile
-    cc: [frontend]
-  - match: "android/src/*.ts"
     primary: mobile
     cc: [frontend]
   - match: "snetbind/*.go"

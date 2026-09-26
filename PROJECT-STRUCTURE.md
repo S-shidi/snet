@@ -13,8 +13,8 @@
 |------|------|--------|----------|
 | **Go** | 核心后端（服务器 + 客户端守护进程） | 45 | `internal/`, `cmd/` |
 | **Rust** | 桌面客户端（Tauri） | 31 | `desktop/src-tauri/` |
-| **Kotlin** | Android 移动客户端 | 6 | `android/app/src/main/kotlin/` |
-| **TypeScript/JavaScript** | Web UI（共享） | 2088 | `shared/web/`, `desktop/src/`, `android/app/src/main/assets/web/` |
+| **Kotlin** | Android 移动客户端（Compose native） | 13 | `android/app-native/src/main/kotlin/` |
+| **TypeScript/JavaScript** | Web UI（共享） | 2088 | `shared/web/`, `desktop/src/` |
 | **Markdown** | 文档 | 99 | 根目录, `deploy/` |
 
 ### 构建输出
@@ -52,22 +52,21 @@
 │   ├── routes/           # 路由配置
 │   └── scripts/          # 工作流脚本
 ├── android/              # Android 移动客户端
-│   ├── app/
+│   ├── app-native/
 │   │   ├── build.gradle  # Gradle 配置
 │   │   ├── libs/         # gomobile AAR
 │   │   └── src/main/
 │   │       ├── kotlin/com/snet/app/
-│   │       │   ├── MainActivity.kt      # 主界面（WebView）
+│   │       │   ├── MainActivity.kt      # 主界面（Compose）
 │   │       │   ├── SnetVpnService.kt    # VPN 服务
 │   │       │   ├── SnetBridge.kt        # Go 绑定层
-│   │       │   ├── WebBridge.kt         # JS 桥接
 │   │       │   ├── HardwareID.kt        # 设备 ID
-│   │       │   └── BootReceiver.kt      # 开机启动
-│   │       └── assets/web/              # Web UI 资源
-│   │           ├── index.html
-│   │           ├── app.js
-│   │           ├── styles.css
-│   │           └── progress.js
+│   │       │   ├── BootReceiver.kt      # 开机启动
+│   │       │   ├── ui/                  # Compose 界面
+│   │       │   ├── viewmodel/           # UI 状态
+│   │       │   └── repository/
+│   │       └── AndroidManifest.xml
+│   ├── build-android.sh  # 一键构建脚本（gomobile + gradlew）
 │   ├── build.gradle      # 根 Gradle 配置
 │   └── settings.gradle
 ├── build/                # 构建输出
@@ -245,14 +244,15 @@ type Node struct {
 
 **技术栈**:
 - Kotlin
-- WebView UI
+- Jetpack Compose（原生 UI）
 - gomobile AAR
 
 **核心组件**:
 - `SnetVpnService`: VPN 服务（建立 utun 设备）
-- `MainActivity`: WebView 容器
+- `MainActivity`: Compose 宿主
 - `SnetBridge`: Go 代码绑定
-- `WebBridge`: JavaScript 桥接
+- `ui/MainScreen`: 主界面（网络列表、状态轮询、二维码扫描）
+- `viewmodel/MainViewModel`: UI 状态持有
 
 **优化特性**:
 - 异步 VPN 启动
@@ -277,7 +277,6 @@ type Node struct {
 - 子网路由配置
 
 **共享平台**:
-- Android WebView
 - Docker 容器
 - 桌面客户端（可能）
 
@@ -344,7 +343,6 @@ SetEndpoint 广播到服务器
 ```
 
 **生成目标**:
-- `android/app/src/main/assets/web/`
 - `deploy/docker/web/`
 - `desktop/src/`（可能）
 
@@ -372,7 +370,7 @@ cd android
 ./gradlew assembleRelease
 ```
 
-**输出**: `android/app/build/outputs/apk/release/app-release.apk`
+**输出**: `android/app-native/build/outputs/apk/release/app-native-release.apk`
 
 ---
 
@@ -515,14 +513,8 @@ ureq = "2"  // HTTP 客户端
 
 - `README.md`: 项目说明、快速开始
 - `DESIGN.md`: 系统设计、协议定义
-- `deploy/*.md`: 部署指南、优化报告
-
-### 部署文档
-
-- `DOCKER-COMPOSE-DEPLOY.md`: Docker 部署
-- `SERVER-OPTIMIZATION.md`: 服务器优化
-- `CLIENT-ARCHITECTURE.md`: 客户端架构
-- `ANDROID-OPTIMIZATION.md`: Android 优化
+- `deploy/README.md`: 部署指南
+- `docs/`: 设计/评审文档与归档报告（`docs/archive/`）
 
 ---
 
@@ -550,7 +542,7 @@ ureq = "2"  // HTTP 客户端
 |------|--------|----------|
 | Go 源码 | 45 | `internal/`, `cmd/` |
 | Rust 源码 | 31 | `desktop/src-tauri/` |
-| Kotlin 源码 | 6 | `android/app/src/main/kotlin/` |
+| Kotlin 源码 | 13 | `android/app-native/src/main/kotlin/` |
 | TypeScript | 2088 | `shared/web/`, `desktop/src/` |
 | 文档 | 99 | 根目录, `deploy/` |
 

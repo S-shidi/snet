@@ -1,18 +1,16 @@
 #!/bin/bash
-# build-web.sh — Unified web asset builder for all platforms
+# build-web.sh — Web asset builder for Docker (and reference for Desktop/Tauri)
 #
-# Builds the shared TypeScript UI into platform-specific bundles:
-#   - Android: android/src/android.ts  → android/app/src/main/assets/web/app.js
-#   - Docker:  desktop/src/web.ts      → deploy/docker/web/app.js
+# Builds the shared TypeScript UI (shared/web/) into:
+#   - Docker:  desktop/src/web.ts → deploy/docker/web/app.js
 #   - Desktop: handled by Vite via `npx tauri build`
 #
-# Also syncs index.html and styles.css to Android and Docker targets.
+# Also syncs index.html and styles.css to the Docker target.
 # Run this script whenever shared/web/ TypeScript sources change.
 
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SHARED="$ROOT/shared/web"
-ANDROID_OUT="$ROOT/android/app/src/main/assets/web"
 DOCKER_OUT="$ROOT/deploy/docker/web"
 
 echo "=== Building web assets ==="
@@ -23,31 +21,21 @@ if ! command -v esbuild &>/dev/null; then
   exit 1
 fi
 
-# 1. Bundle Android (WebBridge adapter)
-echo "[1/3] Bundling Android app.js from android/src/android.ts ..."
-esbuild "$ROOT/android/src/android.ts" \
-  --bundle --format=iife --target=es2022 --minify \
-  --outfile="$ANDROID_OUT/app.js"
-echo "      → $ANDROID_OUT/app.js ($(wc -c < "$ANDROID_OUT/app.js") bytes)"
-
-# 2. Bundle Docker web (fetch adapter)
-echo "[2/3] Bundling Docker app.js from desktop/src/web.ts ..."
+# 1. Bundle Docker web (fetch adapter)
+echo "[1/2] Bundling Docker app.js from desktop/src/web.ts ..."
 esbuild "$ROOT/desktop/src/web.ts" \
   --bundle --format=iife --target=es2022 --minify \
   --outfile="$DOCKER_OUT/app.js"
 echo "      → $DOCKER_OUT/app.js ($(wc -c < "$DOCKER_OUT/app.js") bytes)"
 
-# 3. Sync index.html and styles.css to both targets
-echo "[3/3] Syncing index.html + styles.css ..."
-cp "$SHARED/index.html" "$ANDROID_OUT/index.html"
-cp "$SHARED/styles.css" "$ANDROID_OUT/styles.css"
+# 2. Sync index.html and styles.css to the Docker target
+echo "[2/2] Syncing index.html + styles.css ..."
 cp "$SHARED/index.html" "$DOCKER_OUT/index.html"
 cp "$SHARED/styles.css" "$DOCKER_OUT/styles.css"
-echo "      → Android + Docker in sync"
+echo "      → Docker in sync"
 
 echo ""
 echo "=== Done ==="
-echo "Android: $ANDROID_OUT/"
 echo "Docker:  $DOCKER_OUT/"
 echo ""
 echo "NOTE: Desktop (Tauri) UI is built separately via: cd desktop && npx tauri build"

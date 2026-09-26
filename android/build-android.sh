@@ -12,9 +12,6 @@ ANDROID="$ROOT/android"
 
 cd "$ROOT"
 
-echo "=== Building web assets (shared UI) ==="
-bash scripts/build-web.sh
-
 echo "=== Building snet.aar (gomobile) ==="
 gomobile bind -target=android -o /tmp/snet.aar ./snetbind/
 
